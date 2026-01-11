@@ -13,5 +13,6 @@ int main() {
     std::cout<<tribe->getName()<<std::endl;
     std::cout<<tribe->getId()<<std::endl;
     std::cout<<tribe->getStartStars()<<std::endl;
+    std::cout<<tribe->getStartTech()<<std::endl;
 
 }

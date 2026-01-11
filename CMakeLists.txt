@@ -8,44 +8,6 @@ add_executable(game_engine main.cpp
         assets/units/Unit.h
         assets/skills/Skill.cpp
         assets/skills/Skill.h
-        assets/skills/AlgaeSkill.cpp
-        assets/skills/AlgaeSkill.h
-        assets/skills/FreezeAreaSkill.h
-        assets/skills/AirSkill.cpp
-        assets/skills/AmphibiousSkill.cpp
-        assets/skills/AutoFloodSkill.cpp
-        assets/skills/AutoFreezeSkill.h
-        assets/skills/CarrySkill.cpp
-        assets/skills/ConvertSkill.cpp
-        assets/skills/CreepSkill.cpp
-        assets/skills/DashSkill.cpp
-        assets/skills/DoubleAttackSkill.cpp
-        assets/skills/DrenchSkill.cpp
-        assets/skills/EatSkill.cpp
-        assets/skills/EscapeSkill.cpp
-        assets/skills/ExplodeSkill.h
-        assets/skills/FortifySkill.cpp
-        assets/skills/ExplodeSkill.cpp
-        assets/skills/FreezeAreaSkill.cpp
-        assets/skills/FreezeSkill.cpp
-        assets/skills/GrowSkill.cpp
-        assets/skills/HealSkill.cpp
-        assets/skills/HideSkill.cpp
-        assets/skills/IndependentSkill.cpp
-        assets/skills/InfiltrateSkill.cpp
-        assets/skills/PersistSkill.cpp
-        assets/skills/PoisonSkill.cpp
-        assets/skills/ScoutSkill.cpp
-        assets/skills/SkateSkill.cpp
-        assets/skills/SneakSkill.cpp
-        assets/skills/SplashSkill.cpp
-        assets/skills/StaticSkill.cpp
-        assets/skills/StiffSkill.cpp
-        assets/skills/StompSkill.cpp
-        assets/skills/SurpriseSkill.cpp
-        assets/skills/SwarmSkill.cpp
-        assets/skills/TentaclesSkill.cpp
-        assets/skills/WaterSkill.cpp
         src/world/generateMap.cpp
         src/world/generateMap.h
         src/world/map.cpp
@@ -106,6 +68,32 @@ add_executable(game_engine main.cpp
         assets/techs/NavigationTech.h
         assets/techs/AquatismTech.cpp
         assets/techs/AquatismTech.h
+        assets/tribes/Xinxi.cpp
+        assets/tribes/Xinxi.h
+        assets/tribes/Imperius.cpp
+        assets/tribes/Imperius.h
+        src/Player/Player.cpp
+        src/Player/Player.h
+        src/world/Pos.cpp
+        src/world/Pos.h
+        assets/skills/UnitSkill.cpp
+        assets/skills/UnitSkill.h
+        assets/skills/UnitSkillTools.cpp
+        assets/skills/UnitSkillTools.h
+        src/world/tile.cpp
+        src/world/tile.h
+        src/world/terrain/baseTerrainEnum.cpp
+        src/world/terrain/baseTerrainEnum.h
+        src/world/terrain/resourcesEnum.cpp
+        src/world/terrain/resourcesEnum.h
+        src/world/buildings/Building.cpp
+        src/world/buildings/Building.h
+        src/world/buildings/Village.cpp
+        src/world/buildings/Village.h
+        src/world/buildings/City.cpp
+        src/world/buildings/City.h
+        src/world/buildings/upgradeRewardEnum.cpp
+        src/world/buildings/upgradeRewardEnum.h
 )
 
 # Allow includes like: #include "Skill.h" or #include "Unit.h"
@@ -113,4 +101,7 @@ target_include_directories(game_engine PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/assets
         ${CMAKE_CURRENT_SOURCE_DIR}/assets/skills
         ${CMAKE_CURRENT_SOURCE_DIR}/assets/units
+
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/world
 )

@@ -7,9 +7,9 @@
 
 Bardur::Bardur()
     : Tribe(
-        1,
+        3,
         "Bardur",
-        7,
+        5,
         &HuntingTech::getBase()
     )
 {

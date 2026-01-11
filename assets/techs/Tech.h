@@ -12,7 +12,7 @@ public:
     bool hasPrevious() const;
     const Tech* getPrevious() const;
     int getTier() const;
-    int getPrice(int numOfCities);
+    int getPrice(int numOfCities) const;
     std::string getName() const;
     Tech() = default;
 

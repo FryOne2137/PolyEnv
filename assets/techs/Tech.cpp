@@ -17,7 +17,7 @@ int Tech::getTier() const {
     return tier;
 }
 
-int Tech::getPrice(int numOfCities) {
+int Tech::getPrice(int numOfCities) const {
     return numOfCities*Tech::getTier()+4;
 }
 
