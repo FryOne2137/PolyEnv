@@ -4,29 +4,62 @@
 
 #ifndef GAME_ENGINE_TRIBE_H
 #define GAME_ENGINE_TRIBE_H
+
 #include <string>
+#include <cstdint>
 
-#include "Skill.h"
-#include "techs/Tech.h"
+#include "units/Unit.h"
+#include "tech/TechDB.h"
 
+enum class TribeType : uint8_t {
+    Unknown  = 0,
+
+    // Regular tribes
+    XinXi    = 1,
+    Imperius = 2,
+    Bardur   = 3,
+    Oumaji   = 4,
+    Kickoo   = 5,
+    Hoodrick = 6,
+    Luxidoor = 7,
+    Vengir   = 8,
+    Zebasi   = 9,
+    AiMo     = 10,
+    Quetzali = 11,
+    Yadakk   = 12,
+
+    // Special tribes
+    Aquarion = 13,
+    Elyrion  = 14,   // ∑∫ỹriȱŋ
+    Polaris  = 15,
+    Cymanti  = 16,
+};
 
 class Tribe {
 public:
-    Tribe(int id, std::string name, int stars, const Tech* startTech);
+    Tribe(TribeType type, std::string name, uint8_t stars, TechId tech, UnitType startUnitType);
 
-    int getId();
-    int getStartStars();
+    TribeType getType() const;
+    uint8_t getStartStars() const;
     const std::string& getName() const;
-    const Tech* getStartTech() const;
+    TechId getStartTech() const;
 
+    const Unit& getStartUnit() const;
+
+    // --- Defaults from wiki (helpers) ---
+    static const char* defaultName(TribeType type);
+    static uint8_t defaultStartStars(TribeType type);
+    static TechId defaultStartTech(TribeType type);
+    static UnitType defaultStartUnitType(TribeType type);
+    static Tribe makeDefault(TribeType type);
 
 private:
-    int tribeId;
+    TribeType tribeType = TribeType::Unknown;
     std::string tribeName;
 
-    int startStars;
-    const Tech* startTech = nullptr;
+    Unit startUnit{};
+    uint8_t startStars = 0;
+    TechId startTech = TechId::Count;
 };
 
-
-#endif //GAME_ENGINE_TRIBE_H
+#endif // GAME_ENGINE_TRIBE_H

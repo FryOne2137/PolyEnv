@@ -1,0 +1,1829 @@
+//
+// Created by Fryderyk Niedzwiecki on 16/01/2026.
+//
+
+#include "MapRenderer.h"
+#include "Systems/TurnSystem.h"
+#include "Systems/TechSystem.h"
+#include "Systems/MovementSystem.h"
+#include "Game.h"
+#include "tech/TechDB.h"
+#include <SFML/Window/Mouse.hpp>
+#include <cmath>
+#include <filesystem>
+#include <iostream>
+#include <array>
+#include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <SFML/Window/Event.hpp>
+#include <SFML/Window/Keyboard.hpp>
+#include <SFML/Graphics/RectangleShape.hpp>
+#include <SFML/Graphics/VertexArray.hpp>
+#include <SFML/Graphics/CircleShape.hpp>
+#include <SFML/Graphics/Text.hpp>
+#include <SFML/Graphics/Font.hpp>
+
+
+static bool existsFile(const std::string& p) {
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path(p), ec);
+}
+
+static std::string firstExistingWithParents(const std::vector<std::string>& paths) {
+    // CLion often runs the executable from cmake-build-*/ so relative paths like "assets/..." won't work.
+    // We try a few parent prefixes to reach the project root.
+    static const std::array<std::string, 6> kPrefixes = {"", "../", "../../", "../../../", "../../../../", "../../../../../"};
+
+    for (const auto& p : paths) {
+        for (const auto& pre : kPrefixes) {
+            const std::string candidate = pre + p;
+            if (existsFile(candidate)) return candidate;
+        }
+    }
+    return {};
+}
+
+static const sf::Texture& fallbackMissingTexture() {
+    static sf::Texture tex;
+    static bool inited = false;
+    if (!inited) {
+        sf::Image img;
+        const unsigned sz = 64;
+        img.create(sz, sz);
+        for (unsigned y = 0; y < sz; ++y) {
+            for (unsigned x = 0; x < sz; ++x) {
+                const bool a = ((x / 8) % 2) == ((y / 8) % 2);
+                img.setPixel(x, y, a ? sf::Color(255, 0, 255) : sf::Color(0, 0, 0));
+            }
+        }
+        tex.loadFromImage(img);
+        inited = true;
+    }
+    return tex;
+}
+
+// Helper: resolve a City object for a given tribe (best-effort: find player by tribe, then use their first owned city id).
+static const City* resolveCityForTribe(const Game* game, TribeType tribe) {
+    if (!game) return nullptr;
+    const auto& pls = game->getPlayers();
+    for (const Player& pl : pls) {
+        if (pl.getTribeType() != tribe) continue;
+        const auto& owned = pl.getCities();
+        if (owned.empty()) return nullptr;
+        return game->getCity(owned.front());
+    }
+    return nullptr;
+}
+
+static void logMissingOnce(const std::vector<std::string>& paths) {
+    static std::unordered_set<std::string> logged;
+
+    const std::string logical = paths.empty() ? std::string("<empty>") : paths.front();
+
+    if (!logged.insert(logical).second) return;
+
+    std::cerr << "[TextureStore] Missing texture (logical): " << logical << "\n";
+    std::cerr << "  Tried (with parent prefixes):\n";
+
+    static const std::array<std::string, 6> kPrefixes = {"", "../", "../../", "../../../", "../../../../", "../../../../../"};
+
+    // Print only first few to keep logs readable.
+    int printed = 0;
+    const int kMaxPrinted = 24;
+    for (const auto& p : paths) {
+        for (const auto& pre : kPrefixes) {
+            if (printed >= kMaxPrinted) break;
+            std::cerr << "    - " << (pre + p) << "\n";
+            ++printed;
+        }
+        if (printed >= kMaxPrinted) break;
+    }
+    if (printed >= kMaxPrinted) {
+        std::cerr << "    ... (more omitted)\n";
+    }
+}
+
+
+// --- Tech tree click hitboxes (captured from last draw) ---
+static bool g_techHitValid = false;
+static sf::FloatRect g_techHitArea;
+static float g_techHitRadius = 0.f;
+static std::unordered_map<TechId, sf::Vector2f> g_techHitPos;
+
+// --- Movement click/overlay state (gameplay view only) ---
+static UnitId g_moveSelectedUnit = kNoUnit;
+static bool g_moveOverlayValid = false;
+static std::unordered_set<uint32_t> g_moveOverlaySet; // key: (y<<16)|x
+
+static inline uint32_t posKey(Pos p) {
+    return (uint32_t(p.y) << 16u) | uint32_t(p.x);
+}
+
+static void clearMoveOverlay() {
+    g_moveOverlayValid = false;
+    g_moveOverlaySet.clear();
+}
+
+static void rebuildMoveOverlay(const Game* game, UnitId uid) {
+    clearMoveOverlay();
+    if (!game) return;
+
+    const Unit* u = game->getUnit(uid);
+    if (!u) return;
+
+    // Only current player's units.
+    if (u->getOwnerId() != game->getCurrentPlayerId()) return;
+
+    const std::vector<Pos> tiles = MovementSystem::reachable(*game, uid);
+    g_moveOverlaySet.reserve(tiles.size() * 2u + 1u);
+    for (const Pos& p : tiles) {
+        g_moveOverlaySet.insert(posKey(p));
+    }
+    g_moveOverlayValid = true; // valid even if empty
+}
+
+// Fixed Polytopia-like tech layout (hand-tuned to match the screenshot).
+// Coordinates are in arbitrary "layout units" around the center (0,0). We scale them to fit.
+struct TechNormPos { float x; float y; };
+
+static void buildFixedTechTreeLayout(const std::vector<TechId>& techs,
+                                    std::unordered_map<TechId, sf::Vector2f>& pos,
+                                    const sf::Vector2f& center,
+                                    float w,
+                                    float h)
+{
+    static const std::unordered_map<TechId, TechNormPos> kNorm = {
+        // Top branch
+        {TechId::Riding,       { 0.00f, -1.05f}},
+        {TechId::Roads,        { 0.00f, -2.10f}},
+        {TechId::Trade,        { 0.00f, -3.15f}},
+        {TechId::FreeSpirit,   { 1.20f, -1.55f}},
+        {TechId::Chivalry,     { 2.55f, -2.55f}},
+
+        // Right branch
+        {TechId::Organization, { 1.55f,  0.20f}},
+        {TechId::Farming,      { 2.70f, -0.55f}},
+        {TechId::Construction, { 3.85f, -1.10f}},
+        {TechId::Strategy,     { 2.35f,  0.95f}},
+        {TechId::Diplomacy,    { 3.55f,  1.65f}},
+
+        // Bottom branch
+        {TechId::Climbing,     { 0.20f,  1.25f}},
+        {TechId::Mining,       { 1.35f,  2.05f}},
+        {TechId::Smithery,     { 2.55f,  2.95f}},
+        {TechId::Meditation,   {-0.55f,  2.55f}},
+        {TechId::Philosophy,   {-1.05f,  3.65f}},
+
+        // Left-bottom branch (Aquatism line)
+        {TechId::Fishing,      {-1.35f,  0.55f}},
+        {TechId::Ramming,      {-2.60f,  0.55f}},
+        {TechId::Aquatism,     {-3.75f,  0.55f}},
+        {TechId::Sailing,      {-1.75f,  1.65f}},
+        {TechId::Navigation,   {-2.15f,  2.75f}},
+
+        // Left-top branch
+        {TechId::Hunting,      {-1.15f, -0.70f}},
+        {TechId::Forestry,     {-1.65f, -1.85f}},
+        {TechId::Mathematics,  {-2.10f, -2.95f}},
+        {TechId::Archery,      {-2.35f, -0.65f}},
+        {TechId::Spiritualism, {-3.60f, -0.60f}},
+    };
+
+    // Compute bounds of known techs
+    float minX =  std::numeric_limits<float>::max();
+    float minY =  std::numeric_limits<float>::max();
+    float maxX = -std::numeric_limits<float>::max();
+    float maxY = -std::numeric_limits<float>::max();
+
+    std::vector<TechId> unknown;
+    unknown.reserve(techs.size());
+
+    int knownCount = 0;
+    for (TechId t : techs) {
+        auto it = kNorm.find(t);
+        if (it == kNorm.end()) { unknown.push_back(t); continue; }
+        ++knownCount;
+        minX = std::min(minX, it->second.x);
+        minY = std::min(minY, it->second.y);
+        maxX = std::max(maxX, it->second.x);
+        maxY = std::max(maxY, it->second.y);
+    }
+
+    if (knownCount == 0) {
+        minX = -1.f; maxX = 1.f;
+        minY = -1.f; maxY = 1.f;
+    }
+
+    // Fit into available rect with padding
+    const float pad = 0.06f;
+    const float availW = std::max(10.f, w * (1.f - 2.f * pad));
+    const float availH = std::max(10.f, h * (1.f - 2.f * pad));
+
+    const float spanX = std::max(1e-3f, maxX - minX);
+    const float spanY = std::max(1e-3f, maxY - minY);
+    const float scale = std::min(availW / spanX, availH / spanY);
+
+    pos.clear();
+    pos.reserve(techs.size() * 2 + 1);
+
+    for (TechId t : techs) {
+        auto it = kNorm.find(t);
+        if (it == kNorm.end()) continue;
+        const TechNormPos np = it->second;
+        pos[t] = {center.x + np.x * scale, center.y + np.y * scale};
+    }
+
+    // Unknown techs: place them on an outer ring so they remain clickable/visible.
+    if (!unknown.empty()) {
+        constexpr float PI = 3.14159265f;
+        const float ringR = std::min(availW, availH) * 0.50f;
+        for (size_t i = 0; i < unknown.size(); ++i) {
+            const float a = -PI * 0.5f + (2.f * PI) * (float(i) / float(unknown.size()));
+            pos[unknown[i]] = {center.x + std::cos(a) * ringR, center.y + std::sin(a) * ringR};
+        }
+    }
+}
+
+MapRenderer::MapRenderer(TextureStore& store) : tex(store) {}
+
+void MapRenderer::setGame(Game* g) { game = g; }
+
+void MapRenderer::setTileSizePx(int px) { tilePx = px; }
+void MapRenderer::setOrigin(sf::Vector2f o) { origin = o; }
+
+void MapRenderer::setZoom(float z) {
+    // Reasonable clamps
+    if (z < 0.35f) z = 0.35f;
+    if (z > 3.0f)  z = 3.0f;
+    zoom = z;
+}
+
+float MapRenderer::getZoom() const { return zoom; }
+
+bool MapRenderer::hasSelection() const { return selectedValid; }
+Pos MapRenderer::getSelectedPos() const { return selectedPos; }
+void MapRenderer::clearSelection() { selectedValid = false; }
+
+bool MapRenderer::consumeEndTurnClicked() {
+    const bool v = endTurnClicked;
+    endTurnClicked = false;
+    return v;
+}
+
+bool MapRenderer::consumeToggleOverviewRequested() {
+    const bool v = toggleOverviewRequested;
+    toggleOverviewRequested = false;
+    return v;
+}
+
+void MapRenderer::toggleOverview() {
+    showOverview = !showOverview;
+
+    // Clear movement selection/overlay when switching views.
+    g_moveSelectedUnit = kNoUnit;
+    clearMoveOverlay();
+}
+
+void MapRenderer::handleEvent(const sf::Event& ev) {
+    // Toggle universal view
+    if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Tab) {
+        toggleOverviewRequested = true;
+        return;
+    }
+    // --- Pan: LEFT mouse drag ---
+    // --- Pan (drag) + Select (click): LEFT mouse ---
+    if (ev.type == sf::Event::MouseButtonPressed) {
+        if (ev.mouseButton.button == sf::Mouse::Left) {
+            dragging = true;
+            dragMoved = false;
+            dragStart = sf::Vector2f(float(ev.mouseButton.x), float(ev.mouseButton.y));
+            dragLast  = dragStart;
+        }
+    } else if (ev.type == sf::Event::MouseButtonReleased) {
+        if (ev.mouseButton.button == sf::Mouse::Left) {
+            dragging = false;
+
+            // Treat as click if mouse didn't move much
+            const sf::Vector2f up(float(ev.mouseButton.x), float(ev.mouseButton.y));
+            const sf::Vector2f d = up - dragStart;
+            const float dist2 = d.x * d.x + d.y * d.y;
+
+            if (!dragMoved && dist2 < 25.f) {
+                // --- UI buttons (right panel) ---
+                // --- Tech tree click (buy tech) ---
+                // Tech nodes are rendered in the right panel during gameplay view.
+                // If the user clicks a node, try to purchase it for the current player.
+                if (!showOverview && game && g_techHitValid && g_techHitArea.contains(up)) {
+                    TechId hit = TechId::Count;
+                    const float r2 = g_techHitRadius * g_techHitRadius;
+                    for (const auto& kv : g_techHitPos) {
+                        const sf::Vector2f p = kv.second;
+                        const float dx = up.x - p.x;
+                        const float dy = up.y - p.y;
+                        if (dx * dx + dy * dy <= r2) {
+                            hit = kv.first;
+                            break;
+                        }
+                    }
+
+                    if (hit != TechId::Count) {
+                        auto curPid = game->getCurrentPlayerId();
+                        Player& curPl = game->getPlayer(curPid);
+                        if (TechSystem::canBuyTech(curPl, hit)) {
+                            TechSystem::buyTech(curPl, hit);
+                        }
+                        return; // consume click (avoid selecting a tile)
+                    }
+                }
+
+                if (!showOverview) {
+                    if (btnEndTurn.contains(up)) {
+                        endTurnClicked = true;
+                        return;
+                    }
+                    if (btnOverview.contains(up)) {
+                        toggleOverviewRequested = true;
+                        return;
+                    }
+                } else {
+                    if (btnBack.contains(up)) {
+                        toggleOverviewRequested = true;
+                        return;
+                    }
+                }
+
+                // --- Tile selection / movement (gameplay view) ---
+                Pos hit;
+                if (screenToTile(up, hit)) {
+                    selectedPos = hit;
+                    selectedValid = true;
+
+                    // Map View: keep normal selection, no movement overlay.
+                    if (showOverview) {
+                        g_moveSelectedUnit = kNoUnit;
+                        clearMoveOverlay();
+                        return;
+                    }
+
+                    if (game) {
+                        const Map& m = game->getMap();
+                        const UnitId onTile = m.unitOn(hit);
+
+                        // 1) Click on current player's unit => show reachable tiles
+                        if (onTile != Map::kNoUnit) {
+                            const Unit* uu = game->getUnit(onTile);
+                            if (uu && uu->getOwnerId() == game->getCurrentPlayerId()) {
+                                // Toggle off if same unit clicked again
+                                if (g_moveSelectedUnit == onTile && g_moveOverlayValid) {
+                                    g_moveSelectedUnit = kNoUnit;
+                                    clearMoveOverlay();
+                                } else {
+                                    g_moveSelectedUnit = onTile;
+                                    rebuildMoveOverlay(game, g_moveSelectedUnit);
+                                }
+                                return;
+                            }
+                        }
+
+                        // 2) Click on a highlighted reachable tile => move
+                        if (g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
+                            if (g_moveOverlaySet.find(posKey(hit)) != g_moveOverlaySet.end()) {
+                                const bool ok = game->moveUnit(g_moveSelectedUnit, hit);
+                                // After a move we clear the overlay (simple UX). Re-click unit to move again.
+                                g_moveSelectedUnit = kNoUnit;
+                                clearMoveOverlay();
+                                (void)ok;
+                                return;
+                            }
+                        }
+
+                        // 3) Otherwise clear overlay
+                        g_moveSelectedUnit = kNoUnit;
+                        clearMoveOverlay();
+                    }
+                } else {
+                    selectedValid = false;
+                    g_moveSelectedUnit = kNoUnit;
+                    clearMoveOverlay();
+                }
+            }
+        }
+    } else if (ev.type == sf::Event::MouseMoved) {
+        if (dragging) {
+            const sf::Vector2f cur(float(ev.mouseMove.x), float(ev.mouseMove.y));
+            if (std::abs(cur.x - dragStart.x) > 3.f || std::abs(cur.y - dragStart.y) > 3.f)
+                dragMoved = true;
+
+            const sf::Vector2f d = cur - dragLast;
+            origin += d;
+            dragLast = cur;
+        }
+    }
+    // --- Zoom / pan by wheel ---
+    if (ev.type != sf::Event::MouseWheelScrolled) return;
+
+    const float delta = ev.mouseWheelScroll.delta;
+    const sf::Vector2f mouse(float(ev.mouseWheelScroll.x), float(ev.mouseWheelScroll.y));
+
+    const bool shift = sf::Keyboard::isKeyPressed(sf::Keyboard::LShift) ||
+                       sf::Keyboard::isKeyPressed(sf::Keyboard::RShift);
+
+    // SHIFT + wheel => pan (trackpads may provide horizontal wheel)
+    if (shift) {
+        const float panStep = 85.f; // pixels per wheel step (trochę większe niż było)
+        if (ev.mouseWheelScroll.wheel == sf::Mouse::VerticalWheel) {
+            origin.y += -delta * panStep;
+        } else if (ev.mouseWheelScroll.wheel == sf::Mouse::HorizontalWheel) {
+            origin.x += -delta * panStep;
+        }
+        return;
+    }
+
+    // Wheel => zoom (smooth exponential scale), cursor-anchored even with auto-centering
+    // We must account for the auto-centering shift that changes with zoom.
+    if (!game || lastRtSize.x == 0u || lastRtSize.y == 0u) {
+        // Fallback before first draw: best-effort around cursor
+        const float oldZoom = zoom;
+        const float factor = std::exp(delta * 0.12f);
+        setZoom(zoom * factor);
+        const float applied = (oldZoom == 0.f) ? 1.f : (zoom / oldZoom);
+        origin = mouse + (origin - mouse) * applied;
+        return;
+    }
+
+    const float oldZoom = zoom;
+    const sf::Vector2f cs0 = computeCenterShift(oldZoom, lastRtSize);
+
+    // World point under cursor in the pre-origin, pre-centerShift coordinate system
+    const sf::Vector2f world = mouse - (cs0 + origin);
+
+    const float factor = std::exp(delta * 0.12f);
+    setZoom(zoom * factor);
+
+    const sf::Vector2f cs1 = computeCenterShift(zoom, lastRtSize);
+
+    // Adjust origin so the same world point stays under the cursor
+    origin = mouse - cs1 - world;
+}
+
+sf::Vector2f MapRenderer::computeCenterShift(float z, const sf::Vector2u& rtSz) {
+    sf::Vector2f shift{0.f, 0.f};
+    if (!game) return shift;
+
+    const Map& map = game->getMap();
+
+    const float tileSize = float(tilePx) * z;
+
+    const sf::Texture& refGround = pickFirstExisting(tileCandidates(TribeType::XinXi, "ground"));
+    const auto refSz = refGround.getSize();
+    const float refW = refSz.x ? float(refSz.x) : 1.f;
+    const float refH = refSz.y ? float(refSz.y) : 1.f;
+
+    const float scaledTileH = refH * tileSize / refW;
+    const float yStep = scaledTileH * (606.f / 1908.f);
+
+    float minX = 1e30f, minY = 1e30f;
+    float maxX = -1e30f, maxY = -1e30f;
+
+    for (int r = 0; r < map.getHeight(); ++r) {
+        for (int c = 0; c < map.getWidth(); ++c) {
+            const float xRaw = -tileSize / 2.f + (float(c - r) * tileSize / 2.f);
+            const float yRaw = (float(c + r) * yStep);
+
+            minX = std::min(minX, xRaw);
+            minY = std::min(minY, yRaw);
+            maxX = std::max(maxX, xRaw + tileSize);
+            maxY = std::max(maxY, yRaw + scaledTileH);
+        }
+    }
+
+    const float contentW = std::max(1.f, maxX - minX);
+    const float contentH = std::max(1.f, maxY - minY);
+
+    const float centerShiftX = (float(rtSz.x) - contentW) * 0.5f - minX;
+    const float centerShiftY = (float(rtSz.y) - contentH) * 0.5f - minY;
+
+    shift = {centerShiftX, centerShiftY};
+    return shift;
+}
+
+bool MapRenderer::ensureUIFontLoaded() const {
+    if (uiFontLoaded) return true;
+
+    // SFML has no default font. On macOS we load a system font.
+    const char* macFonts[] = {
+        "/System/Library/Fonts/SFNS.ttf", // San Francisco
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Helvetica.ttf"
+    };
+
+    for (const char* p : macFonts) {
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::path(p), ec)) {
+            if (uiFont.loadFromFile(p)) {
+                uiFontLoaded = true;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+
+bool MapRenderer::pointInTileDiamond(const sf::Vector2f& p, float x, float y, float tileSize, float yStep) const {
+    // The visible isometric cell is a diamond of width = tileSize and height = 2*yStep.
+    // (Textures may be taller due to transparent margins.)
+    const float cellH = 2.f * yStep;
+
+    const float cx = x + tileSize * 0.5f;
+    const float cy = y + cellH * 0.5f;
+
+    const float dx = std::abs(p.x - cx) / (tileSize * 0.5f);
+    const float dy = std::abs(p.y - cy) / (cellH * 0.5f);
+    return (dx + dy) <= 1.f;
+}
+
+bool MapRenderer::screenToTile(const sf::Vector2f& screen, Pos& out) {
+    if (!game) return false;
+    const Map& map = game->getMap();
+    if (lastRtSize.x == 0u || lastRtSize.y == 0u) return false;
+
+    const float tileSize = float(tilePx) * zoom;
+
+    const sf::Texture& refGround = pickFirstExisting(tileCandidates(TribeType::XinXi, "ground"));
+    const auto refSz = refGround.getSize();
+    const float refW = refSz.x ? float(refSz.x) : 1.f;
+    const float refH = refSz.y ? float(refSz.y) : 1.f;
+    const float scaledTileH = refH * tileSize / refW;
+    const float yStep = scaledTileH * (606.f / 1908.f);
+
+    const sf::Vector2f cs = computeCenterShift(zoom, lastRtSize);
+    const sf::Vector2f baseShift{cs.x + origin.x, cs.y + origin.y};
+
+    for (int row = 0; row < map.getHeight(); ++row) {
+        for (int column = 0; column < map.getWidth(); ++column) {
+            const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
+            const float y = baseShift.y + (float(column + row) * yStep);
+
+            if (pointInTileDiamond(screen, x, y, tileSize, yStep)) {
+                out = Pos{column, row};
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+const char* MapRenderer::tribeDisplayName(TribeType t) {
+    switch (t) {
+        case TribeType::XinXi:    return "XinXi";
+        case TribeType::Imperius: return "Imperius";
+        case TribeType::Bardur:   return "Bardur";
+        case TribeType::Oumaji:   return "Oumaji";
+        case TribeType::Kickoo:   return "Kickoo";
+        case TribeType::Hoodrick: return "Hoodrick";
+        case TribeType::Luxidoor: return "Luxidoor";
+        case TribeType::Vengir:   return "Vengir";
+        case TribeType::Zebasi:   return "Zebasi";
+        case TribeType::AiMo:     return "AiMo";
+        case TribeType::Quetzali: return "Quetzali";
+        case TribeType::Yadakk:   return "Yadakk";
+        case TribeType::Aquarion: return "Aquarion";
+        case TribeType::Elyrion:  return "Elyrion";
+        case TribeType::Polaris:  return "Polaris";
+        case TribeType::Cymanti:  return "Cymanti";
+        default: return "Unknown";
+    }
+}
+
+const char* MapRenderer::baseTerrainName(BaseTerrainEnum t) {
+    switch (t) {
+        case BaseTerrainEnum::Land:     return "Land";
+        case BaseTerrainEnum::Mountain: return "Mountain";
+        case BaseTerrainEnum::Water:    return "Water";
+        case BaseTerrainEnum::Ocean:    return "Ocean";
+        default: return "?";
+    }
+}
+
+const char* MapRenderer::settlementName(SettlementTypeEnum t) {
+    switch (t) {
+        case SettlementTypeEnum::None:     return "None";
+        case SettlementTypeEnum::Village:  return "Village";
+        case SettlementTypeEnum::City:     return "City";
+        case SettlementTypeEnum::Ruin:     return "Ruin";
+        case SettlementTypeEnum::Starfish: return "Starfish";
+        default: return "?";
+    }
+}
+
+
+static const char* unitTypeToFile(UnitType t) {
+    switch (t) {
+        // --- Core land ---
+        case UnitType::Warrior:    return "warrior";
+        case UnitType::Archer:     return "archer";
+        case UnitType::Defender:   return "defender";
+        case UnitType::Rider:      return "rider";
+        case UnitType::MindBender: return "mind_bender";
+        case UnitType::Swordsman:  return "swordsman";
+        case UnitType::Catapult:   return "catapult";
+        case UnitType::Cloak:      return "cloak";
+        case UnitType::Knight:     return "knight";
+        case UnitType::Giant:      return "giant";
+        case UnitType::Bunny:      return "bunny";
+
+        // --- Naval (your pack uses ship variants) ---
+        case UnitType::Raft:       return "boat";
+        case UnitType::Scout:      return "scout";
+        case UnitType::Rammer:     return "rammership";
+        case UnitType::Bomber:     return "bombership";
+        case UnitType::Dinghy:     return "transportship";
+        case UnitType::Pirate:     return "pirate";
+        case UnitType::Juggernaut: return "juggernaut";
+
+        // --- Aquarion ---
+        case UnitType::Mermaid:            return "mermaid_warrior";
+        case UnitType::AquaticAmphibian:   return "amphibian";
+        case UnitType::MermaidArcher:      return "mermaid_archer";
+        case UnitType::MermaidDefender:    return "mermaid_defender";
+        case UnitType::Swordsmaid:         return "mermaid_swordsman";
+        case UnitType::Siren:              return "siren";
+        case UnitType::Shark:              return "shark";
+        case UnitType::YellyBelly:         return "jelly";
+        case UnitType::TridentionAq:       return "tridention";
+        case UnitType::CrabAq:             return "crab";
+
+        // --- Elyrion ---
+        case UnitType::Polytaur:   return "polytaur";
+        case UnitType::DragonEgg:  return "dragon_egg";
+        case UnitType::BabyDragon: return "baby_dragon";
+        case UnitType::FireDragon: return "fire_dragon";
+
+        // --- Polaris ---
+        case UnitType::IceArcher:   return "ice_archer";
+        case UnitType::BattleSled:  return "battle_sled";
+        case UnitType::Mooni:       return "mooni";
+        case UnitType::IceFortress: return "ice_fortress";
+        case UnitType::Gaami:       return "gaami";
+
+        // --- Cymanti ---
+        case UnitType::Hexapod:      return "hexapod";
+        case UnitType::Kiton:        return "kiton";
+        case UnitType::Phychi:       return "phychi";
+        case UnitType::Shaman:       return "shaman";
+        case UnitType::Raychi:       return "raychi";
+        case UnitType::Exida:        return "exida";
+        case UnitType::Doomux:       return "doomux";
+        case UnitType::MothC:        return "moth";
+        case UnitType::LarvaC:       return "larva";
+        case UnitType::InsectEgg:    return "bug_egg";
+        case UnitType::Boomchi:      return "boomchi";
+        case UnitType::LivingIsland: return "island";
+
+        // --- Fallbacks ---
+        case UnitType::GiantSuper:   return "giant";
+        default:                     return "warrior";
+    }
+}
+
+static const char* unitTypeName(UnitType t) {
+    switch (t) {
+        case UnitType::Warrior:    return "Warrior";
+        case UnitType::Archer:     return "Archer";
+        case UnitType::Defender:   return "Defender";
+        case UnitType::Rider:      return "Rider";
+        case UnitType::MindBender: return "MindBender";
+        case UnitType::Swordsman:  return "Swordsman";
+        case UnitType::Catapult:   return "Catapult";
+        case UnitType::Cloak:      return "Cloak";
+        case UnitType::Knight:     return "Knight";
+        case UnitType::Giant:      return "Giant";
+        default:                   return "Unit";
+    }
+}
+
+
+std::vector<std::string> MapRenderer::tribeFolderCandidates(TribeType t) const {
+    // Map generator JS expects folders like: "Xin-xi", "Ai-mo" etc.
+    // On some local copies people use underscores or no separator, so we try a few candidates.
+    switch (t) {
+        case TribeType::XinXi:    return {"Xin-xi", "Xin_xi", "XinXi"};
+        case TribeType::AiMo:     return {"Ai-mo", "Ai_mo", "AiMo"};
+        default: break;
+    }
+
+    switch (t) {
+        case TribeType::Imperius: return {"Imperius"};
+        case TribeType::Bardur:   return {"Bardur"};
+        case TribeType::Oumaji:   return {"Oumaji"};
+        case TribeType::Kickoo:   return {"Kickoo"};
+        case TribeType::Hoodrick: return {"Hoodrick"};
+        case TribeType::Luxidoor: return {"Luxidoor"};
+        case TribeType::Vengir:   return {"Vengir"};
+        case TribeType::Zebasi:   return {"Zebasi"};
+        case TribeType::Quetzali: return {"Quetzali"};
+        case TribeType::Yadakk:   return {"Yadakk"};
+        case TribeType::Aquarion: return {"Aquarion"};
+        case TribeType::Elyrion:  return {"Elyrion"};
+        case TribeType::Polaris:  return {"Polaris"};
+        case TribeType::Cymanti:  return {"Cymanti"};
+        default:
+            // fallback to something valid so we still render
+            return {"Imperius"};
+    }
+}
+
+std::vector<std::string> MapRenderer::tileCandidates(TribeType tribe, const std::string& kind) const {
+    // New pack layout:
+    //   assets/Polytopia_game_engine_textures/tribes/<Tribe>/
+    //     tile.png (ground), forest.png, mountain.png, fruit.png, head.png, animal.png
+    // Older layouts are kept as fallbacks.
+
+    std::vector<std::string> out;
+
+    // Map logical "kind" used by the renderer to actual filenames in the new pack.
+    // Renderer uses: ground/forest/mountain/fruit/head (and sometimes others).
+    std::vector<std::string> fileNames;
+    if (kind == "ground") {
+        // Our pack uses tile.png as the base ground tile.
+        fileNames = {"tile", "ground"};
+    } else {
+        fileNames = {kind};
+    }
+
+    const auto folders = tribeFolderCandidates(tribe);
+    for (const auto& f : folders) {
+        // --- New layout (preferred) ---
+        for (const auto& fn : fileNames) {
+            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/" + fn + ".png");
+            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/" + fn + ".PNG");
+        }
+
+        // --- Older layouts (fallback) ---
+        // Primary (JS)
+        out.push_back("assets/" + f + "/" + f + " " + kind + ".png");
+        out.push_back("assets/" + f + "/" + f + " " + kind + ".PNG");
+
+        // Your old layout
+        out.push_back("assets/textures/" + f + "/" + f + " " + kind + ".png");
+        out.push_back("assets/textures/" + f + "/" + f + " " + kind + ".PNG");
+
+        // Extra fallbacks (some packs omit the tribe prefix)
+        out.push_back("assets/" + f + "/" + kind + ".png");
+        out.push_back("assets/" + f + "/" + kind + ".PNG");
+        out.push_back("assets/textures/" + f + "/" + kind + ".png");
+        out.push_back("assets/textures/" + f + "/" + kind + ".PNG");
+    }
+
+    return out;
+}
+
+std::vector<std::string> MapRenderer::globalCandidates(const std::string& name) const {
+    // New pack layout provides globals under:
+    //   assets/Polytopia_game_engine_textures/common/
+    //   assets/Polytopia_game_engine_textures/misc/
+    //   assets/Polytopia_game_engine_textures/water/
+    // We keep older fallbacks too.
+
+    std::vector<std::string> out;
+
+    auto addBothCases = [&](const std::string& p) {
+        out.push_back(p + ".png");
+        out.push_back(p + ".PNG");
+    };
+
+    const std::string root = "assets/Polytopia_game_engine_textures/";
+
+    // New layout (preferred)
+    addBothCases(root + "common/" + name);
+    addBothCases(root + "misc/" + name);
+    addBothCases(root + "water/" + name);
+
+    // Common capitalization variants (e.g. Village.png)
+    if (name == "village") {
+        addBothCases(root + "common/Village");
+        addBothCases(root + "misc/Village");
+        // old packs sometimes used capitalized files too
+        addBothCases("assets/Village");
+        addBothCases("assets/textures/Village");
+    }
+
+    // Older layouts (fallback)
+    addBothCases("assets/" + name);
+    addBothCases("assets/textures/" + name);
+
+    return out;
+}
+
+const sf::Texture& MapRenderer::pickFirstExisting(const std::vector<std::string>& paths)
+{
+    const std::string found = firstExistingWithParents(paths);
+    if (!found.empty()) return tex.get(found);
+
+    // Nothing exists on disk: log what we wanted and what we tried (once per logical key),
+    // then return an in-memory checkerboard so we don't spam file-load attempts.
+    logMissingOnce(paths);
+    return fallbackMissingTexture();
+}
+
+void MapRenderer::drawSprite(sf::RenderTarget& rt, const sf::Texture& t, float x, float y, float size) {
+    sf::Sprite s;
+    s.setTexture(t, true);
+
+    const auto ts = t.getSize();
+    if (ts.x == 0 || ts.y == 0) return;
+
+    // match JS: drawImage(img, x, y, tile_size, img.height * tile_size / img.width)
+    const float scale = size / float(ts.x);
+    s.setScale(scale, scale);
+    s.setPosition(x, y);
+
+    rt.draw(s);
+}
+
+void MapRenderer::draw(sf::RenderTarget& rt) {
+    if (!game) return;
+
+    const Map& map = game->getMap();
+
+    // In gameplay we show a right-side panel; in overview we want a clean full-map view.
+    const sf::Vector2u fullRt = rt.getSize();
+    const float panelW = 400.f;
+
+    sf::Vector2u mapRt = fullRt;
+    if (mapRt.x > static_cast<unsigned>(panelW)) {
+        mapRt.x = static_cast<unsigned>(float(mapRt.x) - panelW);
+    }
+
+    // Used by zoom anchoring + screenToTile
+    lastRtSize = mapRt;
+
+    // JS uses a single "tile_size".
+    const float tileSize = float(tilePx) * zoom;
+
+
+    // JS computes Y step using the Xin-xi ground texture dimensions and a hard-coded ratio.
+    // We do the same (fallback is still fine if textures are missing).
+    const sf::Texture& refGround = pickFirstExisting(tileCandidates(TribeType::XinXi, "ground"));
+    const auto refSz = refGround.getSize();
+    const float refW = refSz.x ? float(refSz.x) : 1.f;
+    const float refH = refSz.y ? float(refSz.y) : 1.f;
+    const float scaledTileH = refH * tileSize / refW;
+    const float yStep = scaledTileH * (606.f / 1908.f);
+
+    // --- Auto-centering ---
+    // Compute the bounding box of the isometric grid in "raw" coordinates (without origin),
+    // then shift it so it's centered in the render target. `origin` is treated as a user pan offset.
+    float minX = 1e30f, minY = 1e30f;
+    float maxX = -1e30f, maxY = -1e30f;
+
+    for (int r = 0; r < map.getHeight(); ++r) {
+        for (int c = 0; c < map.getWidth(); ++c) {
+            const float xRaw = -tileSize / 2.f + (float(c - r) * tileSize / 2.f);
+            const float yRaw = (float(c + r) * yStep);
+
+            // Base tile bounds (good approximation for all tiles)
+            minX = std::min(minX, xRaw);
+            minY = std::min(minY, yRaw );
+            maxX = std::max(maxX, xRaw + tileSize);
+            maxY = std::max(maxY, yRaw + scaledTileH);
+        }
+    }
+
+    const sf::Vector2u rtSz = mapRt;
+    const float contentW = std::max(1.f, maxX - minX);
+    const float contentH = std::max(1.f, maxY - minY);
+
+    const float centerShiftX = (float(rtSz.x) - contentW) * 0.5f - minX;
+    const float centerShiftY = (float(rtSz.y) - contentH) * 0.5f - minY;
+
+    const sf::Vector2f baseShift{centerShiftX + origin.x, centerShiftY + origin.y};
+
+    // --- Right-side info panel background ---
+    const float panelPad = 12.f;
+    const sf::Vector2u rtSzPanel = rt.getSize();
+    const sf::FloatRect panelRect(float(rtSzPanel.x) - panelW, 0.f, panelW, float(rtSzPanel.y));
+
+    {
+        sf::RectangleShape panelBg;
+        panelBg.setPosition(panelRect.left, panelRect.top);
+        panelBg.setSize({panelRect.width, panelRect.height});
+        panelBg.setFillColor(sf::Color(20, 20, 20, 190));
+        panelBg.setOutlineThickness(2.f);
+        panelBg.setOutlineColor(sf::Color(70, 70, 70, 220));
+        rt.draw(panelBg);
+    }
+
+
+    // --- Units lookup (by tile pos) ---
+    std::unordered_map<uint32_t, std::vector<const Unit*>> unitsByPos;
+    {
+        const auto& units = game->getUnits();
+        unitsByPos.reserve(units.size() * 2 + 1);
+        for (const Unit& u : units) {
+            const Pos up = u.getPos();
+            if (up.x < 0 || up.y < 0 || up.x >= map.getWidth() || up.y >= map.getHeight()) continue;
+            const uint32_t key = (uint32_t(up.y) << 16u) | uint32_t(up.x);
+            unitsByPos[key].push_back(&u);
+        }
+    }
+
+    // Unit texture candidates for the new pack layout:
+    // assets/Polytopia_game_engine_textures/tribes/<Tribe>/units/<unit>.png
+    auto unitTexture = [&](TribeType tribe, UnitType ut) -> const sf::Texture& {
+        std::vector<std::string> out;
+        const std::string unitFile = unitTypeToFile(ut);
+        for (const auto& f : tribeFolderCandidates(tribe)) {
+            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".png");
+            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".PNG");
+
+            // A few common alias fallbacks (optional)
+            if (ut == UnitType::MindBender) {
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.PNG");
+            }
+        }
+        return pickFirstExisting(out);
+    };
+
+    // Helpers identical to JS naming.
+    auto isLandLike = [&](const Tile& t) {
+        const auto bt = t.getBaseTerrain();
+        return bt == BaseTerrainEnum::Land || bt == BaseTerrainEnum::Mountain;
+    };
+
+    for (int row = 0; row < map.getHeight(); ++row) {
+        for (int column = 0; column < map.getWidth(); ++column) {
+            const Pos p{column, row};
+            const Tile& tile = map.at(p);
+
+            // JS isometric projection (raw), then apply our centering shift.
+            const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
+            const float y = baseShift.y + (float(column + row) * yStep);
+
+            const TribeType tribe = tile.getTribe();
+
+            // Convert engine tile state to JS-like "type".
+            const auto res = tile.getResource();
+            const auto resU = static_cast<uint16_t>(res);
+            auto hasRes = [&](ResourcesEnum r) {
+                return (resU & static_cast<uint16_t>(r)) != 0;
+            };
+
+            std::string type;
+            switch (tile.getBaseTerrain()) {
+                case BaseTerrainEnum::Ocean: type = "ocean"; break;
+                case BaseTerrainEnum::Water: type = "water"; break;
+                case BaseTerrainEnum::Mountain: type = "mountain"; break;
+                case BaseTerrainEnum::Land:
+                default:
+                    type = hasRes(ResourcesEnum::Forest) ? "forest" : "ground";
+                    break;
+            }
+
+            // --- draw base (mirrors JS) ---
+            if (type == "forest" || type == "mountain") {
+                // JS: draw ground first, then overlay forest/mountain with lowering.
+                {
+                    const sf::Texture& tGround = pickFirstExisting(tileCandidates(tribe, "ground"));
+                    drawSprite(rt, tGround, x, y, tileSize);
+                }
+
+                const sf::Texture& tOver = pickFirstExisting(tileCandidates(tribe, type));
+                const auto oSz = tOver.getSize();
+                const float oW = oSz.x ? float(oSz.x) : 1.f;
+                const float oH = oSz.y ? float(oSz.y) : 1.f;
+
+                const bool isKickoo = (tribe == TribeType::Kickoo);
+
+                // Overlay vertical placement:
+                // - smaller lowering => drawn higher
+                // - larger lowering  => drawn lower
+                float lowering;
+                if (type == "mountain") {
+                    // Mountains sit a bit lower for better grounding
+                    lowering = isKickoo ? 0.92f : 0.92f;
+                } else {
+                    // Forests slightly higher than before
+                    lowering = 0.6f;
+                }
+
+                // JS:
+                // y + lowering*tile_size - tile_size * overlay.height / overlay.width
+                const float y2 = y + lowering * tileSize - (tileSize * (oH / oW));
+                drawSprite(rt, tOver, x, y2, tileSize);
+            } else if (type == "water" || type == "ocean") {
+                // Water/ocean should be rendered slightly lower than land tiles
+                const sf::Texture& t = pickFirstExisting(globalCandidates(type));
+                drawSprite(rt, t, x, y , tileSize);
+            } else {
+                // ground
+                const sf::Texture& t = pickFirstExisting(tileCandidates(tribe, type));
+                drawSprite(rt, t, x, y, tileSize);
+            }
+
+            // --- movement targets overlay (gameplay view only) ---
+            if (!showOverview && g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
+                const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
+                if (g_moveOverlaySet.find(key) != g_moveOverlaySet.end()) {
+                    // Resolves to: assets/Polytopia_game_engine_textures/misc/moveTarget.png
+                    const sf::Texture& mt = pickFirstExisting(globalCandidates("moveTarget"));
+                    const float s = tileSize * 0.78f;
+                    drawSprite(rt, mt,
+                               x + (tileSize - s) * 0.5f,
+                               y + (tileSize - s) * 0.5f - 0.10f * tileSize,
+                               s);
+                }
+            }
+
+            // --- draw "above" layer (resources/settlements) ---
+            // We try to mirror JS priorities:
+            // capital head > village > game/fruit (tribe) > crop/fish/metal (global) > ruin > starfish
+
+            // capital: in JS it's explicit `above === 'capital'`.
+            // In our engine we don't have a separate flag in this renderer, so we treat City as capital.
+            const bool isCapital = (tile.getSettlementType() == SettlementTypeEnum::City);
+            const bool isVillage = (tile.getSettlementType() == SettlementTypeEnum::Village);
+            const bool isRuin = (tile.getSettlementType() == SettlementTypeEnum::Ruin);
+
+            if (isCapital) {
+                int cityLevel = 1;
+                if (const City* cObj = resolveCityForTribe(game, tribe)) {
+                    cityLevel = std::max(1, int(cObj->getLevel()));
+                }
+
+                std::vector<std::string> cityPaths;
+                for (const auto& f : tribeFolderCandidates(tribe)) {
+                    // New layout: tribes/<Tribe>/cities/city_<level>.png
+                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".png");
+                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".PNG");
+
+                    // Fallback to level 1 if a specific level sprite is missing
+                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_1.png");
+                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_1.PNG");
+
+                    // Older layout fallback
+                    cityPaths.push_back("assets/textures/" + f + "/City/" + f + " city " + std::to_string(cityLevel) + ".png");
+                    cityPaths.push_back("assets/textures/" + f + "/City/" + f + " city " + std::to_string(cityLevel) + ".PNG");
+                    cityPaths.push_back("assets/textures/" + f + "/City/" + f + " city 1.png");
+                    cityPaths.push_back("assets/textures/" + f + "/City/" + f + " city 1.PNG");
+                }
+
+                const sf::Texture& city = pickFirstExisting(cityPaths);
+                // Lift cities slightly more
+                drawSprite(rt, city, x, y - 0.58f * tileSize, tileSize);
+            } else if (isVillage) {
+                const sf::Texture& t = pickFirstExisting(globalCandidates("village"));
+                const float s = tileSize * 0.85f;
+                // Slightly smaller + a bit higher
+                drawSprite(rt, t,
+                           x + (tileSize - s) * 0.5f,
+                           y + (tileSize - s) * 0.5f - 0.24f * tileSize,
+                           s);
+            } else if (hasRes(ResourcesEnum::Fruit)) {
+                // Draw fruit slightly smaller and lifted
+                const sf::Texture& t = pickFirstExisting(tileCandidates(tribe, "fruit"));
+                const float s = tileSize * 0.8f;
+                drawSprite(rt, t,
+                           x + (tileSize - s) * 0.5f,
+                           y + (tileSize - s) * 0.5f - 0.07f * tileSize,
+                           s);
+            } else if (hasRes(ResourcesEnum::Crops)) {
+                const sf::Texture& t = pickFirstExisting(globalCandidates("crop"));
+                drawSprite(rt, t, x, y, tileSize);
+            } else if (hasRes(ResourcesEnum::Fish)) {
+                const sf::Texture& t = pickFirstExisting(globalCandidates("fish"));
+                drawSprite(rt, t, x, y, tileSize);
+            } else if (hasRes(ResourcesEnum::Metal)) {
+                // Draw metal slightly smaller and lifted
+                const sf::Texture& t = pickFirstExisting(globalCandidates("metal"));
+                const float s = tileSize * 0.5f;
+                drawSprite(rt, t,
+                           x + (tileSize - s) * 0.5f,
+                           y + (tileSize - s) * 0.5f - 0.12f * tileSize,
+                           s);
+            } else if (isRuin) {
+                const sf::Texture& t = pickFirstExisting(globalCandidates("ruin"));
+                drawSprite(rt, t, x, y, tileSize);
+            }
+
+            // Replace whale with starfish (as you requested).
+            if (tile.getSettlementType() == SettlementTypeEnum::Starfish) {                // Draw starfish slightly smaller and lifted
+                const sf::Texture& t = pickFirstExisting(globalCandidates("starfish"));
+                const float s = tileSize * 0.75f;
+                drawSprite(rt, t,
+                           x + (tileSize - s) * 0.5f,
+                           y + (tileSize - s) * 0.5f - 0.06f * tileSize,
+                           s);
+            }
+
+            // --- draw units on this tile (sprite from tribe pack) ---
+            {
+                const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
+                auto itU = unitsByPos.find(key);
+                if (itU != unitsByPos.end() && !itU->second.empty()) {
+                    int idx = 0;
+                    for (const Unit* u : itU->second) {
+                        // Unit texture should depend on the owning player's tribe, not the tile's tribe.
+                        TribeType tribeSource = tribe;
+                        if (game) {
+                            const PlayerId owner = u->getOwnerId();
+                            // Best-effort: Game::getPlayer(owner) should exist for valid units.
+                            tribeSource = game->getPlayer(owner).getTribeType();
+                        }
+
+                        const sf::Texture& utex = unitTexture(tribeSource, u->getType());
+
+                        // Units are drawn above the tile; scale is based on tileSize (width).
+                        // Make them a bit bigger for readability.
+                        const float s = tileSize * 1.5f;
+                        const float ux = x + (tileSize - s) * 0.5f;
+                        // Lift units a bit higher so they sit nicer on the isometric tile
+                        const float uy = y - 0.4f * tileSize - float(idx) * 10.f;
+                        drawSprite(rt, utex, ux, uy, s);
+
+                        // HP bar
+                        const int hp = std::max(0, u->getHealth());
+                        const int mhp = std::max(1, u->getMaxHealth());
+                        const float frac = std::min(1.f, float(hp) / float(mhp));
+
+                        sf::RectangleShape barBg({s * 0.60f, 6.f});
+                        barBg.setPosition(ux + s * 0.20f, uy + s * 0.92f);
+                        barBg.setFillColor(sf::Color(0, 0, 0, 170));
+                        rt.draw(barBg);
+
+                        sf::RectangleShape barFg({s * 0.60f * frac, 6.f});
+                        barFg.setPosition(ux + s * 0.20f, uy + s * 0.92f);
+                        barFg.setFillColor(sf::Color(240, 240, 240, 235));
+                        rt.draw(barFg);
+
+                        ++idx;
+                        if (idx >= 2) break; // avoid clutter
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Draw selection highlight (on top) ---
+    // --- Draw selection highlight (on top) ---
+    if (selectedValid) {
+        const int row = selectedPos.y;
+        const int column = selectedPos.x;
+
+        const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
+        const float y = baseShift.y + (float(column + row) * yStep);
+
+        // Match the visible grid cell (diamond height is 2*yStep).
+        const sf::Vector2f top  {x + tileSize * 0.5f, y};
+        const sf::Vector2f right{x + tileSize,        y + yStep};
+        const sf::Vector2f bot  {x + tileSize * 0.5f, y + 2.f * yStep};
+        const sf::Vector2f left {x,                   y + yStep};
+
+        // Fill (translucent)
+        sf::VertexArray fill(sf::TriangleFan, 4);
+        fill[0].position = top;
+        fill[1].position = right;
+        fill[2].position = bot;
+        fill[3].position = left;
+        for (std::size_t i = 0; i < 4; ++i) fill[i].color = sf::Color(255, 220, 80, 70);
+        rt.draw(fill);
+
+        // Outline
+        sf::VertexArray outline(sf::LineStrip, 5);
+        outline[0].position = top;
+        outline[1].position = right;
+        outline[2].position = bot;
+        outline[3].position = left;
+        outline[4].position = top;
+        for (std::size_t i = 0; i < 5; ++i) outline[i].color = sf::Color(255, 220, 80, 245);
+        rt.draw(outline);
+
+        // “Thicker” feel (second outline slightly offset)
+        sf::VertexArray outline2(sf::LineStrip, 5);
+        outline2[0].position = top + sf::Vector2f(1.f, 1.f);
+        outline2[1].position = right + sf::Vector2f(1.f, 1.f);
+        outline2[2].position = bot + sf::Vector2f(1.f, 1.f);
+        outline2[3].position = left + sf::Vector2f(1.f, 1.f);
+        outline2[4].position = top + sf::Vector2f(1.f, 1.f);
+        for (std::size_t i = 0; i < 5; ++i) outline2[i].color = sf::Color(255, 220, 80, 140);
+        rt.draw(outline2);
+    }
+
+    if (!showOverview) {
+        // Default: no tech hitboxes unless we successfully render the tech tree below.
+        g_techHitValid = false;
+        g_techHitPos.clear();
+        // ================= FONTLESS UI =================
+        const bool hasFont = ensureUIFontLoaded();
+        // Buttons area (bottom of right panel)
+        const float bw = panelRect.width - 2.f * panelPad;
+        const float bh = 40.f;
+        const float baseY = panelRect.top + panelRect.height - panelPad - (bh * 2.f + 10.f);
+
+        auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
+            if (!hasFont) return;
+            sf::Text t;
+            t.setFont(uiFont);
+            t.setString(s);
+            t.setCharacterSize(sz);
+            t.setFillColor(sf::Color(240, 240, 240, 255));
+            t.setPosition(panelRect.left + panelPad, ty);
+            rt.draw(t);
+            ty += float(sz) + 6.f;
+        };
+
+        float yAfterPlayers = panelPad + 30.f;
+
+        btnEndTurn  = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
+        btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
+        btnBack     = btnOverview;
+
+        auto drawBtn = [&](const sf::FloatRect& r, bool active, const char* label) {
+            sf::RectangleShape b;
+            b.setPosition({r.left, r.top});
+            b.setSize({r.width, r.height});
+            b.setFillColor(active ? sf::Color(55, 55, 55, 235) : sf::Color(35, 35, 35, 220));
+            b.setOutlineThickness(2.f);
+            b.setOutlineColor(sf::Color(90, 90, 90, 255));
+            rt.draw(b);
+
+            if (hasFont && label) {
+                sf::Text t;
+                t.setFont(uiFont);
+                t.setString(label);
+                t.setCharacterSize(18);
+                t.setFillColor(sf::Color(240, 240, 240, 255));
+
+                const sf::FloatRect lb = t.getLocalBounds();
+                t.setPosition(
+                    r.left + (r.width - lb.width) * 0.5f - lb.left,
+                    r.top  + (r.height - lb.height) * 0.5f - lb.top - 1.f
+                );
+                rt.draw(t);
+            }
+        };
+
+        drawBtn(btnEndTurn, false, "End Turn");
+        drawBtn(btnOverview, false, "Map View");
+
+        // Top indicators (turn + current player)
+        {
+            sf::RectangleShape bar;
+            bar.setPosition(panelRect.left + panelPad, panelPad);
+            bar.setSize({panelRect.width - 2.f * panelPad, 10.f});
+            bar.setFillColor(sf::Color(255, 220, 80, 180));
+            rt.draw(bar);
+
+            const int pid = int(game->getCurrentPlayerId());
+            sf::RectangleShape cur;
+            cur.setPosition(panelRect.left + panelPad, panelPad + 14.f);
+            cur.setSize({panelRect.width - 2.f * panelPad, 6.f});
+            cur.setFillColor(sf::Color(80 + (pid * 60) % 160, 80 + (pid * 120) % 160, 80 + (pid * 200) % 160, 220));
+            rt.draw(cur);
+        }
+        {
+            float ty = panelPad + 22.f;
+            addLine(ty,
+                    "Turn: " + std::to_string(game->getTurnNumber()) +
+                    "   Player: " + std::to_string(int(game->getCurrentPlayerId())) +
+                    "   (TAB: Map View)",
+                    16);
+        }
+
+        // Players list (head icon + stars + income)
+        // NOTE: reserve space for the tech tree so everything fits on screen.
+        float yAfterPlayersList = panelPad + 56.f;
+        {
+            const auto& pls = game->getPlayers();
+            float y0 = panelPad + 56.f; // leave room for header line
+            const float rowH = 30.f;
+            const float rowW = panelRect.width - 2.f * panelPad;
+
+            // Reserve a minimum height for the tech tree area.
+            // If the window/panel is small or many players are present, we stop listing players earlier.
+            const float techMinH = 260.f;
+            const float maxYForPlayers = std::max(y0, (baseY - 10.f) - techMinH);
+
+            int shown = 0;
+            for (const Player& pl : pls) {
+                if (y0 + rowH > maxYForPlayers) {
+                    // Indicate there are more players not shown in the list.
+                    sf::RectangleShape bg;
+                    bg.setPosition(panelRect.left + panelPad, y0);
+                    bg.setSize({rowW, rowH});
+                    bg.setFillColor(sf::Color(25, 25, 25, 200));
+                    bg.setOutlineThickness(1.f);
+                    bg.setOutlineColor(sf::Color(70, 70, 70, 220));
+                    rt.draw(bg);
+
+                    if (ensureUIFontLoaded()) {
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setCharacterSize(14);
+                        t.setFillColor(sf::Color(200, 200, 200, 255));
+                        t.setString("...");
+                        t.setPosition(panelRect.left + panelPad + 12.f, y0 + 6.f);
+                        rt.draw(t);
+                    }
+
+                    y0 += rowH + 6.f;
+                    break;
+                }
+
+                const bool isCur = (pl.getId() == game->getCurrentPlayerId());
+                const int stars  = pl.getStars();
+                const int income = TurnSystem::calcIncomeForPlayer(*game, pl.getId());
+
+                // Row background
+                sf::RectangleShape bg;
+                bg.setPosition(panelRect.left + panelPad, y0);
+                bg.setSize({rowW, rowH});
+                bg.setFillColor(isCur ? sf::Color(35, 35, 35, 220) : sf::Color(25, 25, 25, 200));
+                bg.setOutlineThickness(1.f);
+                bg.setOutlineColor(sf::Color(70, 70, 70, 220));
+                rt.draw(bg);
+
+                // Head icon (tribe head.png)
+                const TribeType t = pl.getTribeType();
+                const sf::Texture& headTex = pickFirstExisting(tileCandidates(t, "head"));
+
+                const float icon = 24.f;
+                const float ix = panelRect.left + panelPad + 8.f;
+                const float iy = y0 + (rowH - icon) * 0.5f;
+                drawSprite(rt, headTex, ix, iy, icon);
+
+                // Text
+                if (ensureUIFontLoaded()) {
+                    sf::Text line;
+                    line.setFont(uiFont);
+                    line.setCharacterSize(14);
+                    line.setFillColor(sf::Color(240, 240, 240, 255));
+                    line.setString(
+                        "P" + std::to_string(int(pl.getId())) +
+                        "  stars=" + std::to_string(stars) +
+                        "  income="+std::to_string(income)
+                    );
+                    line.setPosition(panelRect.left + panelPad + 8.f + icon + 10.f, y0 + 6.f);
+                    rt.draw(line);
+                }
+
+                y0 += rowH + 6.f;
+                ++shown;
+                if (shown >= 10) break; // hard cap, prevents extreme lists
+            }
+
+            yAfterPlayersList = y0 + 6.f;
+        }
+
+        // Tech tree (visible only in gameplay view, hidden in Map View)
+        // IMPORTANT: the render depends on how Tech classes are connected (Tech::previousTech).
+        // Owned techs: green. Missing techs: red with current price under the name.
+        if (hasFont) {
+            const PlayerId curPid = game->getCurrentPlayerId();
+            const Player& curPl = game->getPlayer(curPid);
+
+            // Available space between player rows and buttons
+            const float left = panelRect.left + panelPad;
+            const float right = panelRect.left + panelRect.width - panelPad;
+            const float top = yAfterPlayersList + 10.f;
+            const float bottom = baseY - 10.f;
+            const float w = std::max(10.f, right - left);
+            const float h = std::max(10.f, bottom - top);
+
+            // If we don't have enough height, show a small hint instead of a broken tree.
+            if (h < 180.f) {
+                float ty = top;
+                addLine(ty, "Techs", 18);
+                addLine(ty, "(resize window to see tree)", 14);
+            } else {
+                // Pull all techs from TechDB (new system)
+                std::vector<TechId> techs;
+                techs.reserve(static_cast<size_t>(TechId::Count));
+                for (uint8_t i = 0; i < static_cast<uint8_t>(TechId::Count); ++i) {
+                    techs.push_back(static_cast<TechId>(i));
+                }
+
+                auto techName = [&](TechId t) -> std::string_view {
+                    return TechDB::getTech(t).name;
+                };
+                auto byName = [&](TechId a, TechId b) {
+                    return techName(a) < techName(b);
+                };
+
+                // Build children graph from prerequisites
+                std::unordered_map<TechId, std::vector<TechId>> children;
+                children.reserve(techs.size() * 2 + 1);
+
+                std::vector<TechId> roots;
+                roots.reserve(8);
+
+                for (TechId t : techs) {
+                    TechId p = TechDB::getPrerequisite(t);
+                    if (p == TechId::Count) roots.push_back(t);
+                    else children[p].push_back(t);
+                }
+
+                // Preferred child ordering (Polytopia layout)
+                std::unordered_map<TechId, std::unordered_map<TechId, int>> prefChild;
+                prefChild.reserve(32);
+
+                auto setChildOrder = [&](TechId parent, std::initializer_list<TechId> orderedChildren) {
+                    auto& m = prefChild[parent];
+                    int idx = 0;
+                    for (TechId c : orderedChildren) m[c] = idx++;
+                };
+
+                setChildOrder(TechId::Hunting,      {TechId::Forestry, TechId::Archery});
+                setChildOrder(TechId::Forestry,     {TechId::Mathematics});
+                setChildOrder(TechId::Archery,      {TechId::Spiritualism});
+
+                setChildOrder(TechId::Riding,       {TechId::Roads, TechId::FreeSpirit});
+                setChildOrder(TechId::Roads,        {TechId::Trade});
+                setChildOrder(TechId::FreeSpirit,   {TechId::Chivalry});
+
+                setChildOrder(TechId::Organization, {TechId::Farming, TechId::Strategy});
+                setChildOrder(TechId::Farming,      {TechId::Construction});
+                setChildOrder(TechId::Strategy,     {TechId::Diplomacy});
+
+                setChildOrder(TechId::Fishing,      {TechId::Ramming, TechId::Sailing});
+                setChildOrder(TechId::Sailing,      {TechId::Navigation});
+                setChildOrder(TechId::Ramming,      {TechId::Aquatism});
+
+                setChildOrder(TechId::Climbing,     {TechId::Mining, TechId::Meditation});
+                setChildOrder(TechId::Mining,       {TechId::Smithery});
+                setChildOrder(TechId::Meditation,   {TechId::Philosophy});
+
+                auto childLess = [&](TechId parent, TechId a, TechId b) {
+                    auto itP = prefChild.find(parent);
+                    if (itP != prefChild.end()) {
+                        const auto& ord = itP->second;
+                        const int ra = ord.count(a) ? ord.at(a) : 100000;
+                        const int rb = ord.count(b) ? ord.at(b) : 100000;
+                        if (ra != rb) return ra < rb;
+                    }
+                    return techName(a) < techName(b);
+                };
+
+                for (auto& kv : children) {
+                    auto& v = kv.second;
+                    std::sort(v.begin(), v.end(), [&](TechId a, TechId b) { return childLess(kv.first, a, b); });
+                }
+
+                // Depth BFS
+                std::unordered_map<TechId, int> depth;
+                depth.reserve(techs.size() * 2 + 1);
+                std::vector<TechId> q;
+                q.reserve(techs.size());
+
+                std::sort(roots.begin(), roots.end(), byName);
+                for (TechId r : roots) { depth[r] = 0; q.push_back(r); }
+
+                for (size_t qi = 0; qi < q.size(); ++qi) {
+                    TechId cur = q[qi];
+                    int d = depth[cur];
+                    auto it = children.find(cur);
+                    if (it == children.end()) continue;
+                    for (TechId ch : it->second) {
+                        if (depth.count(ch)) continue;
+                        depth[ch] = d + 1;
+                        q.push_back(ch);
+                    }
+                }
+
+                int maxDepth = 0;
+                for (auto& kv : depth) maxDepth = std::max(maxDepth, kv.second);
+                maxDepth = std::max(1, maxDepth);
+
+                // Root angles
+                // Place the 5 root technologies exactly every 360/5 degrees.
+                // SFML: +x right, +y down. Angle 0 -> right, -PI/2 -> up.
+                constexpr float PI = 3.14159265f;
+                auto normAngle = [&](float a) { while (a <= -PI) a += 2.f * PI; while (a > PI) a -= 2.f * PI; return a; };
+
+                const float rootStep = (2.f * PI) / 5.f;          // 360/5
+                // Shift so Organization is exactly to the right (0 rad)
+                const float startAngle = -rootStep;               // Riding is one step CCW from right
+
+                // Desired clockwise order around the center.
+                // With 72° spacing this makes Hunting land in the upper-left sector.
+                const std::array<TechId, 5> rootOrder = {
+                    TechId::Riding,
+                    TechId::Organization,
+                    TechId::Climbing,
+                    TechId::Fishing,
+                    TechId::Hunting
+                };
+
+                std::unordered_map<TechId, float> preferredRootAngle;
+                preferredRootAngle.reserve(8);
+                for (size_t i = 0; i < rootOrder.size(); ++i) {
+                    preferredRootAngle[rootOrder[i]] = normAngle(startAngle + float(i) * rootStep);
+                }
+
+                struct RootA { TechId t; float a; };
+                std::vector<RootA> rootA;
+                std::vector<TechId> unknown;
+                rootA.reserve(roots.size());
+                unknown.reserve(roots.size());
+
+                for (TechId r : roots) {
+                    auto it = preferredRootAngle.find(r);
+                    if (it != preferredRootAngle.end()) {
+                        rootA.push_back({r, it->second});
+                    } else {
+                        unknown.push_back(r);
+                    }
+                }
+
+                // Any extra roots (shouldn't happen for the base Polytopia tree) are spread evenly.
+                if (!unknown.empty()) {
+                    std::sort(unknown.begin(), unknown.end(), byName);
+                    const float step = (2.f * PI) / float(unknown.size());
+                    for (size_t i = 0; i < unknown.size(); ++i) {
+                        rootA.push_back({unknown[i], normAngle(startAngle + float(i) * step)});
+                    }
+                }
+
+                std::sort(rootA.begin(), rootA.end(), [&](const RootA& a, const RootA& b) { return a.a < b.a; });
+
+                // Leaf counts
+                std::unordered_map<TechId, int> leafCount;
+                std::function<int(TechId)> countLeaves = [&](TechId t){
+                    if (leafCount.count(t)) return leafCount[t];
+                    auto it = children.find(t);
+                    if (it == children.end() || it->second.empty()) return leafCount[t] = 1;
+                    int sum = 0; for (TechId c : it->second) sum += std::max(1, countLeaves(c));
+                    return leafCount[t] = std::max(1, sum);
+                };
+                for (auto& r : rootA) countLeaves(r.t);
+
+                std::unordered_map<TechId, float> angle;
+                std::function<void(TechId,float,float)> assignAngles = [&](TechId t, float a0, float a1){
+                    auto it = children.find(t);
+                    if (it == children.end() || it->second.empty()) { angle[t] = 0.5f*(a0+a1); return; }
+                    auto ch = it->second;
+                    std::sort(ch.begin(), ch.end(), [&](TechId a, TechId b){return childLess(t,a,b);});
+                    int total=0; for (TechId c:ch) total+=std::max(1,leafCount[c]);
+                    float cur=a0, weighted=0; int wsum=0;
+                    for (TechId c:ch){ int w=std::max(1,leafCount[c]); float span=(a1-a0)*(float(w)/float(total)); float cb=cur, ce=cur+span; assignAngles(c,cb,ce); weighted+=angle[c]*float(w); wsum+=w; cur=ce; }
+                    angle[t]=(wsum>0)?(weighted/float(wsum)):0.5f*(a0+a1);
+                };
+
+                std::unordered_map<TechId,std::pair<float,float>> rootSector;
+                const int R = (int)rootA.size();
+                const float shrink = 0.86f;
+                for (int i=0;i<R;++i){
+                    float aPrev=rootA[(i-1+R)%R].a;
+                    float aCur =rootA[i].a;
+                    float aNext=rootA[(i+1)%R].a;
+                    if (aPrev>aCur) aPrev-=2*PI;
+                    if (aNext<aCur) aNext+=2*PI;
+                    float left=0.5f*(aPrev+aCur);
+                    float right=0.5f*(aCur+aNext);
+                    float half=0.5f*(right-left)*shrink;
+                    rootSector[rootA[i].t]={aCur-half,aCur+half};
+                }
+                for (auto& r:rootA){ auto it=rootSector.find(r.t); if(it!=rootSector.end()) assignAngles(r.t,it->second.first,it->second.second); else assignAngles(r.t,r.a-0.15f,r.a+0.15f);}
+
+                const sf::Vector2f center(left + w * 0.50f, top + h * 0.50f);
+                const float maxR = std::max(10.f, std::min(w, h) * 0.46f);
+                const float ringStep = std::max(12.f, (maxR / float(maxDepth + 1)) * 0.98f);
+
+                std::unordered_map<TechId, sf::Vector2f> pos;
+                buildFixedTechTreeLayout(techs, pos, center, w, h);
+
+                // Save tech node hitboxes for mouse clicks.
+                g_techHitValid = true;
+                g_techHitArea = sf::FloatRect(left, top, w, h);
+                g_techHitPos = pos;
+
+                // --------------------------
+                // DRAW EDGES
+                // --------------------------
+                {
+                    sf::VertexArray lines(sf::Lines);
+                    lines.clear();
+
+                    for (TechId t : techs) {
+                        const TechId pTech = TechDB::getPrerequisite(t);
+                        if (pTech == TechId::Count) continue;
+
+                        auto itA = pos.find(pTech);
+                        auto itB = pos.find(t);
+                        if (itA == pos.end() || itB == pos.end()) continue;
+
+                        lines.append(sf::Vertex(itA->second, sf::Color(70, 70, 70, 220)));
+                        lines.append(sf::Vertex(itB->second, sf::Color(70, 70, 70, 220)));
+                    }
+
+                    rt.draw(lines);
+                }
+
+                // Center head icon (focal point)
+                {
+                    const TribeType tribe = curPl.getTribeType();
+                    const sf::Texture& headTex = pickFirstExisting(tileCandidates(tribe, "head"));
+                    const float headSize = std::clamp(ringStep * 1.25f, 26.f, 64.f);
+                    drawSprite(rt, headTex,
+                               center.x - headSize * 0.5f,
+                               center.y - headSize * 0.5f,
+                               headSize);
+                }
+
+                // Node radius (auto-fit)
+                const float rNode = std::clamp(ringStep * 0.40f, 10.f, 18.f);
+                // Slightly larger radius for easier clicking.
+                g_techHitRadius = rNode * 1.15f;
+
+                const bool literacy = curPl.hasTech(TechId::Philosophy);
+                // Draw nodes + labels
+                for (TechId tech : techs) {
+                    auto it = pos.find(tech);
+                    if (it == pos.end()) continue;
+                    const sf::Vector2f p = it->second;
+
+                    const bool owned = curPl.hasTech(tech);
+                    const int numCities = std::max(1, (int)curPl.getCities().size());
+                    const int price = TechDB::calculatePrice(tech, numCities, literacy);
+
+                    const sf::Color ownedFill(35, 140, 70, 255);
+                    const sf::Color ownedOutline(90, 230, 140, 255);
+                    const sf::Color missFill(120, 35, 35, 255);
+                    const sf::Color missOutline(240, 90, 90, 255);
+
+                    sf::CircleShape circ(rNode);
+                    circ.setOrigin(rNode, rNode);
+                    circ.setPosition(p);
+                    circ.setFillColor(owned ? ownedFill : missFill);
+                    circ.setOutlineThickness(3.f);
+                    circ.setOutlineColor(owned ? ownedOutline : missOutline);
+                    rt.draw(circ);
+
+                    // Tech name (centered)
+                    sf::Text name;
+                    name.setFont(uiFont);
+                    name.setCharacterSize((unsigned)std::max(9.f, rNode * 0.62f));
+                    name.setFillColor(sf::Color(240, 240, 240, 255));
+                    name.setString(std::string(TechDB::getTech(tech).name));
+
+                    if (name.getString().getSize() > 12) {
+                        name.setCharacterSize((unsigned)std::max(8.f, rNode * 0.52f));
+                    }
+
+                    const sf::FloatRect nb = name.getLocalBounds();
+                    name.setPosition(p.x - (nb.width * 0.5f) - nb.left,
+                                     p.y - (nb.height * 0.65f) - nb.top);
+                    rt.draw(name);
+
+                    // Price under name for missing techs
+                    if (!owned) {
+                        sf::Text pr;
+                        pr.setFont(uiFont);
+                        pr.setCharacterSize((unsigned)std::max(8.f, rNode * 0.50f));
+                        pr.setFillColor(sf::Color(255, 210, 210, 255));
+                        pr.setString(std::to_string(price));
+                        const sf::FloatRect pb = pr.getLocalBounds();
+                        pr.setPosition(p.x - (pb.width * 0.5f) - pb.left,
+                                       p.y + (rNode * 0.15f) - pb.top);
+                        rt.draw(pr);
+                    }
+                }
+            }
+        }
+    }
+    else {
+        const bool hasFont = ensureUIFontLoaded();
+
+        auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
+            if (!hasFont) return;
+            sf::Text t;
+            t.setFont(uiFont);
+            t.setString(s);
+            t.setCharacterSize(sz);
+            t.setFillColor(sf::Color(240, 240, 240, 255));
+            t.setPosition(panelRect.left + panelPad, ty);
+            rt.draw(t);
+            ty += float(sz) + 6.f;
+        };
+
+        // Only Back button in Map View
+        const float bw = panelRect.width - 2.f * panelPad;
+        const float bh = 40.f;
+        const float baseY = panelRect.top + panelRect.height - panelPad - bh;
+
+        btnBack = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
+        btnEndTurn = sf::FloatRect();
+        btnOverview = sf::FloatRect();
+
+        // Draw Back button
+        {
+            sf::RectangleShape b;
+            b.setPosition({btnBack.left, btnBack.top});
+            b.setSize({btnBack.width, btnBack.height});
+            b.setFillColor(sf::Color(35, 35, 35, 220));
+            b.setOutlineThickness(2.f);
+            b.setOutlineColor(sf::Color(90, 90, 90, 255));
+            rt.draw(b);
+
+            if (hasFont) {
+                sf::Text t;
+                t.setFont(uiFont);
+                t.setString("Back");
+                t.setCharacterSize(18);
+                t.setFillColor(sf::Color(240, 240, 240, 255));
+                const sf::FloatRect lb = t.getLocalBounds();
+                t.setPosition(
+                    btnBack.left + (btnBack.width - lb.width) * 0.5f - lb.left,
+                    btnBack.top  + (btnBack.height - lb.height) * 0.5f - lb.top - 1.f
+                );
+                rt.draw(t);
+            }
+        }
+
+        // Header
+        {
+            float ty = panelPad + 16.f;
+            addLine(ty, "Map View", 18);
+            addLine(ty, "(TAB to return)", 14);
+            ty += 8.f;
+        }
+
+        // Tile + unit stats (ONLY IN MAP VIEW)
+        {
+            float ty = panelPad + 70.f;
+
+            addLine(ty, "===== TILE =====", 18);
+
+            if (!selectedValid) {
+                addLine(ty, "(click a tile)", 14);
+            } else {
+                const Tile& st = map.at(selectedPos);
+
+                addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
+                addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
+                addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
+
+                // Resources list (Tile)
+                {
+                    const auto resU = static_cast<uint16_t>(st.getResource());
+                    auto hasR = [&](ResourcesEnum r) { return (resU & static_cast<uint16_t>(r)) != 0; };
+
+                    std::string rline = "Resources: ";
+                    bool any = false;
+                    if (hasR(ResourcesEnum::Forest)) { rline += "Forest "; any = true; }
+                    if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
+                    if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
+                    if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
+                    if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
+                    if (!any) rline += "None";
+                    addLine(ty, rline, 14);
+                }
+
+                if (st.getSettlementType() == SettlementTypeEnum::City) {
+                    addLine(ty, "===== CITY =====", 18);
+                    const City* cObj = resolveCityForTribe(game, st.getTribe());
+                    if (cObj) {
+                        addLine(ty, "City name: " + cObj->getName(), 14);
+                        addLine(ty, "CityId: " + std::to_string(int(cObj->getCityId())), 14);
+                        addLine(ty, "OwnerId: " + std::to_string(int(cObj->getOwnerId())), 14);
+                        addLine(ty, std::string("Is capital: ") + (cObj->isCapitalCity() ? "yes" : "no"), 14);
+                        addLine(ty, "Level: " + std::to_string(int(cObj->getLevel())), 14);
+                        addLine(ty, "Population: " + std::to_string(int(cObj->getPopulation())) + "/" + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
+                        addLine(ty, "Stars/round: " + std::to_string(int(cObj->getStarsPerRound())), 14);
+                        addLine(ty, "Units in city: " + std::to_string(int(cObj->getUnitsCount())) + "/" + std::to_string(int(cObj->maxUnitCapacity())), 14);
+                        addLine(ty, std::string("Has workshop: ") + (cObj->hasWorkshopEnabled() ? "yes" : "no"), 14);
+                        addLine(ty, std::string("Has city wall: ") + (cObj->hasCityWallEnabled() ? "yes" : "no"), 14);
+                    } else {
+                        addLine(ty, "(City object not resolved)", 14);
+                    }
+                }
+
+                // Unit info (if any)
+                {
+                    addLine(ty, "===== UNIT =====", 18);
+                    const uint32_t skey = (uint32_t(selectedPos.y) << 16u) | uint32_t(selectedPos.x);
+                    auto itU = unitsByPos.find(skey);
+                    if (itU != unitsByPos.end() && !itU->second.empty()) {
+                        const Unit* u = itU->second.front();
+                        addLine(ty, std::string("Unit: ") + unitTypeName(u->getType()), 14);
+                        addLine(ty, "Owner: " + std::to_string(int(u->getOwnerId())), 14);
+                        addLine(ty, "HP: " + std::to_string(u->getHealth()) + "/" + std::to_string(u->getMaxHealth()), 14);
+                        if (itU->second.size() > 1) {
+                            addLine(ty, "(+" + std::to_string(itU->second.size() - 1) + " more)", 14);
+                        }
+                    } else {
+                        addLine(ty, "Unit: none", 14);
+                    }
+                }
+            }
+        }
+    }
+}

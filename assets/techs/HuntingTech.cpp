@@ -1,13 +1,9 @@
-//
-// Created by Fryderyk Niedzwiecki on 11/01/2026.
-//
-
 #include "HuntingTech.h"
 
 HuntingTech::HuntingTech()
     : Tech(1, nullptr)
 {
-    name = "Forestry";
+    name = "Hunting";
 }
 
 const HuntingTech& HuntingTech::getBase() {

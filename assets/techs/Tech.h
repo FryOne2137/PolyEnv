@@ -5,6 +5,7 @@
 #ifndef GAME_ENGINE_TECH_H
 #define GAME_ENGINE_TECH_H
 #include <string>
+#include <vector>
 
 
 class Tech {
@@ -15,6 +16,9 @@ public:
     int getPrice(int numOfCities) const;
     std::string getName() const;
     Tech() = default;
+    static const std::vector<const Tech*>& getAllTechs();
+    static const Tech* findByName(const std::string& techName);
+
 
 
 protected:

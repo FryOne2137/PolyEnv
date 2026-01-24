@@ -4,39 +4,53 @@
 
 #ifndef GAME_ENGINE_PLAYER_H
 #define GAME_ENGINE_PLAYER_H
+
+#include <cstdint>
 #include <vector>
 
-#include "Unit.h"
-#include "techs/Tech.h"
-#include "../world/buildings/City.h"
+#include "tribes/Tribe.h"
+#include "tech/TechDB.h"   // <- musi dostarczać TechId (enum class TechId ...)
+#include "units/Unit.h"
 
+#include "Core/Ids.h"
 
 class Player {
 public:
-    bool buyTech(const Tech* tech);
-    bool endTurn();
-    int getPlayerId() const;
-    int getStarBalance() const;
-    std::vector<Tech*> getTechs() const;
-    std::vector<City*> getCities() const;
-    std::vector<Unit*> getUnits() const;
+    Player() = default;
+    Player(PlayerId id, TribeType tribe, int startStars, CityId capital);
 
-    bool collectStarsFromCities();
-    bool addStars(int starAmount);
+    PlayerId getId() const;
+    TribeType getTribeType() const;
 
+    int getStars() const;
+    bool spendStars(int amount);   // returns false if not enough
+    void addStars(int amount);
+
+    bool hasTech(TechId tech) const;
+    void addTech(TechId tech);
+
+    CityId getCapitalId() const;
+    void setCapitalId(CityId id);
+
+    const std::vector<CityId>& getCities() const;
+    const std::vector<UnitId>& getUnits() const;
+
+    void addCity(CityId id);
+    void addUnit(UnitId id);
+    void removeUnit(UnitId id);
 
 private:
-    int playerId;
-    int starBalance;
-    City* capital;
-    std::vector<Tech*> techs;
-    std::vector<Unit*> units;
-    std::vector<City*> cities;
+    PlayerId playerId = 0;
+    TribeType tribeType = TribeType::Unknown;
 
-    bool hasTech(const Tech* tech) const;
+    int stars = 0;
 
+    CityId capitalId = kNoCity;
 
+    uint64_t techMask = 0;
+    std::vector<TechId> techs;
+    std::vector<UnitId> units;
+    std::vector<CityId> cities;
 };
-
 
 #endif //GAME_ENGINE_PLAYER_H

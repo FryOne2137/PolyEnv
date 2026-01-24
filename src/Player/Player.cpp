@@ -4,43 +4,104 @@
 
 #include "Player.h"
 
-bool Player::addStars(int starAmount) {
-    Player::starBalance+=starAmount;
+#include <algorithm>
+
+// ---- Ctors ----
+Player::Player(PlayerId id, TribeType tribe, int startStars, CityId capital)
+    : playerId(id), tribeType(tribe), stars(startStars), capitalId(capital) {
+    if (capitalId != kNoCity) {
+        cities.push_back(capitalId);
+    }
+}
+
+// ---- Identity / tribe ----
+PlayerId Player::getId() const {
+    return playerId;
+}
+
+TribeType Player::getTribeType() const {
+    return tribeType;
+}
+
+// ---- Economy ----
+int Player::getStars() const {
+    return stars;
+}
+
+
+
+bool Player::spendStars(int amount) {
+    if (amount <= 0) return true;
+    if (stars < amount) return false;
+    stars -= amount;
     return true;
 }
 
-bool Player::collectStarsFromCities() {
-    int starAmount = 0;
-
-    for (City* city : cities) {
-        starAmount+=city->getStarsPerRound();
-    }
-
-    starBalance+=starAmount;
-    return true;
+void Player::addStars(int amount) {
+    if (amount <= 0) return;
+    stars += amount;
 }
 
-bool Player::hasTech(const Tech* tech) const {
-    for (const Tech* t : techs) {
-        if (t == tech) return true;
-    }
-    return false;
+// ---- Tech ----
+
+bool Player::hasTech(TechId tech) const {
+    const uint8_t id = static_cast<uint8_t>(tech);
+    if (tech == TechId::Count) return false;
+    if (id >= 64) return false; // mask supports up to 64 techs
+    return (techMask & (1ull << id)) != 0ull;
 }
 
-bool Player::buyTech(const Tech* tech) {
+void Player::addTech(TechId tech) {
+    if (tech == TechId::Count) return;
 
-    if (!tech) return false;
-    if (hasTech(tech)) return false;
+    const uint8_t id = static_cast<uint8_t>(tech);
+    if (id >= 64) return; // mask supports up to 64 techs
 
-    if (starBalance < tech->getPrice(techs.size())) return false;
+    const uint64_t bit = (1ull << id);
+    if ((techMask & bit) != 0ull) return; // already owned
 
-    if (tech->hasPrevious()) {
-        const Tech* prev = tech->getPrevious();
-        if (prev && !hasTech(prev)) {
-            return false;
+    techMask |= bit;
+    techs.push_back(tech);
+}
+
+// ---- Cities / Units (ids, not pointers) ----
+CityId Player::getCapitalId() const {
+    return capitalId;
+}
+
+void Player::setCapitalId(CityId id) {
+    capitalId = id;
+    if (capitalId != kNoCity) {
+        if (std::find(cities.begin(), cities.end(), capitalId) == cities.end()) {
+            cities.push_back(capitalId);
         }
     }
+}
 
-    techs.push_back(const_cast<Tech*>(tech));
-    return true;
+const std::vector<CityId>& Player::getCities() const {
+    return cities;
+}
+
+const std::vector<UnitId>& Player::getUnits() const {
+    return units;
+}
+
+void Player::addCity(CityId id) {
+    if (id == kNoCity) return;
+    if (std::find(cities.begin(), cities.end(), id) != cities.end()) return;
+    cities.push_back(id);
+}
+
+void Player::addUnit(UnitId id) {
+    if (id == kNoUnit) return;
+    if (std::find(units.begin(), units.end(), id) != units.end()) return;
+    units.push_back(id);
+}
+
+void Player::removeUnit(UnitId id) {
+    if (id == kNoUnit) return;
+    auto it = std::remove(units.begin(), units.end(), id);
+    if (it != units.end()) {
+        units.erase(it, units.end());
+    }
 }

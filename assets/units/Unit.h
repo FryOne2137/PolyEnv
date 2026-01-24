@@ -5,58 +5,180 @@
 #ifndef GAME_ENGINE_UNIT_H
 #define GAME_ENGINE_UNIT_H
 
-#include <vector>
 #include <cstdint>
-#include <../../src/Player/Player.h>
-#include "../../src/world/Pos.h"
+
+#include "../../src/World/Pos.h"
 #include "UnitSkill.h"
+#include "Core/Ids.h"
+
+// In this architecture Unit is "data only". Game rules live in systems:
+// - MovementSystem (movement validation, reachable tiles, fog reveal)
+// - CombatSystem   (attacks, damage, counterattacks)
+// - VisionSystem   (visibility updates)
+// Unit does not depend on Map/World/Player headers.
+
+
+enum class UnitType : uint8_t {
+    Unknown = 0,
+
+    // Land Units
+    Warrior    = 1,
+    Archer     = 2,
+    Defender   = 3,
+    Rider      = 4,
+    MindBender = 5,
+    Swordsman  = 6,
+    Catapult   = 7,
+    Cloak      = 8,
+    Knight     = 9,
+    Giant      = 10,
+    Bunny      = 11,
+    Bunta      = 12,
+
+    // Naval Units
+    Raft       = 20,
+    Scout      = 21,
+    Rammer     = 22,
+    Bomber     = 23,
+    Dinghy     = 24,
+    Pirate     = 25,
+    Juggernaut = 26,
+
+    // Aquarion Tribe Units
+    Mermaid    = 30,
+    AquaticAmphibian = 31,
+    MermaidArcher     = 32,
+    MermaidDefender   = 33,
+    Swordsmaid        = 34,
+    Scuba             = 35,
+    Siren             = 36,
+    Shark             = 37,
+    YellyBelly        = 38,
+    Puffer            = 39,
+    TridentionAq      = 40,
+    CrabAq            = 41,
+
+    // ∑∫ỹriȱŋ Tribe Units
+    Polytaur   = 50,
+    DragonEgg  = 51,
+    BabyDragon = 52,
+    FireDragon = 53,
+
+    // Polaris Tribe Units
+    IceArcher  = 60,
+    BattleSled = 61,
+    Mooni      = 62,
+    IceFortress= 63,
+    Gaami      = 64,
+
+    // Cymanti Tribe Units
+    Hexapod    = 70,
+    Kiton      = 71,
+    Phychi     = 72,
+    Shaman     = 73,
+    Raychi     = 74,
+    Exida      = 75,
+    Doomux     = 76,
+    MothC      = 77,
+    LarvaC     = 78,
+    InsectEgg  = 79,
+    Boomchi    = 80,
+    LivingIsland = 81,
+
+    GiantSuper = 90,
+};
+
 
 class Unit {
 public:
+    Unit() = default;
     ~Unit() = default;
 
-    int getUnitId() const;
+    // ---- Identity / ownership ----
+    UnitId getId() const;
+    void setId(UnitId v);
 
-    bool moveTo(int x, int y);
-    bool moveTo(Pos pos);
+    PlayerId getOwnerId() const;
+    void setOwnerId(PlayerId v);
 
-    std::vector<Pos> getReachablePositions() const;
-    Pos getPosition() const;
+    UnitType getType() const;
+    void setType(UnitType v);
 
-    bool attackAt(Pos pos);
-    bool attackAt(int x, int y);
+    // ---- Position ----
+    Pos getPos() const;
+    void setPos(Pos p);
 
-    std::vector<Pos> getPossibleAttackAt() const;
+    // ---- Stats ----
+    int getHealth() const;
+    int getMaxHealth() const;
+    void setHealth(int v);
+    void setMaxHealth(int v);
 
-    bool heal();
-    bool makeVeteran();
+    float getAttack() const;
+    float getDefense() const;
+    void setAttack(float v);
+    void setDefense(float v);
 
+    int getMovePoints() const;
+    void setMovePoints(int v);
+
+    int getRange() const;
+    void setRange(int v);
+
+    int getCost() const;
+    void setCost(int v);
+
+    int getVisionRange() const;
+    void setVisionRange(int v);
+
+    // ---- Turn state ----
+    bool movedThisTurn() const;
+    bool attackedThisTurn() const;
+    void setMovedThisTurn(bool v);
+    void setAttackedThisTurn(bool v);
+
+    // ---- Status ----
+    bool isVeteran() const;
+    void setVeteran(bool v);
+
+    bool poisoned() const;
+    void setPoisoned(bool v);
+
+    int getKillCounter() const;
+    void addKill();
+
+    // ---- Skills (bitmask) ----
+    bool hasSkill(UnitSkill skill) const;
+    void addSkill(UnitSkill skill);
+    void removeSkill(UnitSkill skill);
 
 private:
-    int unitId;
-    int kills;
+    UnitId id = kNoUnit;
+    PlayerId ownerId = kNoPlayer;
+    UnitType type = UnitType::Unknown;
 
-    int x, y;
+    Pos pos{};
 
-    int health;
-    int maxHealth;
-    int attack;
-    int defense;
-    bool veteran;
-    int movement;
-    int range;
-    int cost;
+    // Core stats
+    int health = 0;
+    int maxHealth = 0;
+    float attack = 0;
+    float defense = 0;
 
-    int visionRange;
-    bool hasMovedThisTurn;
-    bool hasAttackedThisTurn;
+    int movePoints = 0;   // remaining movement points this turn
+    int range = 1;
+    int cost = 0;
+    int visionRange = 0;
 
-    uint64_t skillMask;
+    // Turn and status
+    int killCounter = 0;
+    bool veteran = false;
+    bool isPoisoned = false;
 
-    const Player* owner;
+    bool hasMovedThisTurn = false;
+    bool hasAttackedThisTurn = false;
 
-    bool hasSkill(UnitSkill skill) const;
-
+    uint64_t skillMask = 0;
 };
 
 #endif // GAME_ENGINE_UNIT_H
