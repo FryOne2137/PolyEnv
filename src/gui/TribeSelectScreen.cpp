@@ -51,7 +51,7 @@ TribeSelectScreen::TribeSelectScreen() {
     clearBtn = { sf::FloatRect(560, 600, 240, 50), "Clear" };
 
     // domyślnie 2 graczy (możesz usunąć)
-    selected = { TribeType::XinXi, TribeType::Imperius, TribeType::Bardur, TribeType::Oumaji, };
+    selected = { TribeType::XinXi, TribeType::Kickoo, TribeType::Luxidoor, TribeType::Oumaji, };
 
     textureStore = &TextureStore::instance();
 

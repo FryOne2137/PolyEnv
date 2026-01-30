@@ -9,7 +9,14 @@
 
 class CombatSystem {
 public:
+
     static bool attack(Game& game, UnitId attackerId, Pos targetPos);
+    static std::vector<Pos> attackable(const Game& game, UnitId attackerId);
+
+
+private:
+    static int chebyshevDistance(Pos a, Pos b);
+
 };
 
 #endif //GAME_ENGINE_COMBATSYSTEM_H

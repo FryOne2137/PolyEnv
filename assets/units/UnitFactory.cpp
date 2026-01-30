@@ -3,6 +3,8 @@
 //
 
 #include "UnitFactory.h"
+#include "Unit.h"
+#include <algorithm>
 
 
 Unit UnitFactory::create(UnitType type, PlayerId ownerId, Pos pos) {
@@ -19,6 +21,14 @@ Unit UnitFactory::create(UnitType type, PlayerId ownerId, Pos pos) {
     return u;
 }
 
+int UnitFactory::getUnitCost(UnitType type) {
+    Unit u;
+    u.setType(type);
+    applyBaseStats(u);
+    return std::max(0, u.getCost());
+}
+
+
 void UnitFactory::applyBaseStats(Unit& u) {
     // Defaults (safe fallback)
     u.setMaxHealth(10);
@@ -28,6 +38,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
     u.setMovePoints(1);
     u.setRange(1);
     u.setCost(0);
+    // By default units can become veterans unless excluded by rules below.
 
     // Vision rule: most units have 1; only units with Scout skill have 2.
     u.setVisionRange(1);
@@ -570,6 +581,48 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
     }
 
-    // Apply vision rule after skills were added.
+    // Veteran rule (Polytopia): after 3 kills a unit can be promoted, except for:
+    // - Naval units
+    // - Super units
+    // - Dagger & Pirate
+    // - Enchanted units (Polytaur, Navalon)
+    // - Units not controlled by any player (Bunny, Bunta)
+    // Additionally, units with StaticSkill cannot become veterans.
+    bool canVeteran = true;
+    switch (u.getType()) {
+        // Naval
+        case UnitType::Raft:
+        case UnitType::Rammer:
+        case UnitType::Scout:
+        case UnitType::Bomber:
+        case UnitType::Juggernaut:
+        case UnitType::Dinghy:
+        case UnitType::Pirate:
+            canVeteran = false;
+            break;
+
+        // Super / special non-promotable
+        case UnitType::Giant:
+        case UnitType::CrabAq:
+        case UnitType::DragonEgg:
+        case UnitType::BabyDragon:
+        case UnitType::FireDragon:
+        case UnitType::Gaami:
+        case UnitType::LivingIsland:
+        case UnitType::Polytaur:
+        case UnitType::Bunny:
+        case UnitType::Bunta:
+            canVeteran = false;
+            break;
+
+        default:
+            break;
+    }
+
+    if (u.hasSkill(UnitSkill::StaticSkill)) {
+        canVeteran = false;
+    }
+
+
     u.setVisionRange(u.hasSkill(UnitSkill::Scout) ? 2 : 1);
 }

@@ -26,7 +26,6 @@ void Unit::setMaxHealth(int v) { maxHealth = v; }
 
 float Unit::getAttack() const { return attack; }
 float Unit::getDefense() const { return defense; }
-void Unit::setAttack(float v) { attack = v; }
 void Unit::setDefense(float v) { defense = v; }
 
 int Unit::getMovePoints() const { return movePoints; }
@@ -54,18 +53,38 @@ void Unit::setVeteran(bool v) { veteran = v; }
 bool Unit::poisoned() const { return isPoisoned; }
 void Unit::setPoisoned(bool v) { isPoisoned = v; }
 
+void Unit::setAttack(float v){attack=v;};
+
+
 int Unit::getKillCounter() const { return killCounter; }
 void Unit::addKill() { ++killCounter; }
 
 // ---- Skills (bitmask) ----
 bool Unit::hasSkill(UnitSkill skill) const {
-    return (skillMask & (uint64_t(1) << static_cast<uint8_t>(skill))) != 0;
+    return (skillMask & static_cast<uint64_t>(skill)) != 0ULL;
 }
 
 void Unit::addSkill(UnitSkill skill) {
-    skillMask |= (uint64_t(1) << static_cast<uint8_t>(skill));
+    skillMask |= static_cast<uint64_t>(skill);
 }
 
 void Unit::removeSkill(UnitSkill skill) {
-    skillMask &= ~(uint64_t(1) << static_cast<uint8_t>(skill));
+    skillMask &= ~static_cast<uint64_t>(skill);
+}
+
+// ---- Embark / disembark ----
+bool Unit::isEmbarked() const {
+    return embarkedBaseType != UnitType::Unknown;
+}
+
+UnitType Unit::getEmbarkedBaseType() const {
+    return embarkedBaseType;
+}
+
+void Unit::setEmbarkedBaseType(UnitType v) {
+    embarkedBaseType = v;
+}
+
+void Unit::clearEmbarkedBaseType() {
+    embarkedBaseType = UnitType::Unknown;
 }

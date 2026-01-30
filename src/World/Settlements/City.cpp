@@ -64,12 +64,12 @@ uint8_t City::getUnitsCount() const {
 uint8_t City::getStarsPerRound() const {
     uint8_t starsPerRound = getLevel();
     if (isCapitalCity()) {
-        starsPerRound++;
+        starsPerRound+20;
     }
     if (hasWorkshopEnabled()) {
         starsPerRound++;
     }
 
-    return starsPerRound;
+    return starsPerRound+20;
 }
 

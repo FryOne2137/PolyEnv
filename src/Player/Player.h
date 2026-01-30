@@ -39,6 +39,8 @@ public:
     void addUnit(UnitId id);
     void removeUnit(UnitId id);
 
+    void removeCity(CityId id);
+
 private:
     PlayerId playerId = 0;
     TribeType tribeType = TribeType::Unknown;

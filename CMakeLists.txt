@@ -97,54 +97,16 @@ set(ENGINE_SOURCES
         src/world/Settlements/City.h
         src/world/Settlements/upgradeRewardEnum.cpp
         src/world/Settlements/upgradeRewardEnum.h
-        src/world/Buildings/Building.cpp
-        src/world/Buildings/Building.h
         src/world/Settlements/Ruin.cpp
         src/world/Settlements/Ruin.h
         src/World/Settlements/Settlement.cpp
         src/World/Settlements/Settlement.h
-        src/World/Buildings/Farm.cpp
-        src/World/Buildings/Farm.h
-        src/World/Buildings/AdjacentBuilding.cpp
-        src/World/Buildings/AdjacentBuilding.h
         src/World/terrain/SettlementTypeEnum.cpp
         src/World/terrain/SettlementTypeEnum.h
         src/World/terrain/SettlementId.cpp
         src/World/terrain/SettlementId.h
         src/World/Settlements/Starfish.cpp
         src/World/Settlements/Starfish.h
-        src/World/Buildings/SingleBuilding.cpp
-        src/World/Buildings/SingleBuilding.h
-        src/World/Buildings/LumberHut.cpp
-        src/World/Buildings/LumberHut.h
-        src/World/Buildings/Mine.cpp
-        src/World/Buildings/Mine.h
-        src/World/Buildings/Port.cpp
-        src/World/Buildings/Port.h
-        src/World/Buildings/Forge.cpp
-        src/World/Buildings/Forge.h
-        src/World/Buildings/Market.cpp
-        src/World/Buildings/Market.h
-        src/World/Buildings/Sawmill.cpp
-        src/World/Buildings/Sawmill.h
-        src/World/Buildings/Windmill.cpp
-        src/World/Buildings/Windmill.h
-        src/World/Buildings/Monument.cpp
-        src/World/Buildings/Monument.h
-        src/World/Buildings/AltarOfPeace.cpp
-        src/World/Buildings/AltarOfPeace.h
-        src/World/Buildings/EmperorsTomb.cpp
-        src/World/Buildings/EmperorsTomb.h
-        src/World/Buildings/EyeOfGod.cpp
-        src/World/Buildings/EyeOfGod.h
-        src/World/Buildings/GateOfPower.cpp
-        src/World/Buildings/GateOfPower.h
-        src/World/Buildings/GrandBazaar.cpp
-        src/World/Buildings/GrandBazaar.h
-        src/World/Buildings/ParkOfFortune.cpp
-        src/World/Buildings/ParkOfFortune.h
-        src/World/Buildings/TowerOfWisdom.cpp
-        src/World/Buildings/TowerOfWisdom.h
         src/World/terrain/BuildingTypeEnum.cpp
         src/World/terrain/BuildingTypeEnum.h
         src/World/terrain/RoadBridgeEnum.cpp
@@ -173,6 +135,16 @@ set(ENGINE_SOURCES
         assets/tech/TechDB.h
         src/Systems/TechSystem.cpp
         src/Systems/TechSystem.h
+        src/Systems/BuildingSystem.cpp
+        src/Systems/BuildingSystem.h
+        src/World/Buildings/BuildingDB.cpp
+        src/World/Buildings/BuildingDB.h
+        src/Systems/TileActionSystem.cpp
+        src/Systems/TileActionSystem.h
+        src/Systems/UnitUpgradeSystem.cpp
+        src/Systems/UnitUpgradeSystem.h
+        src/Systems/UnitSpawnSystem.cpp
+        src/Systems/UnitSpawnSystem.h
 )
 
 # ---- Engine library (no mains, no SFML) ----

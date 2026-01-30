@@ -7,25 +7,29 @@
 #include "Game.h"
 #include "World/Map.h"
 #include "World/Tile.h"
+#include "terrain/BaseTerrainEnum.h"
+#include "terrain/VisibilityEnum.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <vector>
 
-VisibilityEnum VisionSystem::bitForPlayer(PlayerId playerId) {
-    // max 16 players => bits 0..15
-    if (playerId >= 16) return VisibilityEnum::None;
-    return static_cast<VisibilityEnum>(static_cast<uint16_t>(1u) << playerId);
-}
-
-void VisionSystem::revealFromUnit(Game& game, UnitId unitId) {
-    Unit* u = game.getUnit(unitId);
+void VisionSystem::revealFromUnit(Game& game, UnitId uid) {
+    Unit* u = game.getUnit(uid);
     if (!u) return;
 
-    const PlayerId owner = u->getOwnerId();
-    const Pos center = u->getPos();
-    const int range = u->getVisionRange();
+    const PlayerId pid = u->getOwnerId();
+    Pos p = u->getPos();
 
-    revealArea(game, owner, center, range);
+    int r = u->getVisionRange();
+    // int r = 2;
+    const Tile& t = game.getMap().at(p);
+    if (t.getBaseTerrain() == BaseTerrainEnum::Mountain) {
+        r = std::max(r, 2);
+    }
+    revealArea(game, pid, p, r);
 }
+
 
 void VisionSystem::revealForPlayerFromUnits(Game& game, PlayerId playerId) {
     // Dodajemy widoczność na bazie wszystkich jednostek gracza.
@@ -33,35 +37,22 @@ void VisionSystem::revealForPlayerFromUnits(Game& game, PlayerId playerId) {
     const Player& p = game.getPlayer(playerId);
 
     for (UnitId uid : p.getUnits()) {
-        const Unit* u = game.getUnit(uid);
-        if (!u) continue;
-
-        revealArea(game, playerId, u->getPos(), u->getVisionRange());
+        // Use revealFromUnit so mountain bonus (range 2) is applied consistently.
+        revealFromUnit(game, uid);
     }
 }
 
-void VisionSystem::revealArea(Game& game, PlayerId playerId, Pos center, int range) {
-    if (range < 0) return;
-
+void VisionSystem::revealArea(Game& game, PlayerId pid, Pos center, int range) {
     Map& map = game.getMap();
-    if (!map.inBounds(center)) return;
 
-    const VisibilityEnum bit = bitForPlayer(playerId);
-
-    // Square / Chebyshev disk: max(|dx|, |dy|) <= range
     for (int dy = -range; dy <= range; ++dy) {
         for (int dx = -range; dx <= range; ++dx) {
-            if (std::max(std::abs(dx), std::abs(dy)) > range) continue;
-
-            Pos p{ center.x + dx, center.y + dy };
+            Pos p{center.x + dx, center.y + dy};
             if (!map.inBounds(p)) continue;
 
             Tile& t = map.at(p);
-
-            // WYMAGA: Tile musi mieć getVisibility()/setVisibility()
-            // Jeśli nie masz jeszcze, dopisz proste get/set w Tile.
             VisibilityEnum v = t.getVisibility();
-            v |= bit;
+            reveal(v, static_cast<PlayerIndex>(pid));
             t.setVisibility(v);
         }
     }

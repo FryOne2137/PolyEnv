@@ -12,6 +12,7 @@
 class UnitFactory {
 public:
     static Unit create(UnitType type, PlayerId ownerId, Pos pos);
+    static int getUnitCost(UnitType type);
 
 private:
     static void applyBaseStats(Unit& u);

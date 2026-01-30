@@ -12,6 +12,7 @@
 #include "terrain/SettlementTypeEnum.h"
 #include "terrain/VisibilityEnum.h"
 #include "tribes/Tribe.h"
+#include "Core/Ids.h"
 
 
 class Tile {
@@ -27,6 +28,9 @@ public:
     VisibilityEnum getVisibility() const { return visibility; }
     TribeType getTribe() const { return tribe; }
 
+    // Territory / city control (not the settlement that sits on the tile)
+    CityId getTerritoryCityId() const { return territoryCityId; }
+
     // Write
     void setResource(ResourcesEnum v) { resource = v; }
     void setBaseTerrain(BaseTerrainEnum v) { baseTerrain = v; }
@@ -36,11 +40,15 @@ public:
     void setRoadBridge(RoadBridgeEnum v) { roadBridge = v; }
     void setVisibility(VisibilityEnum v) { visibility = v; }
     void setTribe(TribeType v) { tribe = v; }
+    void setTerritoryCityId(CityId v) { territoryCityId = v; }
+    void clearTerritory() { territoryCityId = kNoCity; }
 
 
 private:
     //visibility of difrent players
     VisibilityEnum visibility = VisibilityEnum::None;
+
+    CityId territoryCityId = kNoCity;
 
     //roads and bridges
     RoadBridgeEnum roadBridge = RoadBridgeEnum::None;

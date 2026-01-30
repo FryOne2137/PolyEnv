@@ -145,17 +145,31 @@ public:
     void setPoisoned(bool v);
 
     int getKillCounter() const;
+    void setKillCounter(int v){killCounter=v;};
     void addKill();
+
+    bool getIsPoisoned() const{return isPoisoned;};
 
     // ---- Skills (bitmask) ----
     bool hasSkill(UnitSkill skill) const;
     void addSkill(UnitSkill skill);
     void removeSkill(UnitSkill skill);
 
+    // ---- Embark / disembark (port -> raft/juggernaut and back) ----
+    // When unit is converted to a naval carrier, we store the original land type here.
+    bool isEmbarked() const;
+    UnitType getEmbarkedBaseType() const;
+    void setEmbarkedBaseType(UnitType v);
+    void clearEmbarkedBaseType();
+
 private:
     UnitId id = kNoUnit;
     PlayerId ownerId = kNoPlayer;
     UnitType type = UnitType::Unknown;
+
+    // If the unit is currently embarked (e.g. Raft/Juggernaut), this stores the original land unit type.
+    // UnitType::Unknown means "not embarked".
+    UnitType embarkedBaseType = UnitType::Unknown;
 
     Pos pos{};
 
@@ -171,6 +185,7 @@ private:
     int visionRange = 0;
 
     // Turn and status
+
     int killCounter = 0;
     bool veteran = false;
     bool isPoisoned = false;

@@ -16,6 +16,7 @@
 #include "units/Unit.h"
 #include "tribes/Tribe.h"
 #include "World/Settlements/City.h"
+#include "terrain/BuildingTypeEnum.h"
 
 // Forward declarations systemów (żeby Game.h nie robił ciężkich include)
 class MovementSystem;
@@ -66,7 +67,7 @@ public:
     bool attack(UnitId attackerId, Pos target);
 
     // Fabryka jednostek w świecie (na razie minimalnie)
-    UnitId spawnUnit(UnitType type, PlayerId owner, Pos pos);
+    UnitId spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately=false);
 
     // ---- Helpers for systems ----
     Player &getPlayer(PlayerId id) { return players[id]; }
@@ -85,6 +86,35 @@ public:
     std::vector<City> &getCities() { return cities; }
 
     bool foundCityFromVillage(PlayerId owner, Pos pos);
+    bool captureCityAt(PlayerId newOwner, Pos pos);
+
+    City* getCityBySettlementId(SettlementId sid);
+    const City* getCityBySettlementId(SettlementId sid) const;
+    bool buildBuilding(PlayerId builder, Pos pos, BuildingTypeEnum type);
+
+    // ---- Tile actions (clear/hunt/fish/etc.) ----
+    bool hunt(PlayerId pid, Pos pos);
+    bool fishing(PlayerId pid, Pos pos);
+    bool clearForest(PlayerId pid, Pos pos);
+    bool burnForest(PlayerId pid, Pos pos);
+    bool growForest(PlayerId pid, Pos pos);
+    bool destroyTile(PlayerId pid, Pos pos);
+    bool organization(PlayerId pid, Pos pos);
+
+    bool canUpgradeRaftToScout(UnitId unitId) const;
+    bool canUpgradeRaftToRammer(UnitId unitId) const;
+    bool canUpgradeRaftToBomber(UnitId unitId) const;
+
+    bool upgradeRaftToScout(UnitId unitId);
+    bool upgradeRaftToRammer(UnitId unitId);
+    bool upgradeRaftToBomber(UnitId unitId);
+
+    bool canUnitBecomeVeteran(UnitId unitId) const;
+    bool becomeVeteran(UnitId unitId);
+    std::vector<Pos> attackable(UnitId attackerId) const;
+    std::vector<Pos> reachable(UnitId unitId) const;
+
+
 
 private:
     Map map;

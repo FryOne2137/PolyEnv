@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <iostream>
 
 #include "tech/TechDB.h"
 
@@ -27,6 +28,9 @@ bool TechSystem::buyTech(Player& pl, TechId tech) {
     const int cities = std::max(1, (int)pl.getCities().size());
     const bool literacy = pl.hasTech(TechId::Philosophy);
     const int price = TechDB::calculatePrice(tech, cities, literacy);
+
+    std::cout << "cities.size=" << pl.getCities().size()
+          << " citiesUsed=" << cities << "\n";
 
     if (!pl.spendStars(price))
         return false;

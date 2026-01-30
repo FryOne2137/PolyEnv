@@ -27,7 +27,7 @@ void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
     // 3) rzeczy zmieniające kontrolę / struktury (village->city)
     handleStarfish(game, unitId, pos);
     handleRuin(game, unitId, pos);
-    handleVillage(game, unitId, pos);
+    // handleVillage(game, unitId, pos);
 }
 
 void InteractionSystem::handleStarfish(Game& game, UnitId unitId, Pos pos) {
@@ -67,6 +67,7 @@ void InteractionSystem::handleVillage(Game& game, UnitId unitId, Pos pos) {
     if (!unit) return;
 
     Tile& tile = game.getMap().at(pos);
+    if (unit->movedThisTurn() || unit->attackedThisTurn()) return;
 
     if (tile.getSettlementType() != SettlementTypeEnum::Village) return;
 
@@ -81,4 +82,29 @@ void InteractionSystem::handleVillage(Game& game, UnitId unitId, Pos pos) {
 
     // 3) Consumes the whole turn: unit cannot move anymore this round
     unit->setMovedThisTurn(true);
+    unit->setAttackedThisTurn(true);
+}
+
+void InteractionSystem::handleCityCapture(Game& game, UnitId unitId, Pos pos) {
+    Unit* unit = game.getUnit(unitId);
+    if (!unit) return;
+
+    if (!game.getMap().inBounds(pos)) return;
+
+    Tile& tile = game.getMap().at(pos);
+    if (tile.getSettlementType() != SettlementTypeEnum::City) return;
+
+    // Only allow capture if the unit is standing on the city tile.
+    const Pos up = unit->getPos();
+    if (up.x != pos.x || up.y != pos.y) return;
+
+    // Capturing consumes the whole turn.
+    if (unit->movedThisTurn() || unit->attackedThisTurn()) return;
+
+    const PlayerId capturer = unit->getOwnerId();
+    if (!game.captureCityAt(capturer, pos)) return;
+
+    unit->setMovedThisTurn(true);
+    unit->setAttackedThisTurn(true);
+
 }

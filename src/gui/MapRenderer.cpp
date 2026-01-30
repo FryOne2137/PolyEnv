@@ -6,9 +6,13 @@
 #include "Systems/TurnSystem.h"
 #include "Systems/TechSystem.h"
 #include "Systems/MovementSystem.h"
+#include "Systems/InteractionSystem.h"
+#include "Systems/VisionSystem.h"
+#include "terrain/VisibilityEnum.h"
 #include "Game.h"
 #include "tech/TechDB.h"
 #include <SFML/Window/Mouse.hpp>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -23,8 +27,39 @@
 #include <SFML/Graphics/RectangleShape.hpp>
 #include <SFML/Graphics/VertexArray.hpp>
 #include <SFML/Graphics/CircleShape.hpp>
+
 #include <SFML/Graphics/Text.hpp>
 #include <SFML/Graphics/Font.hpp>
+
+// --- simple perf logger (GUI + game actions) ---
+struct ScopedPerfLog {
+    const char* name;
+    std::chrono::high_resolution_clock::time_point t0;
+    explicit ScopedPerfLog(const char* n)
+        : name(n), t0(std::chrono::high_resolution_clock::now()) {}
+    ~ScopedPerfLog() {
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        std::cout << "[Perf] " << name << " took " << us << " us" << std::endl;
+    }
+};
+
+static inline void perfLog(const char* name, const std::function<void()>& fn) {
+    ScopedPerfLog _pl(name);
+    fn();
+}
+
+static inline bool perfLogBool(const char* name, const std::function<bool()>& fn) {
+    ScopedPerfLog _pl(name);
+    return fn();
+}
+
+static inline void perfLogIf(const char* name, bool cond, const std::function<void()>& fn) {
+    if (!cond) { fn(); return; }
+    ScopedPerfLog _pl(name);
+    fn();
+}
+
 
 
 static bool existsFile(const std::string& p) {
@@ -66,6 +101,7 @@ static const sf::Texture& fallbackMissingTexture() {
 }
 
 // Helper: resolve a City object for a given tribe (best-effort: find player by tribe, then use their first owned city id).
+
 static const City* resolveCityForTribe(const Game* game, TribeType tribe) {
     if (!game) return nullptr;
     const auto& pls = game->getPlayers();
@@ -76,6 +112,13 @@ static const City* resolveCityForTribe(const Game* game, TribeType tribe) {
         return game->getCity(owned.front());
     }
     return nullptr;
+}
+
+// Resolve city object using the tile's settlement id (works for enemy cities too).
+static const City* resolveCityForTile(const Game* game, const Tile& tile) {
+    if (!game) return nullptr;
+    if (tile.getSettlementType() != SettlementTypeEnum::City) return nullptr;
+    return game->getCityBySettlementId(tile.getSettlementId());
 }
 
 static void logMissingOnce(const std::vector<std::string>& paths) {
@@ -118,6 +161,36 @@ static UnitId g_moveSelectedUnit = kNoUnit;
 static bool g_moveOverlayValid = false;
 static std::unordered_set<uint32_t> g_moveOverlaySet; // key: (y<<16)|x
 
+// --- Attack click/overlay state (gameplay view only) ---
+static bool g_attackOverlayValid = false;
+static std::unordered_set<uint32_t> g_attackOverlaySet; // key: (y<<16)|x
+
+// --- Context action button state (bottom bar under the map) ---
+enum class ActionKind { None, CaptureVillage, CaptureCity, TrainUnit, BuildBuilding,    ClearForest,
+    Hunt,
+    Fishing,
+    BurnForest,
+    GrowForest,
+    DestroyTile,
+    Organization,
+    UpgradeRaftToScout,
+    UpgradeRaftToRammer,
+    UpgradeRaftToBomber,
+    BecomeVeteran,
+
+};
+struct ActionButton {
+    sf::FloatRect rect;
+    ActionKind kind;
+    UnitType trainType = UnitType::Unknown;
+    BuildingTypeEnum buildType = BuildingTypeEnum::None;
+};
+
+static bool g_actionBtnsValid = false;
+static std::array<ActionButton, 48> g_actionBtns;
+static int g_actionBtnCount = 0;
+static Pos g_actionPos{0, 0};
+
 static inline uint32_t posKey(Pos p) {
     return (uint32_t(p.y) << 16u) | uint32_t(p.x);
 }
@@ -125,6 +198,16 @@ static inline uint32_t posKey(Pos p) {
 static void clearMoveOverlay() {
     g_moveOverlayValid = false;
     g_moveOverlaySet.clear();
+}
+
+static void clearAttackOverlay() {
+    g_attackOverlayValid = false;
+    g_attackOverlaySet.clear();
+}
+
+static void clearUnitOverlays() {
+    clearMoveOverlay();
+    clearAttackOverlay();
 }
 
 static void rebuildMoveOverlay(const Game* game, UnitId uid) {
@@ -137,12 +220,30 @@ static void rebuildMoveOverlay(const Game* game, UnitId uid) {
     // Only current player's units.
     if (u->getOwnerId() != game->getCurrentPlayerId()) return;
 
-    const std::vector<Pos> tiles = MovementSystem::reachable(*game, uid);
+    const std::vector<Pos> tiles = game->reachable(uid);
     g_moveOverlaySet.reserve(tiles.size() * 2u + 1u);
     for (const Pos& p : tiles) {
         g_moveOverlaySet.insert(posKey(p));
     }
     g_moveOverlayValid = true; // valid even if empty
+}
+
+static void rebuildAttackOverlay(const Game* game, UnitId uid) {
+    clearAttackOverlay();
+    if (!game) return;
+
+    const Unit* u = game->getUnit(uid);
+    if (!u) return;
+
+    // Only current player's units.
+    if (u->getOwnerId() != game->getCurrentPlayerId()) return;
+
+    const std::vector<Pos> tiles = game->attackable(uid);
+    g_attackOverlaySet.reserve(tiles.size() * 2u + 1u);
+    for (const Pos& p : tiles) {
+        g_attackOverlaySet.insert(posKey(p));
+    }
+    g_attackOverlayValid = true; // valid even if empty
 }
 
 // Fixed Polytopia-like tech layout (hand-tuned to match the screenshot).
@@ -261,6 +362,27 @@ void MapRenderer::setZoom(float z) {
     zoom = z;
 }
 
+static void drawTileDiamondOverlay(sf::RenderTarget& rt,
+                                  float x,
+                                  float y,
+                                  float tileSize,
+                                  float yStep,
+                                  const sf::Color& c)
+{
+    const sf::Vector2f top  {x + tileSize * 0.5f, y};
+    const sf::Vector2f right{x + tileSize,        y + yStep};
+    const sf::Vector2f bot  {x + tileSize * 0.5f, y + 2.f * yStep};
+    const sf::Vector2f left {x,                   y + yStep};
+
+    sf::VertexArray fill(sf::TriangleFan, 4);
+    fill[0].position = top;
+    fill[1].position = right;
+    fill[2].position = bot;
+    fill[3].position = left;
+    for (std::size_t i = 0; i < 4; ++i) fill[i].color = c;
+    rt.draw(fill);
+}
+
 float MapRenderer::getZoom() const { return zoom; }
 
 bool MapRenderer::hasSelection() const { return selectedValid; }
@@ -282,9 +404,9 @@ bool MapRenderer::consumeToggleOverviewRequested() {
 void MapRenderer::toggleOverview() {
     showOverview = !showOverview;
 
-    // Clear movement selection/overlay when switching views.
+    // Clear movement and attack selection/overlay when switching views.
     g_moveSelectedUnit = kNoUnit;
-    clearMoveOverlay();
+    clearUnitOverlays();
 }
 
 void MapRenderer::handleEvent(const sf::Event& ev) {
@@ -312,6 +434,121 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
             const float dist2 = d.x * d.x + d.y * d.y;
 
             if (!dragMoved && dist2 < 25.f) {
+                // --- Bottom action button (e.g. capture/train/build) ---
+                if (!showOverview && game && g_actionBtnCount > 0) {
+                    for (int bi = 0; bi < g_actionBtnCount; ++bi) {
+                        const ActionButton& ab = g_actionBtns[bi];
+                        if (!ab.rect.contains(up)) continue;
+                        if (ab.kind == ActionKind::CaptureVillage || ab.kind == ActionKind::CaptureCity) {
+                            // For capture actions we require a unit on the selected tile.
+                            const UnitId uOn = game->getMap().unitOn(g_actionPos);
+                            if (uOn != Map::kNoUnit) {
+                                if (ab.kind == ActionKind::CaptureVillage) {
+                                    perfLog("CaptureVillage", [&] {
+                                        InteractionSystem::handleVillage(*game, uOn, g_actionPos);
+                                    });
+                                } else {
+                                    perfLog("CaptureCity", [&] {
+                                        InteractionSystem::handleCityCapture(*game, uOn, g_actionPos);
+                                    });
+                                }
+                            }
+                        } else if (ab.kind == ActionKind::TrainUnit) {
+                            perfLog("TrainUnit", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const UnitId uid = game->spawnUnit(ab.trainType, pid, g_actionPos, /*canActImmediately=*/false);
+                                (void)uid;
+                            });
+                        } else if (ab.kind == ActionKind::BuildBuilding) {
+                            perfLog("BuildBuilding", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->buildBuilding(pid, g_actionPos, ab.buildType);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::ClearForest) {
+                            perfLog("ClearForest", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->clearForest(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::BurnForest) {
+                            perfLog("BurnForest", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->burnForest(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::GrowForest) {
+                            perfLog("GrowForest", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->growForest(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::Hunt) {
+                            perfLog("Hunt", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->hunt(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::Fishing) {
+                            perfLog("Fishing", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->fishing(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::DestroyTile) {
+                            perfLog("DestroyTile", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->destroyTile(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::Organization) {
+                            perfLog("Organization", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->organization(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::UpgradeRaftToScout) {
+                            perfLog("UpgradeRaftToScout", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->upgradeRaftToScout(uid);
+                                    (void)ok;
+                                }
+                            });
+                        } else if (ab.kind == ActionKind::UpgradeRaftToRammer) {
+                            perfLog("UpgradeRaftToRammer", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->upgradeRaftToRammer(uid);
+                                    (void)ok;
+                                }
+                            });
+                        } else if (ab.kind == ActionKind::UpgradeRaftToBomber) {
+                            perfLog("UpgradeRaftToBomber", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->upgradeRaftToBomber(uid);
+                                    (void)ok;
+                                }
+                            });
+                        } else if (ab.kind == ActionKind::BecomeVeteran) {
+                            perfLog("BecomeVeteran", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->becomeVeteran(uid);
+                                    (void)ok;
+                                }
+                            });
+                        }
+                        // Clear overlays after action.
+                        g_moveSelectedUnit = kNoUnit;
+                        clearUnitOverlays();
+                        selectedValid = false;
+                        g_actionBtnsValid = false;
+                        g_actionBtnCount = 0;
+                        return; // consume click
+                    }
+                }
                 // --- UI buttons (right panel) ---
                 // --- Tech tree click (buy tech) ---
                 // Tech nodes are rendered in the right panel during gameplay view.
@@ -330,11 +567,13 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                     }
 
                     if (hit != TechId::Count) {
-                        auto curPid = game->getCurrentPlayerId();
-                        Player& curPl = game->getPlayer(curPid);
-                        if (TechSystem::canBuyTech(curPl, hit)) {
-                            TechSystem::buyTech(curPl, hit);
-                        }
+                        perfLog("BuyTechClick", [&] {
+                            auto curPid = game->getCurrentPlayerId();
+                            Player& curPl = game->getPlayer(curPid);
+                            if (TechSystem::canBuyTech(curPl, hit)) {
+                                TechSystem::buyTech(curPl, hit);
+                            }
+                        });
                         return; // consume click (avoid selecting a tile)
                     }
                 }
@@ -361,14 +600,16 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                     selectedPos = hit;
                     selectedValid = true;
 
-                    // Map View: keep normal selection, no movement overlay.
+                    // NOTE: capture (hint click) should work in both gameplay and Map View.
+                    // We still disable movement overlay in Map View, but allow capture clicks.
                     if (showOverview) {
                         g_moveSelectedUnit = kNoUnit;
-                        clearMoveOverlay();
-                        return;
+                        clearUnitOverlays();
                     }
 
                     if (game) {
+                        // In Map View, stop here (capture clicks already handled above).
+                        if (showOverview) return;
                         const Map& m = game->getMap();
                         const UnitId onTile = m.unitOn(hit);
 
@@ -379,35 +620,52 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                                 // Toggle off if same unit clicked again
                                 if (g_moveSelectedUnit == onTile && g_moveOverlayValid) {
                                     g_moveSelectedUnit = kNoUnit;
-                                    clearMoveOverlay();
+                                    clearUnitOverlays();
                                 } else {
                                     g_moveSelectedUnit = onTile;
                                     rebuildMoveOverlay(game, g_moveSelectedUnit);
+                                    rebuildAttackOverlay(game, g_moveSelectedUnit);
                                 }
                                 return;
                             }
                         }
 
-                        // 2) Click on a highlighted reachable tile => move
-                        if (g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
-                            if (g_moveOverlaySet.find(posKey(hit)) != g_moveOverlaySet.end()) {
-                                const bool ok = game->moveUnit(g_moveSelectedUnit, hit);
-                                // After a move we clear the overlay (simple UX). Re-click unit to move again.
+                        // 2) Click on a highlighted attack tile => attack
+                        if (g_moveSelectedUnit != kNoUnit && g_attackOverlayValid) {
+                            if (g_attackOverlaySet.find(posKey(hit)) != g_attackOverlaySet.end()) {
+                                perfLog("Attack", [&] {
+                                    const bool ok = game->attack(g_moveSelectedUnit, hit);
+                                    (void)ok;
+                                });
+                                // After an attack we clear overlays.
                                 g_moveSelectedUnit = kNoUnit;
-                                clearMoveOverlay();
-                                (void)ok;
+                                clearUnitOverlays();
                                 return;
                             }
                         }
 
-                        // 3) Otherwise clear overlay
+                        // 3) Click on a highlighted reachable tile => move
+                        if (g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
+                            if (g_moveOverlaySet.find(posKey(hit)) != g_moveOverlaySet.end()) {
+                                perfLog("MoveUnit", [&] {
+                                    const bool ok = game->moveUnit(g_moveSelectedUnit, hit);
+                                    (void)ok;
+                                });
+                                // After a move we clear the overlay (simple UX). Re-click unit to move again.
+                                g_moveSelectedUnit = kNoUnit;
+                                clearUnitOverlays();
+                                return;
+                            }
+                        }
+
+                        // 4) Otherwise clear overlay
                         g_moveSelectedUnit = kNoUnit;
-                        clearMoveOverlay();
+                        clearUnitOverlays();
                     }
                 } else {
                     selectedValid = false;
                     g_moveSelectedUnit = kNoUnit;
-                    clearMoveOverlay();
+                    clearUnitOverlays();
                 }
             }
         }
@@ -474,6 +732,7 @@ sf::Vector2f MapRenderer::computeCenterShift(float z, const sf::Vector2u& rtSz) 
     if (!game) return shift;
 
     const Map& map = game->getMap();
+
 
     const float tileSize = float(tilePx) * z;
 
@@ -638,14 +897,14 @@ static const char* unitTypeToFile(UnitType t) {
         case UnitType::Giant:      return "giant";
         case UnitType::Bunny:      return "bunny";
 
-        // --- Naval (your pack uses ship variants) ---
-        case UnitType::Raft:       return "boat";
-        case UnitType::Scout:      return "scout";
-        case UnitType::Rammer:     return "rammership";
-        case UnitType::Bomber:     return "bombership";
-        case UnitType::Dinghy:     return "transportship";
-        case UnitType::Pirate:     return "pirate";
-        case UnitType::Juggernaut: return "juggernaut";
+        // --- Naval (pack contains both old/new names; we prefer *ship variants) ---
+        case UnitType::Raft:       return "transportship";         // boat.png
+        case UnitType::Scout:      return "scoutship";    // scoutship.png
+        case UnitType::Rammer:     return "rammership";   // rammership.png
+        case UnitType::Bomber:     return "bombership";   // bombership.png
+        case UnitType::Dinghy:     return "transportship"; // transportship.png
+        case UnitType::Pirate:     return "pirate";       // pirate.png
+        case UnitType::Juggernaut: return "juggernaut";   // juggernaut.png
 
         // --- Aquarion ---
         case UnitType::Mermaid:            return "mermaid_warrior";
@@ -704,8 +963,74 @@ static const char* unitTypeName(UnitType t) {
         case UnitType::Cloak:      return "Cloak";
         case UnitType::Knight:     return "Knight";
         case UnitType::Giant:      return "Giant";
+        case UnitType::Bunny:      return "Bunny";
+
+            // Naval
+        case UnitType::Raft:       return "Raft";
+        case UnitType::Scout:      return "Scout";
+        case UnitType::Rammer:     return "Rammer";
+        case UnitType::Bomber:     return "Bomber";
+        case UnitType::Dinghy:     return "Dinghy";
+        case UnitType::Pirate:     return "Pirate";
+        case UnitType::Juggernaut: return "Juggernaut";
+
         default:                   return "Unit";
     }
+}
+
+static std::string unitDisplayString(const Unit& u) {
+    std::string s = unitTypeName(u.getType());
+    if (u.isEmbarked()) {
+        const UnitType base = u.getEmbarkedBaseType();
+        if (base != UnitType::Unknown) {
+            s += " ( ";
+            s += unitTypeName(base);
+            s += ")";
+        }
+    }
+    return s;
+}
+
+
+static const char* buildingTypeName(BuildingTypeEnum b) {
+    switch (b) {
+        case BuildingTypeEnum::Farm:        return "Farm";
+        case BuildingTypeEnum::Mine:        return "Mine";
+        case BuildingTypeEnum::LumberHut:   return "Lumber Hut";
+        case BuildingTypeEnum::Port:        return "Port";
+        case BuildingTypeEnum::Market:      return "Market";
+        case BuildingTypeEnum::Forge:       return "Forge";
+        case BuildingTypeEnum::Sawmill:     return "Sawmill";
+        case BuildingTypeEnum::Windmill:    return "Windmill";
+        case BuildingTypeEnum::Lighthouse:  return "Lighthouse";
+        default:                            return "None";
+    }
+}
+
+static std::vector<std::string> buildingCandidates(BuildingTypeEnum b) {
+    const std::string root = "assets/Polytopia_game_engine_textures/common/";
+    std::vector<std::string> out;
+    out.reserve(8);
+
+    auto add = [&](const std::string& file) {
+        out.push_back(root + file + ".png");
+        out.push_back(root + file + ".PNG");
+    };
+
+    switch (b) {
+        case BuildingTypeEnum::Farm:        add("Farm"); break;
+        case BuildingTypeEnum::Mine:        add("Mine"); break;
+        case BuildingTypeEnum::LumberHut:   add("Lumber_Hut"); break;
+        case BuildingTypeEnum::Port:        add("Port"); break;
+        case BuildingTypeEnum::Market:      add("Market01"); break;
+        case BuildingTypeEnum::Forge:       add("Forge_1"); break;
+        case BuildingTypeEnum::Sawmill:     add("Sawmill_1"); break;
+        case BuildingTypeEnum::Windmill:    add("Windmill_0"); break;
+        case BuildingTypeEnum::Lighthouse:  add("Lighthouse"); break;
+        default: break;
+    }
+
+    return out;
 }
 
 
@@ -849,10 +1174,24 @@ void MapRenderer::drawSprite(sf::RenderTarget& rt, const sf::Texture& t, float x
 
 void MapRenderer::draw(sf::RenderTarget& rt) {
     if (!game) return;
+    // Ensure UI (right panel / bottom bar) uses window pixel coordinates.
+    rt.setView(rt.getDefaultView());
 
     const Map& map = game->getMap();
 
-    // In gameplay we show a right-side panel; in overview we want a clean full-map view.
+    // Map View: if a tile is selected and belongs to a city territory, highlight that city's territory.
+    CityId highlightCity = kNoCity;
+    if (showOverview && selectedValid && map.inBounds(selectedPos)) {
+        const Tile& st = map.at(selectedPos);
+        if (st.getTerritoryCityId() != kNoCity) {
+            highlightCity = st.getTerritoryCityId();
+        } else if (st.getSettlementType() == SettlementTypeEnum::City) {
+            highlightCity = static_cast<CityId>(st.getSettlementId());
+        }
+    }
+
+    // We show the right-side panel in BOTH gameplay and Map View.
+    // Therefore the visible map area is the window minus the panel width.
     const sf::Vector2u fullRt = rt.getSize();
     const float panelW = 400.f;
 
@@ -861,9 +1200,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         mapRt.x = static_cast<unsigned>(float(mapRt.x) - panelW);
     }
 
-    // Used by zoom anchoring + screenToTile
     lastRtSize = mapRt;
-
     // JS uses a single "tile_size".
     const float tileSize = float(tilePx) * zoom;
 
@@ -905,20 +1242,23 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
     const sf::Vector2f baseShift{centerShiftX + origin.x, centerShiftY + origin.y};
 
+    // --- Fog-of-war (gameplay view only) ---
+    // In Map View (overview) we show the full map without fog.
+    const PlayerId curPid = game->getCurrentPlayerId();
+
+    // Preload fog texture once per frame (only used in gameplay view).
+    const sf::Texture* fogTex = nullptr;
+    if (!showOverview) {
+        fogTex = &pickFirstExisting({
+            "assets/Polytopia_game_engine_textures/common/fog.png",
+            "assets/Polytopia_game_engine_textures/common/fog.PNG"
+        });
+    }
+
     // --- Right-side info panel background ---
     const float panelPad = 12.f;
     const sf::Vector2u rtSzPanel = rt.getSize();
     const sf::FloatRect panelRect(float(rtSzPanel.x) - panelW, 0.f, panelW, float(rtSzPanel.y));
-
-    {
-        sf::RectangleShape panelBg;
-        panelBg.setPosition(panelRect.left, panelRect.top);
-        panelBg.setSize({panelRect.width, panelRect.height});
-        panelBg.setFillColor(sf::Color(20, 20, 20, 190));
-        panelBg.setOutlineThickness(2.f);
-        panelBg.setOutlineColor(sf::Color(70, 70, 70, 220));
-        rt.draw(panelBg);
-    }
 
 
     // --- Units lookup (by tile pos) ---
@@ -943,6 +1283,22 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".png");
             out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".PNG");
 
+            // Naval alias fallbacks (some packs use different names)
+            if (ut == UnitType::Scout) {
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/scout.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/scout.PNG");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.PNG");
+            }
+            if (ut == UnitType::Rammer) {
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.PNG");
+            }
+            if (ut == UnitType::Raft) {
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.PNG");
+            }
+
             // A few common alias fallbacks (optional)
             if (ut == UnitType::MindBender) {
                 out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.png");
@@ -966,6 +1322,21 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             // JS isometric projection (raw), then apply our centering shift.
             const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
             const float y = baseShift.y + (float(column + row) * yStep);
+
+            // --- Fog-of-war masking (gameplay view only) ---
+            // If this tile is not visible to the current player, draw fog and skip its contents.
+            if (!showOverview) {
+                const VisibilityEnum vis = tile.getVisibility();
+                const bool visible = isRevealed(vis, static_cast<PlayerIndex>(curPid));
+
+                if (!visible) {
+                    if (fogTex) {
+                        // x/y must already be computed for this tile at this point.
+                        drawSprite(rt, *fogTex, x, y, tileSize);
+                    }
+                    continue; // IMPORTANT: don't draw ground/resources/units/settlements under fog
+                }
+            }
 
             const TribeType tribe = tile.getTribe();
 
@@ -1028,6 +1399,13 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 drawSprite(rt, t, x, y, tileSize);
             }
 
+            // Map View: highlight territory of the selected city with a light red filter.
+            if (showOverview && highlightCity != kNoCity) {
+                if (tile.getTerritoryCityId() == highlightCity) {
+                    drawTileDiamondOverlay(rt, x, y, tileSize, yStep, sf::Color(255, 60, 60, 55));
+                }
+            }
+
             // --- movement targets overlay (gameplay view only) ---
             if (!showOverview && g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
                 const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
@@ -1046,20 +1424,28 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             // We try to mirror JS priorities:
             // capital head > village > game/fruit (tribe) > crop/fish/metal (global) > ruin > starfish
 
-            // capital: in JS it's explicit `above === 'capital'`.
-            // In our engine we don't have a separate flag in this renderer, so we treat City as capital.
-            const bool isCapital = (tile.getSettlementType() == SettlementTypeEnum::City);
+            // capital: a City can be a capital, but not every City is a capital.
+            bool isCapital = false;
+            if (tile.getSettlementType() == SettlementTypeEnum::City) {
+                if (const City* cObj = resolveCityForTile(game, tile)) {
+                    isCapital = cObj->isCapitalCity();
+                }
+            }
             const bool isVillage = (tile.getSettlementType() == SettlementTypeEnum::Village);
             const bool isRuin = (tile.getSettlementType() == SettlementTypeEnum::Ruin);
 
-            if (isCapital) {
+            if (tile.getSettlementType() == SettlementTypeEnum::City) {
                 int cityLevel = 1;
-                if (const City* cObj = resolveCityForTribe(game, tribe)) {
+                TribeType cityTribe = tribe; // default: biome tribe (fallback)
+
+                if (const City* cObj = resolveCityForTile(game, tile)) {
                     cityLevel = std::max(1, int(cObj->getLevel()));
+                    // City visuals must match the owning player's tribe.
+                    cityTribe = game->getPlayer(static_cast<PlayerId>(cObj->getOwnerId())).getTribeType();
                 }
 
                 std::vector<std::string> cityPaths;
-                for (const auto& f : tribeFolderCandidates(tribe)) {
+                for (const auto& f : tribeFolderCandidates(cityTribe)) {
                     // New layout: tribes/<Tribe>/cities/city_<level>.png
                     cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".png");
                     cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".PNG");
@@ -1122,6 +1508,91 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                            y + (tileSize - s) * 0.5f - 0.06f * tileSize,
                            s);
             }
+            // --- buildings ---
+            if (tile.getBuildingType() != BuildingTypeEnum::None) {
+                const BuildingTypeEnum btt = tile.getBuildingType();
+                const sf::Texture& bt = pickFirstExisting(buildingCandidates(btt));
+
+                // Ports are tall and can disappear if drawn too low; lift them more.
+                float lift = 0.0f; // general buildings
+                if (btt == BuildingTypeEnum::Port) lift = 0.0f;
+
+                const float s = tileSize * 0.95f;
+                drawSprite(rt, bt,
+                           x + (tileSize - s) * 0.5f,
+                           y + (tileSize - s) * 0.5f - lift * tileSize,
+                           s);
+            }
+
+            // --- attack targets overlay (gameplay view only) ---
+            if (!showOverview && g_moveSelectedUnit != kNoUnit && g_attackOverlayValid) {
+                const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
+                if (g_attackOverlaySet.find(key) != g_attackOverlaySet.end()) {
+                    // Resolves to: assets/Polytopia_game_engine_textures/misc/attackTarget.png
+                    const sf::Texture& at = pickFirstExisting({
+                        "assets/Polytopia_game_engine_textures/misc/attackTarget.png",
+                        "assets/Polytopia_game_engine_textures/misc/attackTarget.PNG"
+                    });
+                    const float s = tileSize * 0.78f;
+                    drawSprite(rt, at,
+                               x + (tileSize - s) * 0.5f,
+                               y + (tileSize - s) * 0.5f - 0.10f * tileSize,
+                               s);
+                }
+            }
+
+            // --- capture hint: show above enemy cities that are capturable by a unit standing on them ---
+            if (game && tile.getSettlementType() == SettlementTypeEnum::City) {
+                const PlayerId curPid = game->getCurrentPlayerId();
+                const Player& curPl = game->getPlayer(curPid);
+
+                const City* cObj = resolveCityForTile(game, tile);
+                const bool enemyCity = cObj
+                    ? (static_cast<PlayerId>(cObj->getOwnerId()) != curPid)
+                    : (tile.getTribe() != curPl.getTribeType());
+
+                const UnitId onTile = map.unitOn(p);
+                bool canCapture = false;
+                if (enemyCity && onTile != Map::kNoUnit) {
+                    const Unit* uu = game->getUnit(onTile);
+                    if (uu && uu->getOwnerId() == curPid && !uu->movedThisTurn() && !uu->attackedThisTurn()) {
+                        canCapture = true;
+                    }
+                }
+
+                if (canCapture) {
+                    // Resolves to assets/Polytopia_game_engine_textures/misc/hint.png
+                    const sf::Texture& hint = pickFirstExisting(globalCandidates("hint"));
+                    const float s = tileSize * 0.70f;
+                    drawSprite(rt, hint,
+                               x + (tileSize - s) * 0.5f,
+                               y - 0.85f * tileSize,
+                               s);
+                }
+            }
+
+            // --- capture hint: show above villages that are capturable by a unit standing on them ---
+            if (game && tile.getSettlementType() == SettlementTypeEnum::Village) {
+                const PlayerId curPid = game->getCurrentPlayerId();
+                const UnitId onTile = map.unitOn(p);
+
+                bool canCaptureVillage = false;
+                if (onTile != Map::kNoUnit) {
+                    const Unit* uu = game->getUnit(onTile);
+                    if (uu && uu->getOwnerId() == curPid && !uu->movedThisTurn() && !uu->attackedThisTurn()) {
+                        canCaptureVillage = true;
+                    }
+                }
+
+                if (canCaptureVillage) {
+                    const sf::Texture& hint = pickFirstExisting(globalCandidates("hint"));
+                    const float s = tileSize * 0.70f;
+                    drawSprite(rt, hint,
+                               x + (tileSize - s) * 0.5f,
+                               y - 0.85f * tileSize,
+                               s);
+                }
+            }
 
             // --- draw units on this tile (sprite from tribe pack) ---
             {
@@ -1171,659 +1642,978 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         }
     }
 
-    // --- Draw selection highlight (on top) ---
-    // --- Draw selection highlight (on top) ---
-    if (selectedValid) {
-        const int row = selectedPos.y;
-        const int column = selectedPos.x;
+    // --- Bottom context actions (gameplay view only) ---
+    g_actionBtnsValid = false;
+    g_actionBtnCount = 0;
 
-        const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
-        const float y = baseShift.y + (float(column + row) * yStep);
+    // GUI does NOT validate gameplay rules. It only offers actions.
+    // All validation must happen in Game.cpp / systems.
+    if (game) {
+        if (!showOverview) {
+            const Map& m0 = game->getMap();
+            const Pos p0 = selectedValid ? selectedPos : Pos{0, 0};
+            if (selectedValid && m0.inBounds(p0)) {
+                const Tile& t0 = m0.at(p0);
 
-        // Match the visible grid cell (diamond height is 2*yStep).
-        const sf::Vector2f top  {x + tileSize * 0.5f, y};
-        const sf::Vector2f right{x + tileSize,        y + yStep};
-        const sf::Vector2f bot  {x + tileSize * 0.5f, y + 2.f * yStep};
-        const sf::Vector2f left {x,                   y + yStep};
+                // Build a small action bar under the map (left side).
+                const float mapW = float(mapRt.x);
+                const float mapH = float(rt.getSize().y);
+                const float barH = 180.f; // more room: multiple rows of buttons
+                const float pad = 10.f;
+                auto pushBtn = [&](ActionKind kind, const char* label, UnitType ut, BuildingTypeEnum bt) {
+                    if (g_actionBtnCount >= int(g_actionBtns.size())) return;
 
-        // Fill (translucent)
-        sf::VertexArray fill(sf::TriangleFan, 4);
-        fill[0].position = top;
-        fill[1].position = right;
-        fill[2].position = bot;
-        fill[3].position = left;
-        for (std::size_t i = 0; i < 4; ++i) fill[i].color = sf::Color(255, 220, 80, 70);
-        rt.draw(fill);
+                    const float bw = 110.f; // narrower buttons so more fit
+                    const float bh = 30.f;
+                    const float gap = 6.f;
+                    const int maxPerRow = std::max(1, int((mapW - 2.f * pad) / (bw + gap)));
+                    const int row = g_actionBtnCount / maxPerRow;
+                    const int col = g_actionBtnCount % maxPerRow;
 
-        // Outline
-        sf::VertexArray outline(sf::LineStrip, 5);
-        outline[0].position = top;
-        outline[1].position = right;
-        outline[2].position = bot;
-        outline[3].position = left;
-        outline[4].position = top;
-        for (std::size_t i = 0; i < 5; ++i) outline[i].color = sf::Color(255, 220, 80, 245);
-        rt.draw(outline);
+                    const float bx = pad + float(col) * (bw + gap);
+                    const float by = (mapH - barH) + pad + float(row) * (bh + 6.f);
 
-        // “Thicker” feel (second outline slightly offset)
-        sf::VertexArray outline2(sf::LineStrip, 5);
-        outline2[0].position = top + sf::Vector2f(1.f, 1.f);
-        outline2[1].position = right + sf::Vector2f(1.f, 1.f);
-        outline2[2].position = bot + sf::Vector2f(1.f, 1.f);
-        outline2[3].position = left + sf::Vector2f(1.f, 1.f);
-        outline2[4].position = top + sf::Vector2f(1.f, 1.f);
-        for (std::size_t i = 0; i < 5; ++i) outline2[i].color = sf::Color(255, 220, 80, 140);
-        rt.draw(outline2);
-    }
+                    g_actionBtns[g_actionBtnCount] = ActionButton{sf::FloatRect(bx, by, bw, bh), kind, ut, bt};
+                    ++g_actionBtnCount;
 
-    if (!showOverview) {
-        // Default: no tech hitboxes unless we successfully render the tech tree below.
-        g_techHitValid = false;
-        g_techHitPos.clear();
-        // ================= FONTLESS UI =================
-        const bool hasFont = ensureUIFontLoaded();
-        // Buttons area (bottom of right panel)
-        const float bw = panelRect.width - 2.f * panelPad;
-        const float bh = 40.f;
-        const float baseY = panelRect.top + panelRect.height - panelPad - (bh * 2.f + 10.f);
-
-        auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
-            if (!hasFont) return;
-            sf::Text t;
-            t.setFont(uiFont);
-            t.setString(s);
-            t.setCharacterSize(sz);
-            t.setFillColor(sf::Color(240, 240, 240, 255));
-            t.setPosition(panelRect.left + panelPad, ty);
-            rt.draw(t);
-            ty += float(sz) + 6.f;
-        };
-
-        float yAfterPlayers = panelPad + 30.f;
-
-        btnEndTurn  = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
-        btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
-        btnBack     = btnOverview;
-
-        auto drawBtn = [&](const sf::FloatRect& r, bool active, const char* label) {
-            sf::RectangleShape b;
-            b.setPosition({r.left, r.top});
-            b.setSize({r.width, r.height});
-            b.setFillColor(active ? sf::Color(55, 55, 55, 235) : sf::Color(35, 35, 35, 220));
-            b.setOutlineThickness(2.f);
-            b.setOutlineColor(sf::Color(90, 90, 90, 255));
-            rt.draw(b);
-
-            if (hasFont && label) {
-                sf::Text t;
-                t.setFont(uiFont);
-                t.setString(label);
-                t.setCharacterSize(18);
-                t.setFillColor(sf::Color(240, 240, 240, 255));
-
-                const sf::FloatRect lb = t.getLocalBounds();
-                t.setPosition(
-                    r.left + (r.width - lb.width) * 0.5f - lb.left,
-                    r.top  + (r.height - lb.height) * 0.5f - lb.top - 1.f
-                );
-                rt.draw(t);
-            }
-        };
-
-        drawBtn(btnEndTurn, false, "End Turn");
-        drawBtn(btnOverview, false, "Map View");
-
-        // Top indicators (turn + current player)
-        {
-            sf::RectangleShape bar;
-            bar.setPosition(panelRect.left + panelPad, panelPad);
-            bar.setSize({panelRect.width - 2.f * panelPad, 10.f});
-            bar.setFillColor(sf::Color(255, 220, 80, 180));
-            rt.draw(bar);
-
-            const int pid = int(game->getCurrentPlayerId());
-            sf::RectangleShape cur;
-            cur.setPosition(panelRect.left + panelPad, panelPad + 14.f);
-            cur.setSize({panelRect.width - 2.f * panelPad, 6.f});
-            cur.setFillColor(sf::Color(80 + (pid * 60) % 160, 80 + (pid * 120) % 160, 80 + (pid * 200) % 160, 220));
-            rt.draw(cur);
-        }
-        {
-            float ty = panelPad + 22.f;
-            addLine(ty,
-                    "Turn: " + std::to_string(game->getTurnNumber()) +
-                    "   Player: " + std::to_string(int(game->getCurrentPlayerId())) +
-                    "   (TAB: Map View)",
-                    16);
-        }
-
-        // Players list (head icon + stars + income)
-        // NOTE: reserve space for the tech tree so everything fits on screen.
-        float yAfterPlayersList = panelPad + 56.f;
-        {
-            const auto& pls = game->getPlayers();
-            float y0 = panelPad + 56.f; // leave room for header line
-            const float rowH = 30.f;
-            const float rowW = panelRect.width - 2.f * panelPad;
-
-            // Reserve a minimum height for the tech tree area.
-            // If the window/panel is small or many players are present, we stop listing players earlier.
-            const float techMinH = 260.f;
-            const float maxYForPlayers = std::max(y0, (baseY - 10.f) - techMinH);
-
-            int shown = 0;
-            for (const Player& pl : pls) {
-                if (y0 + rowH > maxYForPlayers) {
-                    // Indicate there are more players not shown in the list.
-                    sf::RectangleShape bg;
-                    bg.setPosition(panelRect.left + panelPad, y0);
-                    bg.setSize({rowW, rowH});
-                    bg.setFillColor(sf::Color(25, 25, 25, 200));
-                    bg.setOutlineThickness(1.f);
-                    bg.setOutlineColor(sf::Color(70, 70, 70, 220));
-                    rt.draw(bg);
+                    sf::RectangleShape b;
+                    b.setPosition({bx, by});
+                    b.setSize({bw, bh});
+                    b.setFillColor(sf::Color(35, 35, 35, 235));
+                    b.setOutlineThickness(2.f);
+                    b.setOutlineColor(sf::Color(110, 110, 110, 255));
+                    rt.draw(b);
 
                     if (ensureUIFontLoaded()) {
                         sf::Text t;
                         t.setFont(uiFont);
-                        t.setCharacterSize(14);
-                        t.setFillColor(sf::Color(200, 200, 200, 255));
-                        t.setString("...");
-                        t.setPosition(panelRect.left + panelPad + 12.f, y0 + 6.f);
+                        t.setCharacterSize(16);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        t.setString(label);
+                        const sf::FloatRect lb = t.getLocalBounds();
+                        t.setPosition(
+                            bx + (bw - lb.width) * 0.5f - lb.left,
+                            by + (bh - lb.height) * 0.5f - lb.top - 1.f
+                        );
                         rt.draw(t);
                     }
-
-                    y0 += rowH + 6.f;
-                    break;
-                }
-
-                const bool isCur = (pl.getId() == game->getCurrentPlayerId());
-                const int stars  = pl.getStars();
-                const int income = TurnSystem::calcIncomeForPlayer(*game, pl.getId());
-
-                // Row background
-                sf::RectangleShape bg;
-                bg.setPosition(panelRect.left + panelPad, y0);
-                bg.setSize({rowW, rowH});
-                bg.setFillColor(isCur ? sf::Color(35, 35, 35, 220) : sf::Color(25, 25, 25, 200));
-                bg.setOutlineThickness(1.f);
-                bg.setOutlineColor(sf::Color(70, 70, 70, 220));
-                rt.draw(bg);
-
-                // Head icon (tribe head.png)
-                const TribeType t = pl.getTribeType();
-                const sf::Texture& headTex = pickFirstExisting(tileCandidates(t, "head"));
-
-                const float icon = 24.f;
-                const float ix = panelRect.left + panelPad + 8.f;
-                const float iy = y0 + (rowH - icon) * 0.5f;
-                drawSprite(rt, headTex, ix, iy, icon);
-
-                // Text
-                if (ensureUIFontLoaded()) {
-                    sf::Text line;
-                    line.setFont(uiFont);
-                    line.setCharacterSize(14);
-                    line.setFillColor(sf::Color(240, 240, 240, 255));
-                    line.setString(
-                        "P" + std::to_string(int(pl.getId())) +
-                        "  stars=" + std::to_string(stars) +
-                        "  income="+std::to_string(income)
-                    );
-                    line.setPosition(panelRect.left + panelPad + 8.f + icon + 10.f, y0 + 6.f);
-                    rt.draw(line);
-                }
-
-                y0 += rowH + 6.f;
-                ++shown;
-                if (shown >= 10) break; // hard cap, prevents extreme lists
-            }
-
-            yAfterPlayersList = y0 + 6.f;
-        }
-
-        // Tech tree (visible only in gameplay view, hidden in Map View)
-        // IMPORTANT: the render depends on how Tech classes are connected (Tech::previousTech).
-        // Owned techs: green. Missing techs: red with current price under the name.
-        if (hasFont) {
-            const PlayerId curPid = game->getCurrentPlayerId();
-            const Player& curPl = game->getPlayer(curPid);
-
-            // Available space between player rows and buttons
-            const float left = panelRect.left + panelPad;
-            const float right = panelRect.left + panelRect.width - panelPad;
-            const float top = yAfterPlayersList + 10.f;
-            const float bottom = baseY - 10.f;
-            const float w = std::max(10.f, right - left);
-            const float h = std::max(10.f, bottom - top);
-
-            // If we don't have enough height, show a small hint instead of a broken tree.
-            if (h < 180.f) {
-                float ty = top;
-                addLine(ty, "Techs", 18);
-                addLine(ty, "(resize window to see tree)", 14);
-            } else {
-                // Pull all techs from TechDB (new system)
-                std::vector<TechId> techs;
-                techs.reserve(static_cast<size_t>(TechId::Count));
-                for (uint8_t i = 0; i < static_cast<uint8_t>(TechId::Count); ++i) {
-                    techs.push_back(static_cast<TechId>(i));
-                }
-
-                auto techName = [&](TechId t) -> std::string_view {
-                    return TechDB::getTech(t).name;
-                };
-                auto byName = [&](TechId a, TechId b) {
-                    return techName(a) < techName(b);
                 };
 
-                // Build children graph from prerequisites
-                std::unordered_map<TechId, std::vector<TechId>> children;
-                children.reserve(techs.size() * 2 + 1);
+                // Always show ALL buttons so we can test that Game.cpp validates rules.
+                // (GUI is only a launcher.)
 
-                std::vector<TechId> roots;
-                roots.reserve(8);
+                // Capture
+                pushBtn(ActionKind::CaptureVillage, "Capture Village", UnitType::Warrior, BuildingTypeEnum::None);
+                pushBtn(ActionKind::CaptureCity,    "Capture City",    UnitType::Warrior, BuildingTypeEnum::None);
 
-                for (TechId t : techs) {
-                    TechId p = TechDB::getPrerequisite(t);
-                    if (p == TechId::Count) roots.push_back(t);
-                    else children[p].push_back(t);
-                }
+                // Training
+                pushBtn(ActionKind::TrainUnit, "Train Warrior", UnitType::Warrior, BuildingTypeEnum::None);
+                pushBtn(ActionKind::TrainUnit, "Train Rider",   UnitType::Rider,   BuildingTypeEnum::None);
 
-                // Preferred child ordering (Polytopia layout)
-                std::unordered_map<TechId, std::unordered_map<TechId, int>> prefChild;
-                prefChild.reserve(32);
+                // Upgrades (Raft -> ship variants)
+                pushBtn(ActionKind::UpgradeRaftToScout,  "Upgrade -> Scout",  UnitType::Raft, BuildingTypeEnum::None);
+                pushBtn(ActionKind::UpgradeRaftToRammer, "Upgrade -> Rammer", UnitType::Raft, BuildingTypeEnum::None);
+                pushBtn(ActionKind::UpgradeRaftToBomber, "Upgrade -> Bomber", UnitType::Raft, BuildingTypeEnum::None);
 
-                auto setChildOrder = [&](TechId parent, std::initializer_list<TechId> orderedChildren) {
-                    auto& m = prefChild[parent];
-                    int idx = 0;
-                    for (TechId c : orderedChildren) m[c] = idx++;
-                };
+                // Veteran
+                pushBtn(ActionKind::BecomeVeteran, "Become Veteran", UnitType::Unknown, BuildingTypeEnum::None);
 
-                setChildOrder(TechId::Hunting,      {TechId::Forestry, TechId::Archery});
-                setChildOrder(TechId::Forestry,     {TechId::Mathematics});
-                setChildOrder(TechId::Archery,      {TechId::Spiritualism});
+                // Buildings
+                pushBtn(ActionKind::BuildBuilding, "Build Farm",       UnitType::Unknown, BuildingTypeEnum::Farm);
+                pushBtn(ActionKind::BuildBuilding, "Build Mine",       UnitType::Unknown, BuildingTypeEnum::Mine);
+                pushBtn(ActionKind::BuildBuilding, "Build Lumber Hut", UnitType::Unknown, BuildingTypeEnum::LumberHut);
+                pushBtn(ActionKind::BuildBuilding, "Build Port",       UnitType::Unknown, BuildingTypeEnum::Port);
+                pushBtn(ActionKind::BuildBuilding, "Build Market",     UnitType::Unknown, BuildingTypeEnum::Market);
+                pushBtn(ActionKind::BuildBuilding, "Build Forge",      UnitType::Unknown, BuildingTypeEnum::Forge);
+                pushBtn(ActionKind::BuildBuilding, "Build Sawmill",    UnitType::Unknown, BuildingTypeEnum::Sawmill);
+                pushBtn(ActionKind::BuildBuilding, "Build Windmill",   UnitType::Unknown, BuildingTypeEnum::Windmill);
+                pushBtn(ActionKind::BuildBuilding, "Build Lighthouse", UnitType::Unknown, BuildingTypeEnum::Lighthouse);
 
-                setChildOrder(TechId::Riding,       {TechId::Roads, TechId::FreeSpirit});
-                setChildOrder(TechId::Roads,        {TechId::Trade});
-                setChildOrder(TechId::FreeSpirit,   {TechId::Chivalry});
+                // Tile actions
+                pushBtn(ActionKind::Organization, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::Hunt,         "Hunt",         UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::Fishing,      "Fishing",      UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::ClearForest,  "Clear Forest", UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::BurnForest,   "Burn Forest",  UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::GrowForest,   "Grow Forest",  UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::DestroyTile,  "Destroy",      UnitType::Unknown, BuildingTypeEnum::None);
 
-                setChildOrder(TechId::Organization, {TechId::Farming, TechId::Strategy});
-                setChildOrder(TechId::Farming,      {TechId::Construction});
-                setChildOrder(TechId::Strategy,     {TechId::Diplomacy});
+                if (g_actionBtnCount > 0) {
+                    sf::RectangleShape bar;
+                    bar.setPosition(0.f, mapH - barH);
+                    bar.setSize({mapW, barH});
+                    bar.setFillColor(sf::Color(15, 15, 15, 210));
+                    bar.setOutlineThickness(1.f);
+                    bar.setOutlineColor(sf::Color(70, 70, 70, 220));
+                    rt.draw(bar);
 
-                setChildOrder(TechId::Fishing,      {TechId::Ramming, TechId::Sailing});
-                setChildOrder(TechId::Sailing,      {TechId::Navigation});
-                setChildOrder(TechId::Ramming,      {TechId::Aquatism});
+                    // Re-draw buttons on top of bar
+                    const int want = g_actionBtnCount;
+                    std::vector<ActionButton> saved;
+                    saved.reserve(size_t(want));
+                    for (int i = 0; i < want; ++i) saved.push_back(g_actionBtns[i]);
 
-                setChildOrder(TechId::Climbing,     {TechId::Mining, TechId::Meditation});
-                setChildOrder(TechId::Mining,       {TechId::Smithery});
-                setChildOrder(TechId::Meditation,   {TechId::Philosophy});
-
-                auto childLess = [&](TechId parent, TechId a, TechId b) {
-                    auto itP = prefChild.find(parent);
-                    if (itP != prefChild.end()) {
-                        const auto& ord = itP->second;
-                        const int ra = ord.count(a) ? ord.at(a) : 100000;
-                        const int rb = ord.count(b) ? ord.at(b) : 100000;
-                        if (ra != rb) return ra < rb;
-                    }
-                    return techName(a) < techName(b);
-                };
-
-                for (auto& kv : children) {
-                    auto& v = kv.second;
-                    std::sort(v.begin(), v.end(), [&](TechId a, TechId b) { return childLess(kv.first, a, b); });
-                }
-
-                // Depth BFS
-                std::unordered_map<TechId, int> depth;
-                depth.reserve(techs.size() * 2 + 1);
-                std::vector<TechId> q;
-                q.reserve(techs.size());
-
-                std::sort(roots.begin(), roots.end(), byName);
-                for (TechId r : roots) { depth[r] = 0; q.push_back(r); }
-
-                for (size_t qi = 0; qi < q.size(); ++qi) {
-                    TechId cur = q[qi];
-                    int d = depth[cur];
-                    auto it = children.find(cur);
-                    if (it == children.end()) continue;
-                    for (TechId ch : it->second) {
-                        if (depth.count(ch)) continue;
-                        depth[ch] = d + 1;
-                        q.push_back(ch);
-                    }
-                }
-
-                int maxDepth = 0;
-                for (auto& kv : depth) maxDepth = std::max(maxDepth, kv.second);
-                maxDepth = std::max(1, maxDepth);
-
-                // Root angles
-                // Place the 5 root technologies exactly every 360/5 degrees.
-                // SFML: +x right, +y down. Angle 0 -> right, -PI/2 -> up.
-                constexpr float PI = 3.14159265f;
-                auto normAngle = [&](float a) { while (a <= -PI) a += 2.f * PI; while (a > PI) a -= 2.f * PI; return a; };
-
-                const float rootStep = (2.f * PI) / 5.f;          // 360/5
-                // Shift so Organization is exactly to the right (0 rad)
-                const float startAngle = -rootStep;               // Riding is one step CCW from right
-
-                // Desired clockwise order around the center.
-                // With 72° spacing this makes Hunting land in the upper-left sector.
-                const std::array<TechId, 5> rootOrder = {
-                    TechId::Riding,
-                    TechId::Organization,
-                    TechId::Climbing,
-                    TechId::Fishing,
-                    TechId::Hunting
-                };
-
-                std::unordered_map<TechId, float> preferredRootAngle;
-                preferredRootAngle.reserve(8);
-                for (size_t i = 0; i < rootOrder.size(); ++i) {
-                    preferredRootAngle[rootOrder[i]] = normAngle(startAngle + float(i) * rootStep);
-                }
-
-                struct RootA { TechId t; float a; };
-                std::vector<RootA> rootA;
-                std::vector<TechId> unknown;
-                rootA.reserve(roots.size());
-                unknown.reserve(roots.size());
-
-                for (TechId r : roots) {
-                    auto it = preferredRootAngle.find(r);
-                    if (it != preferredRootAngle.end()) {
-                        rootA.push_back({r, it->second});
-                    } else {
-                        unknown.push_back(r);
-                    }
-                }
-
-                // Any extra roots (shouldn't happen for the base Polytopia tree) are spread evenly.
-                if (!unknown.empty()) {
-                    std::sort(unknown.begin(), unknown.end(), byName);
-                    const float step = (2.f * PI) / float(unknown.size());
-                    for (size_t i = 0; i < unknown.size(); ++i) {
-                        rootA.push_back({unknown[i], normAngle(startAngle + float(i) * step)});
-                    }
-                }
-
-                std::sort(rootA.begin(), rootA.end(), [&](const RootA& a, const RootA& b) { return a.a < b.a; });
-
-                // Leaf counts
-                std::unordered_map<TechId, int> leafCount;
-                std::function<int(TechId)> countLeaves = [&](TechId t){
-                    if (leafCount.count(t)) return leafCount[t];
-                    auto it = children.find(t);
-                    if (it == children.end() || it->second.empty()) return leafCount[t] = 1;
-                    int sum = 0; for (TechId c : it->second) sum += std::max(1, countLeaves(c));
-                    return leafCount[t] = std::max(1, sum);
-                };
-                for (auto& r : rootA) countLeaves(r.t);
-
-                std::unordered_map<TechId, float> angle;
-                std::function<void(TechId,float,float)> assignAngles = [&](TechId t, float a0, float a1){
-                    auto it = children.find(t);
-                    if (it == children.end() || it->second.empty()) { angle[t] = 0.5f*(a0+a1); return; }
-                    auto ch = it->second;
-                    std::sort(ch.begin(), ch.end(), [&](TechId a, TechId b){return childLess(t,a,b);});
-                    int total=0; for (TechId c:ch) total+=std::max(1,leafCount[c]);
-                    float cur=a0, weighted=0; int wsum=0;
-                    for (TechId c:ch){ int w=std::max(1,leafCount[c]); float span=(a1-a0)*(float(w)/float(total)); float cb=cur, ce=cur+span; assignAngles(c,cb,ce); weighted+=angle[c]*float(w); wsum+=w; cur=ce; }
-                    angle[t]=(wsum>0)?(weighted/float(wsum)):0.5f*(a0+a1);
-                };
-
-                std::unordered_map<TechId,std::pair<float,float>> rootSector;
-                const int R = (int)rootA.size();
-                const float shrink = 0.86f;
-                for (int i=0;i<R;++i){
-                    float aPrev=rootA[(i-1+R)%R].a;
-                    float aCur =rootA[i].a;
-                    float aNext=rootA[(i+1)%R].a;
-                    if (aPrev>aCur) aPrev-=2*PI;
-                    if (aNext<aCur) aNext+=2*PI;
-                    float left=0.5f*(aPrev+aCur);
-                    float right=0.5f*(aCur+aNext);
-                    float half=0.5f*(right-left)*shrink;
-                    rootSector[rootA[i].t]={aCur-half,aCur+half};
-                }
-                for (auto& r:rootA){ auto it=rootSector.find(r.t); if(it!=rootSector.end()) assignAngles(r.t,it->second.first,it->second.second); else assignAngles(r.t,r.a-0.15f,r.a+0.15f);}
-
-                const sf::Vector2f center(left + w * 0.50f, top + h * 0.50f);
-                const float maxR = std::max(10.f, std::min(w, h) * 0.46f);
-                const float ringStep = std::max(12.f, (maxR / float(maxDepth + 1)) * 0.98f);
-
-                std::unordered_map<TechId, sf::Vector2f> pos;
-                buildFixedTechTreeLayout(techs, pos, center, w, h);
-
-                // Save tech node hitboxes for mouse clicks.
-                g_techHitValid = true;
-                g_techHitArea = sf::FloatRect(left, top, w, h);
-                g_techHitPos = pos;
-
-                // --------------------------
-                // DRAW EDGES
-                // --------------------------
-                {
-                    sf::VertexArray lines(sf::Lines);
-                    lines.clear();
-
-                    for (TechId t : techs) {
-                        const TechId pTech = TechDB::getPrerequisite(t);
-                        if (pTech == TechId::Count) continue;
-
-                        auto itA = pos.find(pTech);
-                        auto itB = pos.find(t);
-                        if (itA == pos.end() || itB == pos.end()) continue;
-
-                        lines.append(sf::Vertex(itA->second, sf::Color(70, 70, 70, 220)));
-                        lines.append(sf::Vertex(itB->second, sf::Color(70, 70, 70, 220)));
-                    }
-
-                    rt.draw(lines);
-                }
-
-                // Center head icon (focal point)
-                {
-                    const TribeType tribe = curPl.getTribeType();
-                    const sf::Texture& headTex = pickFirstExisting(tileCandidates(tribe, "head"));
-                    const float headSize = std::clamp(ringStep * 1.25f, 26.f, 64.f);
-                    drawSprite(rt, headTex,
-                               center.x - headSize * 0.5f,
-                               center.y - headSize * 0.5f,
-                               headSize);
-                }
-
-                // Node radius (auto-fit)
-                const float rNode = std::clamp(ringStep * 0.40f, 10.f, 18.f);
-                // Slightly larger radius for easier clicking.
-                g_techHitRadius = rNode * 1.15f;
-
-                const bool literacy = curPl.hasTech(TechId::Philosophy);
-                // Draw nodes + labels
-                for (TechId tech : techs) {
-                    auto it = pos.find(tech);
-                    if (it == pos.end()) continue;
-                    const sf::Vector2f p = it->second;
-
-                    const bool owned = curPl.hasTech(tech);
-                    const int numCities = std::max(1, (int)curPl.getCities().size());
-                    const int price = TechDB::calculatePrice(tech, numCities, literacy);
-
-                    const sf::Color ownedFill(35, 140, 70, 255);
-                    const sf::Color ownedOutline(90, 230, 140, 255);
-                    const sf::Color missFill(120, 35, 35, 255);
-                    const sf::Color missOutline(240, 90, 90, 255);
-
-                    sf::CircleShape circ(rNode);
-                    circ.setOrigin(rNode, rNode);
-                    circ.setPosition(p);
-                    circ.setFillColor(owned ? ownedFill : missFill);
-                    circ.setOutlineThickness(3.f);
-                    circ.setOutlineColor(owned ? ownedOutline : missOutline);
-                    rt.draw(circ);
-
-                    // Tech name (centered)
-                    sf::Text name;
-                    name.setFont(uiFont);
-                    name.setCharacterSize((unsigned)std::max(9.f, rNode * 0.62f));
-                    name.setFillColor(sf::Color(240, 240, 240, 255));
-                    name.setString(std::string(TechDB::getTech(tech).name));
-
-                    if (name.getString().getSize() > 12) {
-                        name.setCharacterSize((unsigned)std::max(8.f, rNode * 0.52f));
-                    }
-
-                    const sf::FloatRect nb = name.getLocalBounds();
-                    name.setPosition(p.x - (nb.width * 0.5f) - nb.left,
-                                     p.y - (nb.height * 0.65f) - nb.top);
-                    rt.draw(name);
-
-                    // Price under name for missing techs
-                    if (!owned) {
-                        sf::Text pr;
-                        pr.setFont(uiFont);
-                        pr.setCharacterSize((unsigned)std::max(8.f, rNode * 0.50f));
-                        pr.setFillColor(sf::Color(255, 210, 210, 255));
-                        pr.setString(std::to_string(price));
-                        const sf::FloatRect pb = pr.getLocalBounds();
-                        pr.setPosition(p.x - (pb.width * 0.5f) - pb.left,
-                                       p.y + (rNode * 0.15f) - pb.top);
-                        rt.draw(pr);
-                    }
-                }
-            }
-        }
-    }
-    else {
-        const bool hasFont = ensureUIFontLoaded();
-
-        auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
-            if (!hasFont) return;
-            sf::Text t;
-            t.setFont(uiFont);
-            t.setString(s);
-            t.setCharacterSize(sz);
-            t.setFillColor(sf::Color(240, 240, 240, 255));
-            t.setPosition(panelRect.left + panelPad, ty);
-            rt.draw(t);
-            ty += float(sz) + 6.f;
-        };
-
-        // Only Back button in Map View
-        const float bw = panelRect.width - 2.f * panelPad;
-        const float bh = 40.f;
-        const float baseY = panelRect.top + panelRect.height - panelPad - bh;
-
-        btnBack = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
-        btnEndTurn = sf::FloatRect();
-        btnOverview = sf::FloatRect();
-
-        // Draw Back button
-        {
-            sf::RectangleShape b;
-            b.setPosition({btnBack.left, btnBack.top});
-            b.setSize({btnBack.width, btnBack.height});
-            b.setFillColor(sf::Color(35, 35, 35, 220));
-            b.setOutlineThickness(2.f);
-            b.setOutlineColor(sf::Color(90, 90, 90, 255));
-            rt.draw(b);
-
-            if (hasFont) {
-                sf::Text t;
-                t.setFont(uiFont);
-                t.setString("Back");
-                t.setCharacterSize(18);
-                t.setFillColor(sf::Color(240, 240, 240, 255));
-                const sf::FloatRect lb = t.getLocalBounds();
-                t.setPosition(
-                    btnBack.left + (btnBack.width - lb.width) * 0.5f - lb.left,
-                    btnBack.top  + (btnBack.height - lb.height) * 0.5f - lb.top - 1.f
-                );
-                rt.draw(t);
-            }
-        }
-
-        // Header
-        {
-            float ty = panelPad + 16.f;
-            addLine(ty, "Map View", 18);
-            addLine(ty, "(TAB to return)", 14);
-            ty += 8.f;
-        }
-
-        // Tile + unit stats (ONLY IN MAP VIEW)
-        {
-            float ty = panelPad + 70.f;
-
-            addLine(ty, "===== TILE =====", 18);
-
-            if (!selectedValid) {
-                addLine(ty, "(click a tile)", 14);
-            } else {
-                const Tile& st = map.at(selectedPos);
-
-                addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
-                addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
-                addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
-                addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
-
-                // Resources list (Tile)
-                {
-                    const auto resU = static_cast<uint16_t>(st.getResource());
-                    auto hasR = [&](ResourcesEnum r) { return (resU & static_cast<uint16_t>(r)) != 0; };
-
-                    std::string rline = "Resources: ";
-                    bool any = false;
-                    if (hasR(ResourcesEnum::Forest)) { rline += "Forest "; any = true; }
-                    if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
-                    if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
-                    if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
-                    if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
-                    if (!any) rline += "None";
-                    addLine(ty, rline, 14);
-                }
-
-                if (st.getSettlementType() == SettlementTypeEnum::City) {
-                    addLine(ty, "===== CITY =====", 18);
-                    const City* cObj = resolveCityForTribe(game, st.getTribe());
-                    if (cObj) {
-                        addLine(ty, "City name: " + cObj->getName(), 14);
-                        addLine(ty, "CityId: " + std::to_string(int(cObj->getCityId())), 14);
-                        addLine(ty, "OwnerId: " + std::to_string(int(cObj->getOwnerId())), 14);
-                        addLine(ty, std::string("Is capital: ") + (cObj->isCapitalCity() ? "yes" : "no"), 14);
-                        addLine(ty, "Level: " + std::to_string(int(cObj->getLevel())), 14);
-                        addLine(ty, "Population: " + std::to_string(int(cObj->getPopulation())) + "/" + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
-                        addLine(ty, "Stars/round: " + std::to_string(int(cObj->getStarsPerRound())), 14);
-                        addLine(ty, "Units in city: " + std::to_string(int(cObj->getUnitsCount())) + "/" + std::to_string(int(cObj->maxUnitCapacity())), 14);
-                        addLine(ty, std::string("Has workshop: ") + (cObj->hasWorkshopEnabled() ? "yes" : "no"), 14);
-                        addLine(ty, std::string("Has city wall: ") + (cObj->hasCityWallEnabled() ? "yes" : "no"), 14);
-                    } else {
-                        addLine(ty, "(City object not resolved)", 14);
-                    }
-                }
-
-                // Unit info (if any)
-                {
-                    addLine(ty, "===== UNIT =====", 18);
-                    const uint32_t skey = (uint32_t(selectedPos.y) << 16u) | uint32_t(selectedPos.x);
-                    auto itU = unitsByPos.find(skey);
-                    if (itU != unitsByPos.end() && !itU->second.empty()) {
-                        const Unit* u = itU->second.front();
-                        addLine(ty, std::string("Unit: ") + unitTypeName(u->getType()), 14);
-                        addLine(ty, "Owner: " + std::to_string(int(u->getOwnerId())), 14);
-                        addLine(ty, "HP: " + std::to_string(u->getHealth()) + "/" + std::to_string(u->getMaxHealth()), 14);
-                        if (itU->second.size() > 1) {
-                            addLine(ty, "(+" + std::to_string(itU->second.size() - 1) + " more)", 14);
+                    g_actionBtnCount = 0;
+                    for (const ActionButton& sbtn : saved) {
+                        if (sbtn.kind == ActionKind::CaptureVillage) {
+                            pushBtn(sbtn.kind, "Capture Village", sbtn.trainType, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::CaptureCity) {
+                            pushBtn(sbtn.kind, "Capture City", sbtn.trainType, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::TrainUnit) {
+                            pushBtn(sbtn.kind,
+                                    (sbtn.trainType == UnitType::Rider) ? "Train Rider" : "Train Warrior",
+                                    sbtn.trainType,
+                                    BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::BuildBuilding) {
+                            std::string lbl = std::string("Build ") + buildingTypeName(sbtn.buildType);
+                            pushBtn(sbtn.kind, lbl.c_str(), UnitType::Unknown, sbtn.buildType);
+                        } else if (sbtn.kind == ActionKind::ClearForest) {
+                            pushBtn(sbtn.kind, "Clear Forest", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::BurnForest) {
+                            pushBtn(sbtn.kind, "Burn Forest", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::GrowForest) {
+                            pushBtn(sbtn.kind, "Grow Forest", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::Hunt) {
+                            pushBtn(sbtn.kind, "Hunt", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::Fishing) {
+                            pushBtn(sbtn.kind, "Fishing", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::DestroyTile) {
+                            pushBtn(sbtn.kind, "Destroy", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::Organization) {
+                            pushBtn(sbtn.kind, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::UpgradeRaftToScout) {
+                            pushBtn(sbtn.kind, "Upgrade -> Scout", UnitType::Raft, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::UpgradeRaftToRammer) {
+                            pushBtn(sbtn.kind, "Upgrade -> Rammer", UnitType::Raft, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::UpgradeRaftToBomber) {
+                            pushBtn(sbtn.kind, "Upgrade -> Bomber", UnitType::Raft, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::BecomeVeteran) {
+                            pushBtn(sbtn.kind, "Become Veteran", UnitType::Unknown, BuildingTypeEnum::None);
                         }
+                    }
+
+                    g_actionPos = p0;
+                    g_actionBtnsValid = true;
+
+                }
+            }
+                }
+            }
+            // --- Draw selection highlight (on top) ---
+            // --- Draw selection highlight (on top) ---
+            if (selectedValid) {
+                const int row = selectedPos.y;
+                const int column = selectedPos.x;
+
+                const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
+                const float y = baseShift.y + (float(column + row) * yStep);
+
+                // Match the visible grid cell (diamond height is 2*yStep).
+                const sf::Vector2f top  {x + tileSize * 0.5f, y};
+                const sf::Vector2f right{x + tileSize,        y + yStep};
+                const sf::Vector2f bot  {x + tileSize * 0.5f, y + 2.f * yStep};
+                const sf::Vector2f left {x,                   y + yStep};
+
+                // Fill (translucent)
+                sf::VertexArray fill(sf::TriangleFan, 4);
+                fill[0].position = top;
+                fill[1].position = right;
+                fill[2].position = bot;
+                fill[3].position = left;
+                for (std::size_t i = 0; i < 4; ++i) fill[i].color = sf::Color(255, 220, 80, 70);
+                rt.draw(fill);
+
+                // Outline
+                sf::VertexArray outline(sf::LineStrip, 5);
+                outline[0].position = top;
+                outline[1].position = right;
+                outline[2].position = bot;
+                outline[3].position = left;
+                outline[4].position = top;
+                for (std::size_t i = 0; i < 5; ++i) outline[i].color = sf::Color(255, 220, 80, 245);
+                rt.draw(outline);
+
+                // “Thicker” feel (second outline slightly offset)
+                sf::VertexArray outline2(sf::LineStrip, 5);
+                outline2[0].position = top + sf::Vector2f(1.f, 1.f);
+                outline2[1].position = right + sf::Vector2f(1.f, 1.f);
+                outline2[2].position = bot + sf::Vector2f(1.f, 1.f);
+                outline2[3].position = left + sf::Vector2f(1.f, 1.f);
+                outline2[4].position = top + sf::Vector2f(1.f, 1.f);
+                for (std::size_t i = 0; i < 5; ++i) outline2[i].color = sf::Color(255, 220, 80, 140);
+                rt.draw(outline2);
+            }
+
+            // --- Right-side info panel background (drawn last, on top) ---
+            {
+                sf::RectangleShape panelBg;
+                panelBg.setPosition(panelRect.left, panelRect.top);
+                panelBg.setSize({panelRect.width, panelRect.height});
+                panelBg.setFillColor(sf::Color(20, 20, 20, 190));
+                panelBg.setOutlineThickness(2.f);
+                panelBg.setOutlineColor(sf::Color(70, 70, 70, 220));
+                rt.draw(panelBg);
+            }
+
+            // --- Map View right panel (tile info + Back) ---
+            if (showOverview) {
+                const bool hasFont = ensureUIFontLoaded();
+
+                const float bw = panelRect.width - 2.f * panelPad;
+                const float bh = 40.f;
+                const float baseY = panelRect.top + panelRect.height - panelPad - bh;
+
+                btnBack = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
+                btnEndTurn = sf::FloatRect();
+                btnOverview = sf::FloatRect();
+
+                // Back button
+                {
+                    sf::RectangleShape b;
+                    b.setPosition({btnBack.left, btnBack.top});
+                    b.setSize({btnBack.width, btnBack.height});
+                    b.setFillColor(sf::Color(35, 35, 35, 220));
+                    b.setOutlineThickness(2.f);
+                    b.setOutlineColor(sf::Color(90, 90, 90, 255));
+                    rt.draw(b);
+
+                    if (hasFont) {
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setString("Back");
+                        t.setCharacterSize(18);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        const sf::FloatRect lb = t.getLocalBounds();
+                        t.setPosition(
+                            btnBack.left + (btnBack.width - lb.width) * 0.5f - lb.left,
+                            btnBack.top  + (btnBack.height - lb.height) * 0.5f - lb.top - 1.f
+                        );
+                        rt.draw(t);
+                    }
+                }
+
+                auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
+                    if (!hasFont) return;
+                    sf::Text t;
+                    t.setFont(uiFont);
+                    t.setString(s);
+                    t.setCharacterSize(sz);
+                    t.setFillColor(sf::Color(240, 240, 240, 255));
+                    t.setPosition(panelRect.left + panelPad, ty);
+                    rt.draw(t);
+                    ty += float(sz) + 6.f;
+                };
+
+                float ty = panelPad + 20.f;
+                addLine(ty, "===== TILE =====", 18);
+
+                if (!selectedValid) {
+                    addLine(ty, "(click a tile)", 14);
+                } else if (!map.inBounds(selectedPos)) {
+                    addLine(ty, "(out of bounds)", 14);
+                } else {
+                    const Tile& st = map.at(selectedPos);
+
+                    addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
+                    addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
+                    addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                    addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
+
+                    // Resources list (Tile)
+                    {
+                        const auto resU = static_cast<uint16_t>(st.getResource());
+                        auto hasR = [&](ResourcesEnum r) { return (resU & static_cast<uint16_t>(r)) != 0; };
+
+                        std::string rline = "Resources: ";
+                        bool any = false;
+                        if (hasR(ResourcesEnum::Forest)) { rline += "Forest "; any = true; }
+                        if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
+                        if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
+                        if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
+                        if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
+                        if (!any) rline += "None";
+                        addLine(ty, rline, 14);
+                    }
+
+                    if (st.getSettlementType() == SettlementTypeEnum::City) {
+                        addLine(ty, "===== CITY =====", 18);
+                        const City* cObj = resolveCityForTile(game, st);
+                        if (cObj) {
+                            addLine(ty, "City name: " + cObj->getName(), 14);
+                            addLine(ty, "CityId: " + std::to_string(int(cObj->getCityId())), 14);
+                            addLine(ty, "OwnerId: " + std::to_string(int(cObj->getOwnerId())), 14);
+                            addLine(ty, std::string("Is capital: ") + (cObj->isCapitalCity() ? "yes" : "no"), 14);
+                            addLine(ty, "Level: " + std::to_string(int(cObj->getLevel())), 14);
+                            addLine(ty, "Population: " + std::to_string(int(cObj->getPopulation())) + "/" + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
+                            addLine(ty, "Stars/round: " + std::to_string(int(cObj->getStarsPerRound())), 14);
+                            addLine(ty, "Units in city: " + std::to_string(int(cObj->getUnitsCount())) + "/" + std::to_string(int(cObj->maxUnitCapacity())), 14);
+                            addLine(ty, std::string("Has workshop: ") + (cObj->hasWorkshopEnabled() ? "yes" : "no"), 14);
+                            addLine(ty, std::string("Has city wall: ") + (cObj->hasCityWallEnabled() ? "yes" : "no"), 14);
+                        } else {
+                            addLine(ty, "(City object not resolved)", 14);
+                        }
+                    }
+
+                    // Unit info (if any)
+                    {
+                        addLine(ty, "===== UNIT =====", 18);
+                        const uint32_t skey = (uint32_t(selectedPos.y) << 16u) | uint32_t(selectedPos.x);
+                        auto itU = unitsByPos.find(skey);
+                        if (itU != unitsByPos.end() && !itU->second.empty()) {
+                            const Unit* u = itU->second.front();
+                            addLine(ty, std::string("Unit: ") + unitDisplayString(*u), 14);
+                            addLine(ty, "Owner: " + std::to_string(int(u->getOwnerId())), 14);
+                            addLine(ty, "HP: " + std::to_string(u->getHealth()) + "/" + std::to_string(u->getMaxHealth()), 14);
+                            if (itU->second.size() > 1) {
+                                addLine(ty, "(+" + std::to_string(itU->second.size() - 1) + " more)", 14);
+                            }
+                        } else {
+                            addLine(ty, "Unit: none", 14);
+                        }
+                    }
+                }
+
+                return; // Map View panel drawn; skip gameplay panel below
+            }
+
+            if (!showOverview) {
+                // Default: no tech hitboxes unless we successfully render the tech tree below.
+                g_techHitValid = false;
+                g_techHitPos.clear();
+                // ================= FONTLESS UI =================
+                const bool hasFont = ensureUIFontLoaded();
+                // Buttons area (bottom of right panel)
+                const float bw = panelRect.width - 2.f * panelPad;
+                const float bh = 40.f;
+                const float baseY = panelRect.top + panelRect.height - panelPad - (bh * 2.f + 10.f);
+
+                auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
+                    if (!hasFont) return;
+                    sf::Text t;
+                    t.setFont(uiFont);
+                    t.setString(s);
+                    t.setCharacterSize(sz);
+                    t.setFillColor(sf::Color(240, 240, 240, 255));
+                    t.setPosition(panelRect.left + panelPad, ty);
+                    rt.draw(t);
+                    ty += float(sz) + 6.f;
+                };
+
+                float yAfterPlayers = panelPad + 30.f;
+
+                btnEndTurn  = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
+                btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
+                btnBack     = btnOverview;
+
+                auto drawBtn = [&](const sf::FloatRect& r, bool active, const char* label) {
+                    sf::RectangleShape b;
+                    b.setPosition({r.left, r.top});
+                    b.setSize({r.width, r.height});
+                    b.setFillColor(active ? sf::Color(55, 55, 55, 235) : sf::Color(35, 35, 35, 220));
+                    b.setOutlineThickness(2.f);
+                    b.setOutlineColor(sf::Color(90, 90, 90, 255));
+                    rt.draw(b);
+
+                    if (hasFont && label) {
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setString(label);
+                        t.setCharacterSize(18);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+
+                        const sf::FloatRect lb = t.getLocalBounds();
+                        t.setPosition(
+                            r.left + (r.width - lb.width) * 0.5f - lb.left,
+                            r.top  + (r.height - lb.height) * 0.5f - lb.top - 1.f
+                        );
+                        rt.draw(t);
+                    }
+                };
+
+                drawBtn(btnEndTurn, false, "End Turn");
+                drawBtn(btnOverview, false, "Map View");
+
+                // Top indicators (turn + current player)
+                {
+                    sf::RectangleShape bar;
+                    bar.setPosition(panelRect.left + panelPad, panelPad);
+                    bar.setSize({panelRect.width - 2.f * panelPad, 10.f});
+                    bar.setFillColor(sf::Color(255, 220, 80, 180));
+                    rt.draw(bar);
+
+                    const int pid = int(game->getCurrentPlayerId());
+                    sf::RectangleShape cur;
+                    cur.setPosition(panelRect.left + panelPad, panelPad + 14.f);
+                    cur.setSize({panelRect.width - 2.f * panelPad, 6.f});
+                    cur.setFillColor(sf::Color(80 + (pid * 60) % 160, 80 + (pid * 120) % 160, 80 + (pid * 200) % 160, 220));
+                    rt.draw(cur);
+                }
+                {
+                    float ty = panelPad + 22.f;
+                    addLine(ty,
+                            "Turn: " + std::to_string(game->getTurnNumber()) +
+                            "   Player: " + std::to_string(int(game->getCurrentPlayerId())) +
+                            "   (TAB: Map View)",
+                            16);
+                }
+
+                // Players list (head icon + stars + income)
+                // NOTE: reserve space for the tech tree so everything fits on screen.
+                float yAfterPlayersList = panelPad + 56.f;
+                {
+                    const auto& pls = game->getPlayers();
+                    float y0 = panelPad + 56.f; // leave room for header line
+                    const float rowH = 30.f;
+                    const float rowW = panelRect.width - 2.f * panelPad;
+
+                    // Reserve a minimum height for the tech tree area.
+                    // If the window/panel is small or many players are present, we stop listing players earlier.
+                    const float techMinH = 260.f;
+                    const float maxYForPlayers = std::max(y0, (baseY - 10.f) - techMinH);
+
+                    int shown = 0;
+                    for (const Player& pl : pls) {
+                        if (y0 + rowH > maxYForPlayers) {
+                            // Indicate there are more players not shown in the list.
+                            sf::RectangleShape bg;
+                            bg.setPosition(panelRect.left + panelPad, y0);
+                            bg.setSize({rowW, rowH});
+                            bg.setFillColor(sf::Color(25, 25, 25, 200));
+                            bg.setOutlineThickness(1.f);
+                            bg.setOutlineColor(sf::Color(70, 70, 70, 220));
+                            rt.draw(bg);
+
+                            if (ensureUIFontLoaded()) {
+                                sf::Text t;
+                                t.setFont(uiFont);
+                                t.setCharacterSize(14);
+                                t.setFillColor(sf::Color(200, 200, 200, 255));
+                                t.setString("...");
+                                t.setPosition(panelRect.left + panelPad + 12.f, y0 + 6.f);
+                                rt.draw(t);
+                            }
+
+                            y0 += rowH + 6.f;
+                            break;
+                        }
+
+                        const bool isCur = (pl.getId() == game->getCurrentPlayerId());
+                        const int stars  = pl.getStars();
+                        const int income = TurnSystem::calcIncomeForPlayer(*game, pl.getId());
+
+                        // Row background
+                        sf::RectangleShape bg;
+                        bg.setPosition(panelRect.left + panelPad, y0);
+                        bg.setSize({rowW, rowH});
+                        bg.setFillColor(isCur ? sf::Color(35, 35, 35, 220) : sf::Color(25, 25, 25, 200));
+                        bg.setOutlineThickness(1.f);
+                        bg.setOutlineColor(sf::Color(70, 70, 70, 220));
+                        rt.draw(bg);
+
+                        // Head icon (tribe head.png)
+                        const TribeType t = pl.getTribeType();
+                        const sf::Texture& headTex = pickFirstExisting(tileCandidates(t, "head"));
+
+                        const float icon = 24.f;
+                        const float ix = panelRect.left + panelPad + 8.f;
+                        const float iy = y0 + (rowH - icon) * 0.5f;
+                        drawSprite(rt, headTex, ix, iy, icon);
+
+                        // Text
+                        if (ensureUIFontLoaded()) {
+                            sf::Text line;
+                            line.setFont(uiFont);
+                            line.setCharacterSize(14);
+                            line.setFillColor(sf::Color(240, 240, 240, 255));
+                            line.setString(
+                                "P" + std::to_string(int(pl.getId())) +
+                                "  stars=" + std::to_string(stars) +
+                                "  income="+std::to_string(income)
+                            );
+                            line.setPosition(panelRect.left + panelPad + 8.f + icon + 10.f, y0 + 6.f);
+                            rt.draw(line);
+                        }
+
+                        y0 += rowH + 6.f;
+                        ++shown;
+                        if (shown >= 10) break; // hard cap, prevents extreme lists
+                    }
+
+                    yAfterPlayersList = y0 + 6.f;
+                }
+
+                // Tech tree (visible only in gameplay view, hidden in Map View)
+                // IMPORTANT: the render depends on how Tech classes are connected (Tech::previousTech).
+                // Owned techs: green. Missing techs: red with current price under the name.
+                if (hasFont) {
+                    const PlayerId curPid = game->getCurrentPlayerId();
+                    const Player& curPl = game->getPlayer(curPid);
+
+                    // Available space between player rows and buttons
+                    const float left = panelRect.left + panelPad;
+                    const float right = panelRect.left + panelRect.width - panelPad;
+                    const float top = yAfterPlayersList + 10.f;
+                    const float bottom = baseY - 10.f;
+                    const float w = std::max(10.f, right - left);
+                    const float h = std::max(10.f, bottom - top);
+
+                    // If we don't have enough height, show a small hint instead of a broken tree.
+                    if (h < 180.f) {
+                        float ty = top;
+                        addLine(ty, "Techs", 18);
+                        addLine(ty, "(resize window to see tree)", 14);
                     } else {
-                        addLine(ty, "Unit: none", 14);
+                        // Pull all techs from TechDB (new system)
+                        std::vector<TechId> techs;
+                        techs.reserve(static_cast<size_t>(TechId::Count));
+                        for (uint8_t i = 0; i < static_cast<uint8_t>(TechId::Count); ++i) {
+                            techs.push_back(static_cast<TechId>(i));
+                        }
+
+                        auto techName = [&](TechId t) -> std::string_view {
+                            return TechDB::getTech(t).name;
+                        };
+                        auto byName = [&](TechId a, TechId b) {
+                            return techName(a) < techName(b);
+                        };
+
+                        // Build children graph from prerequisites
+                        std::unordered_map<TechId, std::vector<TechId>> children;
+                        children.reserve(techs.size() * 2 + 1);
+
+                        std::vector<TechId> roots;
+                        roots.reserve(8);
+
+                        for (TechId t : techs) {
+                            TechId p = TechDB::getPrerequisite(t);
+                            if (p == TechId::Count) roots.push_back(t);
+                            else children[p].push_back(t);
+                        }
+
+                        // Preferred child ordering (Polytopia layout)
+                        std::unordered_map<TechId, std::unordered_map<TechId, int>> prefChild;
+                        prefChild.reserve(32);
+
+                        auto setChildOrder = [&](TechId parent, std::initializer_list<TechId> orderedChildren) {
+                            auto& m = prefChild[parent];
+                            int idx = 0;
+                            for (TechId c : orderedChildren) m[c] = idx++;
+                        };
+
+                        setChildOrder(TechId::Hunting,      {TechId::Forestry, TechId::Archery});
+                        setChildOrder(TechId::Forestry,     {TechId::Mathematics});
+                        setChildOrder(TechId::Archery,      {TechId::Spiritualism});
+
+                        setChildOrder(TechId::Riding,       {TechId::Roads, TechId::FreeSpirit});
+                        setChildOrder(TechId::Roads,        {TechId::Trade});
+                        setChildOrder(TechId::FreeSpirit,   {TechId::Chivalry});
+
+                        setChildOrder(TechId::Organization, {TechId::Farming, TechId::Strategy});
+                        setChildOrder(TechId::Farming,      {TechId::Construction});
+                        setChildOrder(TechId::Strategy,     {TechId::Diplomacy});
+
+                        setChildOrder(TechId::Fishing,      {TechId::Ramming, TechId::Sailing});
+                        setChildOrder(TechId::Sailing,      {TechId::Navigation});
+                        setChildOrder(TechId::Ramming,      {TechId::Aquatism});
+
+                        setChildOrder(TechId::Climbing,     {TechId::Mining, TechId::Meditation});
+                        setChildOrder(TechId::Mining,       {TechId::Smithery});
+                        setChildOrder(TechId::Meditation,   {TechId::Philosophy});
+
+                        auto childLess = [&](TechId parent, TechId a, TechId b) {
+                            auto itP = prefChild.find(parent);
+                            if (itP != prefChild.end()) {
+                                const auto& ord = itP->second;
+                                const int ra = ord.count(a) ? ord.at(a) : 100000;
+                                const int rb = ord.count(b) ? ord.at(b) : 100000;
+                                if (ra != rb) return ra < rb;
+                            }
+                            return techName(a) < techName(b);
+                        };
+
+                        for (auto& kv : children) {
+                            auto& v = kv.second;
+                            std::sort(v.begin(), v.end(), [&](TechId a, TechId b) { return childLess(kv.first, a, b); });
+                        }
+
+                        // Depth BFS
+                        std::unordered_map<TechId, int> depth;
+                        depth.reserve(techs.size() * 2 + 1);
+                        std::vector<TechId> q;
+                        q.reserve(techs.size());
+
+                        std::sort(roots.begin(), roots.end(), byName);
+                        for (TechId r : roots) { depth[r] = 0; q.push_back(r); }
+
+                        for (size_t qi = 0; qi < q.size(); ++qi) {
+                            TechId cur = q[qi];
+                            int d = depth[cur];
+                            auto it = children.find(cur);
+                            if (it == children.end()) continue;
+                            for (TechId ch : it->second) {
+                                if (depth.count(ch)) continue;
+                                depth[ch] = d + 1;
+                                q.push_back(ch);
+                            }
+                        }
+
+                        int maxDepth = 0;
+                        for (auto& kv : depth) maxDepth = std::max(maxDepth, kv.second);
+                        maxDepth = std::max(1, maxDepth);
+
+                        // Root angles
+                        // Place the 5 root technologies exactly every 360/5 degrees.
+                        // SFML: +x right, +y down. Angle 0 -> right, -PI/2 -> up.
+                        constexpr float PI = 3.14159265f;
+                        auto normAngle = [&](float a) { while (a <= -PI) a += 2.f * PI; while (a > PI) a -= 2.f * PI; return a; };
+
+                        const float rootStep = (2.f * PI) / 5.f;          // 360/5
+                        // Shift so Organization is exactly to the right (0 rad)
+                        const float startAngle = -rootStep;               // Riding is one step CCW from right
+
+                        // Desired clockwise order around the center.
+                        // With 72° spacing this makes Hunting land in the upper-left sector.
+                        const std::array<TechId, 5> rootOrder = {
+                            TechId::Riding,
+                            TechId::Organization,
+                            TechId::Climbing,
+                            TechId::Fishing,
+                            TechId::Hunting
+                        };
+
+                        std::unordered_map<TechId, float> preferredRootAngle;
+                        preferredRootAngle.reserve(8);
+                        for (size_t i = 0; i < rootOrder.size(); ++i) {
+                            preferredRootAngle[rootOrder[i]] = normAngle(startAngle + float(i) * rootStep);
+                        }
+
+                        struct RootA { TechId t; float a; };
+                        std::vector<RootA> rootA;
+                        std::vector<TechId> unknown;
+                        rootA.reserve(roots.size());
+                        unknown.reserve(roots.size());
+
+                        for (TechId r : roots) {
+                            auto it = preferredRootAngle.find(r);
+                            if (it != preferredRootAngle.end()) {
+                                rootA.push_back({r, it->second});
+                            } else {
+                                unknown.push_back(r);
+                            }
+                        }
+
+                        // Any extra roots (shouldn't happen for the base Polytopia tree) are spread evenly.
+                        if (!unknown.empty()) {
+                            std::sort(unknown.begin(), unknown.end(), byName);
+                            const float step = (2.f * PI) / float(unknown.size());
+                            for (size_t i = 0; i < unknown.size(); ++i) {
+                                rootA.push_back({unknown[i], normAngle(startAngle + float(i) * step)});
+                            }
+                        }
+
+                        std::sort(rootA.begin(), rootA.end(), [&](const RootA& a, const RootA& b) { return a.a < b.a; });
+
+                        // Leaf counts
+                        std::unordered_map<TechId, int> leafCount;
+                        std::function<int(TechId)> countLeaves = [&](TechId t){
+                            if (leafCount.count(t)) return leafCount[t];
+                            auto it = children.find(t);
+                            if (it == children.end() || it->second.empty()) return leafCount[t] = 1;
+                            int sum = 0; for (TechId c : it->second) sum += std::max(1, countLeaves(c));
+                            return leafCount[t] = std::max(1, sum);
+                        };
+                        for (auto& r : rootA) countLeaves(r.t);
+
+                        std::unordered_map<TechId, float> angle;
+                        std::function<void(TechId,float,float)> assignAngles = [&](TechId t, float a0, float a1){
+                            auto it = children.find(t);
+                            if (it == children.end() || it->second.empty()) { angle[t] = 0.5f*(a0+a1); return; }
+                            auto ch = it->second;
+                            std::sort(ch.begin(), ch.end(), [&](TechId a, TechId b){return childLess(t,a,b);});
+                            int total=0; for (TechId c:ch) total+=std::max(1,leafCount[c]);
+                            float cur=a0, weighted=0; int wsum=0;
+                            for (TechId c:ch){ int w=std::max(1,leafCount[c]); float span=(a1-a0)*(float(w)/float(total)); float cb=cur, ce=cur+span; assignAngles(c,cb,ce); weighted+=angle[c]*float(w); wsum+=w; cur=ce; }
+                            angle[t]=(wsum>0)?(weighted/float(wsum)):0.5f*(a0+a1);
+                        };
+
+                        std::unordered_map<TechId,std::pair<float,float>> rootSector;
+                        const int R = (int)rootA.size();
+                        const float shrink = 0.86f;
+                        for (int i=0;i<R;++i){
+                            float aPrev=rootA[(i-1+R)%R].a;
+                            float aCur =rootA[i].a;
+                            float aNext=rootA[(i+1)%R].a;
+                            if (aPrev>aCur) aPrev-=2*PI;
+                            if (aNext<aCur) aNext+=2*PI;
+                            float left=0.5f*(aPrev+aCur);
+                            float right=0.5f*(aCur+aNext);
+                            float half=0.5f*(right-left)*shrink;
+                            rootSector[rootA[i].t]={aCur-half,aCur+half};
+                        }
+                        for (auto& r:rootA){ auto it=rootSector.find(r.t); if(it!=rootSector.end()) assignAngles(r.t,it->second.first,it->second.second); else assignAngles(r.t,r.a-0.15f,r.a+0.15f);}
+
+                        const sf::Vector2f center(left + w * 0.50f, top + h * 0.50f);
+                        const float maxR = std::max(10.f, std::min(w, h) * 0.46f);
+                        const float ringStep = std::max(12.f, (maxR / float(maxDepth + 1)) * 0.98f);
+
+                        std::unordered_map<TechId, sf::Vector2f> pos;
+                        buildFixedTechTreeLayout(techs, pos, center, w, h);
+
+                        // Save tech node hitboxes for mouse clicks.
+                        g_techHitValid = true;
+                        g_techHitArea = sf::FloatRect(left, top, w, h);
+                        g_techHitPos = pos;
+
+                        // --------------------------
+                        // DRAW EDGES
+                        // --------------------------
+                        {
+                            sf::VertexArray lines(sf::Lines);
+                            lines.clear();
+
+                            for (TechId t : techs) {
+                                const TechId pTech = TechDB::getPrerequisite(t);
+                                if (pTech == TechId::Count) continue;
+
+                                auto itA = pos.find(pTech);
+                                auto itB = pos.find(t);
+                                if (itA == pos.end() || itB == pos.end()) continue;
+
+                                lines.append(sf::Vertex(itA->second, sf::Color(70, 70, 70, 220)));
+                                lines.append(sf::Vertex(itB->second, sf::Color(70, 70, 70, 220)));
+                            }
+
+                            rt.draw(lines);
+                        }
+
+                        // Center head icon (focal point)
+                        {
+                            const TribeType tribe = curPl.getTribeType();
+                            const sf::Texture& headTex = pickFirstExisting(tileCandidates(tribe, "head"));
+                            const float headSize = std::clamp(ringStep * 1.25f, 26.f, 64.f);
+                            drawSprite(rt, headTex,
+                                       center.x - headSize * 0.5f,
+                                       center.y - headSize * 0.5f,
+                                       headSize);
+                        }
+
+                        // Node radius (auto-fit)
+                        const float rNode = std::clamp(ringStep * 0.40f, 10.f, 18.f);
+                        // Slightly larger radius for easier clicking.
+                        g_techHitRadius = rNode * 1.15f;
+
+                        const bool literacy = curPl.hasTech(TechId::Philosophy);
+                        // Draw nodes + labels
+                        for (TechId tech : techs) {
+                            auto it = pos.find(tech);
+                            if (it == pos.end()) continue;
+                            const sf::Vector2f p = it->second;
+
+                            const bool owned = curPl.hasTech(tech);
+                            const int numCities = std::max(1, (int)curPl.getCities().size());
+                            const int price = TechDB::calculatePrice(tech, numCities, literacy);
+
+                            const sf::Color ownedFill(35, 140, 70, 255);
+                            const sf::Color ownedOutline(90, 230, 140, 255);
+                            const sf::Color missFill(120, 35, 35, 255);
+                            const sf::Color missOutline(240, 90, 90, 255);
+
+                            sf::CircleShape circ(rNode);
+                            circ.setOrigin(rNode, rNode);
+                            circ.setPosition(p);
+                            circ.setFillColor(owned ? ownedFill : missFill);
+                            circ.setOutlineThickness(3.f);
+                            circ.setOutlineColor(owned ? ownedOutline : missOutline);
+                            rt.draw(circ);
+
+                            // Tech name (centered)
+                            sf::Text name;
+                            name.setFont(uiFont);
+                            name.setCharacterSize((unsigned)std::max(9.f, rNode * 0.62f));
+                            name.setFillColor(sf::Color(240, 240, 240, 255));
+                            name.setString(std::string(TechDB::getTech(tech).name));
+
+                            if (name.getString().getSize() > 12) {
+                                name.setCharacterSize((unsigned)std::max(8.f, rNode * 0.52f));
+                            }
+
+                            const sf::FloatRect nb = name.getLocalBounds();
+                            name.setPosition(p.x - (nb.width * 0.5f) - nb.left,
+                                             p.y - (nb.height * 0.65f) - nb.top);
+                            rt.draw(name);
+
+                            // Price under name for missing techs
+                            if (!owned) {
+                                sf::Text pr;
+                                pr.setFont(uiFont);
+                                pr.setCharacterSize((unsigned)std::max(8.f, rNode * 0.50f));
+                                pr.setFillColor(sf::Color(255, 210, 210, 255));
+                                pr.setString(std::to_string(price));
+                                const sf::FloatRect pb = pr.getLocalBounds();
+                                pr.setPosition(p.x - (pb.width * 0.5f) - pb.left,
+                                               p.y + (rNode * 0.15f) - pb.top);
+                                rt.draw(pr);
+                            }
+                        }
+                    }
+                }
+            }
+            else {
+                const bool hasFont = ensureUIFontLoaded();
+
+                auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
+                    if (!hasFont) return;
+                    sf::Text t;
+                    t.setFont(uiFont);
+                    t.setString(s);
+                    t.setCharacterSize(sz);
+                    t.setFillColor(sf::Color(240, 240, 240, 255));
+                    t.setPosition(panelRect.left + panelPad, ty);
+                    rt.draw(t);
+                    ty += float(sz) + 6.f;
+                };
+
+                // Only Back button in Map View
+                const float bw = panelRect.width - 2.f * panelPad;
+                const float bh = 40.f;
+                const float baseY = panelRect.top + panelRect.height - panelPad - bh;
+
+                btnBack = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
+                btnEndTurn = sf::FloatRect();
+                btnOverview = sf::FloatRect();
+
+                // --- ALWAYS draw Back button in Map View (font optional) ---
+                {
+                    sf::RectangleShape b;
+                    b.setPosition({btnBack.left, btnBack.top});
+                    b.setSize({btnBack.width, btnBack.height});
+                    b.setFillColor(sf::Color(35, 35, 35, 220));
+                    b.setOutlineThickness(2.f);
+                    b.setOutlineColor(sf::Color(90, 90, 90, 255));
+                    rt.draw(b);
+
+                    if (hasFont) {
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setString("Back");
+                        t.setCharacterSize(18);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        const sf::FloatRect lb = t.getLocalBounds();
+                        t.setPosition(
+                            btnBack.left + (btnBack.width - lb.width) * 0.5f - lb.left,
+                            btnBack.top  + (btnBack.height - lb.height) * 0.5f - lb.top - 1.f
+                        );
+                        rt.draw(t);
+                    }
+                }
+
+                // Draw Back button
+                {
+                    sf::RectangleShape b;
+                    b.setPosition({btnBack.left, btnBack.top});
+                    b.setSize({btnBack.width, btnBack.height});
+                    b.setFillColor(sf::Color(35, 35, 35, 220));
+                    b.setOutlineThickness(2.f);
+                    b.setOutlineColor(sf::Color(90, 90, 90, 255));
+                    rt.draw(b);
+
+                    if (hasFont) {
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setString("Back");
+                        t.setCharacterSize(18);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        const sf::FloatRect lb = t.getLocalBounds();
+                        t.setPosition(
+                            btnBack.left + (btnBack.width - lb.width) * 0.5f - lb.left,
+                            btnBack.top  + (btnBack.height - lb.height) * 0.5f - lb.top - 1.f
+                        );
+                        rt.draw(t);
+                    }
+                }
+
+                // Header
+                {
+                    float ty = panelPad + 16.f;
+                    addLine(ty, "Map View", 18);
+                    addLine(ty, "(TAB to return)", 14);
+                    ty += 8.f;
+                }
+
+                // Tile + unit stats (ONLY IN MAP VIEW)
+                {
+                    float ty = panelPad + 70.f;
+
+                    addLine(ty, "===== TILE =====", 18);
+
+                    if (!selectedValid) {
+                        addLine(ty, "(click a tile)", 14);
+                    } else {
+                        const Tile& st = map.at(selectedPos);
+
+                        addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
+                        addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
+                        addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                        addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
+
+                        // Resources list (Tile)
+                        {
+                            const auto resU = static_cast<uint16_t>(st.getResource());
+                            auto hasR = [&](ResourcesEnum r) { return (resU & static_cast<uint16_t>(r)) != 0; };
+
+                            std::string rline = "Resources: ";
+                            bool any = false;
+                            if (hasR(ResourcesEnum::Forest)) { rline += "Forest "; any = true; }
+                            if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
+                            if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
+                            if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
+                            if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
+                            if (!any) rline += "None";
+                            addLine(ty, rline, 14);
+                        }
+
+                        if (st.getSettlementType() == SettlementTypeEnum::City) {
+                            addLine(ty, "===== CITY =====", 18);
+                            const City* cObj = resolveCityForTile(game, st);
+                            if (cObj) {
+                                addLine(ty, "City name: " + cObj->getName(), 14);
+                                addLine(ty, "CityId: " + std::to_string(int(cObj->getCityId())), 14);
+                                addLine(ty, "OwnerId: " + std::to_string(int(cObj->getOwnerId())), 14);
+                                addLine(ty, std::string("Is capital: ") + (cObj->isCapitalCity() ? "yes" : "no"), 14);
+                                addLine(ty, "Level: " + std::to_string(int(cObj->getLevel())), 14);
+                                addLine(ty, "Population: " + std::to_string(int(cObj->getPopulation())) + "/" + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
+                                addLine(ty, "Stars/round: " + std::to_string(int(cObj->getStarsPerRound())), 14);
+                                addLine(ty, "Units in city: " + std::to_string(int(cObj->getUnitsCount())) + "/" + std::to_string(int(cObj->maxUnitCapacity())), 14);
+                                addLine(ty, std::string("Has workshop: ") + (cObj->hasWorkshopEnabled() ? "yes" : "no"), 14);
+                                addLine(ty, std::string("Has city wall: ") + (cObj->hasCityWallEnabled() ? "yes" : "no"), 14);
+                            } else {
+                                addLine(ty, "(City object not resolved)", 14);
+                            }
+                        }
+
+                        // Unit info (if any)
+                        {
+                            addLine(ty, "===== UNIT =====", 18);
+                            const uint32_t skey = (uint32_t(selectedPos.y) << 16u) | uint32_t(selectedPos.x);
+                            auto itU = unitsByPos.find(skey);
+                            if (itU != unitsByPos.end() && !itU->second.empty()) {
+                                const Unit* u = itU->second.front();
+                                addLine(ty, std::string("Unit: ") + unitDisplayString(*u), 14);
+                                addLine(ty, "Owner: " + std::to_string(int(u->getOwnerId())), 14);
+                                addLine(ty, "HP: " + std::to_string(u->getHealth()) + "/" + std::to_string(u->getMaxHealth()), 14);
+                                if (itU->second.size() > 1) {
+                                    addLine(ty, "(+" + std::to_string(itU->second.size() - 1) + " more)", 14);
+                                }
+                            } else {
+                                addLine(ty, "Unit: none", 14);
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-}
+
+
+
+
+

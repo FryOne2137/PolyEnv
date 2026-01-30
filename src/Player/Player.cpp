@@ -92,6 +92,19 @@ void Player::addCity(CityId id) {
     cities.push_back(id);
 }
 
+void Player::removeCity(CityId id) {
+    if (id == kNoCity) return;
+    auto it = std::remove(cities.begin(), cities.end(), id);
+    if (it != cities.end()) {
+        cities.erase(it, cities.end());
+    }
+
+    // If we lost our capital, clear it (later you can implement capital transfer rules).
+    if (capitalId == id) {
+        capitalId = kNoCity;
+    }
+}
+
 void Player::addUnit(UnitId id) {
     if (id == kNoUnit) return;
     if (std::find(units.begin(), units.end(), id) != units.end()) return;
