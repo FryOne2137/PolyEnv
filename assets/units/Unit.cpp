@@ -46,6 +46,14 @@ bool Unit::attackedThisTurn() const { return hasAttackedThisTurn; }
 void Unit::setMovedThisTurn(bool v) { hasMovedThisTurn = v; }
 void Unit::setAttackedThisTurn(bool v) { hasAttackedThisTurn = v; }
 
+TechId Unit::getRequiredTechToSpawn() const {
+    return requiredTechToSpawn;
+}
+void Unit::setRequiredTechToSpawn(TechId v) {
+    requiredTechToSpawn=v;
+}
+
+
 // ---- Status ----
 bool Unit::isVeteran() const { return veteran; }
 void Unit::setVeteran(bool v) { veteran = v; }

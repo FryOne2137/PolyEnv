@@ -4,6 +4,7 @@
 
 #include "UnitFactory.h"
 #include "Unit.h"
+#include "tech/TechDB.h" // TechId
 #include <algorithm>
 
 
@@ -43,6 +44,9 @@ void UnitFactory::applyBaseStats(Unit& u) {
     // Vision rule: most units have 1; only units with Scout skill have 2.
     u.setVisionRange(1);
 
+    // By default: no tech required to spawn/train this unit.
+    u.setRequiredTechToSpawn(TechId::Count);
+
     switch (u.getType()) {
         // -----------------------
         // Land
@@ -56,6 +60,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Archer:
+            u.setRequiredTechToSpawn(TechId::Archery);
             u.setCost(3); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(2.0f); u.setDefense(1.0f);
             u.setMovePoints(1); u.setRange(2);
@@ -64,6 +69,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Defender:
+            u.setRequiredTechToSpawn(TechId::Strategy);
             u.setCost(3); u.setMaxHealth(15); u.setHealth(15);
             u.setAttack(1.0f); u.setDefense(3.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -71,6 +77,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Rider:
+            u.setRequiredTechToSpawn(TechId::Riding);
             u.setCost(3); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(2.0f); u.setDefense(1.0f);
             u.setMovePoints(2); u.setRange(1);
@@ -80,6 +87,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Cloak:
+            u.setRequiredTechToSpawn(TechId::Diplomacy);
             u.setCost(8); u.setMaxHealth(5); u.setHealth(5);
             u.setAttack(0.0f); u.setDefense(0.5f);
             u.setMovePoints(2); u.setRange(1);
@@ -94,6 +102,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
 
 
         case UnitType::MindBender:
+            u.setRequiredTechToSpawn(TechId::Philosophy);
             u.setCost(5); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(0.0f); u.setDefense(1.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -103,6 +112,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Swordsman:
+            u.setRequiredTechToSpawn(TechId::Smithery);
             u.setCost(5); u.setMaxHealth(15); u.setHealth(15);
             u.setAttack(3.0f); u.setDefense(3.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -110,6 +120,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Catapult:
+            u.setRequiredTechToSpawn(TechId::Mathematics);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(4.0f); u.setDefense(0.0f);
             u.setMovePoints(1); u.setRange(3);
@@ -117,6 +128,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Knight:
+            u.setRequiredTechToSpawn(TechId::Chivalry);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(3.5f); u.setDefense(1.0f);
             u.setMovePoints(3); u.setRange(1);
@@ -146,6 +158,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
         // Naval
         // -----------------------
         case UnitType::Raft:
+            u.setRequiredTechToSpawn(TechId::Fishing);
             // Health varies (carried unit)
             u.setCost(0); u.setMaxHealth(0); u.setHealth(0);
             u.setAttack(0.0f); u.setDefense(1.0f);
@@ -157,6 +170,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Scout:
+            u.setRequiredTechToSpawn(TechId::Sailing);
             // This is "Scout" in current Polytopia naval table
             // Health varies (carried unit)
             u.setCost(5); u.setMaxHealth(0); u.setHealth(0);
@@ -170,6 +184,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Rammer:
+            u.setRequiredTechToSpawn(TechId::Ramming);
             // Health varies (carried unit)
             u.setCost(5); u.setMaxHealth(0); u.setHealth(0);
             u.setAttack(3.0f); u.setDefense(3.0f);
@@ -181,6 +196,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Bomber:
+            u.setRequiredTechToSpawn(TechId::Navigation);
             // Health varies (carried unit)
             u.setCost(15); u.setMaxHealth(0); u.setHealth(0);
             u.setAttack(3.0f); u.setDefense(2.0f);
@@ -243,6 +259,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::AquaticAmphibian:
+            u.setRequiredTechToSpawn(TechId::Riding);
             u.setCost(3); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(2.0f); u.setDefense(1.0f);
             u.setMovePoints(2); u.setRange(1);
@@ -253,6 +270,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::MermaidArcher:
+            u.setRequiredTechToSpawn(TechId::Archery);
             u.setCost(3); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(2.0f); u.setDefense(1.0f);
             u.setMovePoints(1); u.setRange(2);
@@ -262,6 +280,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::MermaidDefender:
+            u.setRequiredTechToSpawn(TechId::Strategy);
             u.setCost(3); u.setMaxHealth(15); u.setHealth(15);
             u.setAttack(1.0f); u.setDefense(3.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -278,6 +297,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Scuba:
+            u.setRequiredTechToSpawn(TechId::Diplomacy);
             u.setCost(8); u.setMaxHealth(5); u.setHealth(5);
             u.setAttack(0.0f); u.setDefense(0.5f);
             u.setMovePoints(2); u.setRange(1);
@@ -292,6 +312,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Siren:
+            u.setRequiredTechToSpawn(TechId::Philosophy);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(0.0f); u.setDefense(1.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -311,6 +332,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::YellyBelly:
+            u.setRequiredTechToSpawn(TechId::Navigation);
             u.setCost(8); u.setMaxHealth(20); u.setHealth(20);
             u.setAttack(0.0f); u.setDefense(2.0f);
             u.setMovePoints(2); u.setRange(1);
@@ -321,6 +343,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Puffer:
+            u.setRequiredTechToSpawn(TechId::Mathematics);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(4.0f); u.setDefense(0.0f);
             u.setMovePoints(2); u.setRange(3);
@@ -330,6 +353,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::TridentionAq:
+            u.setRequiredTechToSpawn(TechId::Chivalry);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(2.5f); u.setDefense(1.0f);
             u.setMovePoints(2); u.setRange(2);
@@ -400,6 +424,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
         // Polaris
         // -----------------------
         case UnitType::IceArcher:
+            u.setRequiredTechToSpawn(TechId::Archery);
             u.setCost(3); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(1.0f); u.setDefense(1.0f);
             u.setMovePoints(1); u.setRange(2);
@@ -451,6 +476,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
         // Cymanti
         // -----------------------
         case UnitType::Hexapod:
+            u.setRequiredTechToSpawn(TechId::Riding);
             u.setCost(3); u.setMaxHealth(5); u.setHealth(5);
             u.setAttack(3.0f); u.setDefense(1.0f);
             u.setMovePoints(2); u.setRange(1);
@@ -461,6 +487,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Kiton:
+            u.setRequiredTechToSpawn(TechId::Strategy);
             u.setCost(3); u.setMaxHealth(15); u.setHealth(15);
             u.setAttack(1.0f); u.setDefense(3.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -469,6 +496,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Phychi:
+            u.setRequiredTechToSpawn(TechId::Archery);
             u.setCost(3); u.setMaxHealth(5); u.setHealth(5);
             u.setAttack(0.7f); u.setDefense(1.0f);
             u.setMovePoints(2); u.setRange(2);
@@ -480,6 +508,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Shaman:
+            u.setRequiredTechToSpawn(TechId::Philosophy);
             u.setCost(5); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(1.0f); u.setDefense(1.0f);
             u.setMovePoints(1); u.setRange(1);
@@ -489,6 +518,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Raychi:
+            u.setRequiredTechToSpawn(TechId::Sailing);
             u.setCost(5); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(3.0f); u.setDefense(2.0f);
             u.setMovePoints(3); u.setRange(1);
@@ -497,6 +527,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Exida:
+            u.setRequiredTechToSpawn(TechId::Mathematics);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(3.0f); u.setDefense(1.0f);
             u.setMovePoints(2); u.setRange(3);
@@ -506,6 +537,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::Doomux:
+            u.setRequiredTechToSpawn(TechId::Chivalry);
             u.setCost(10); u.setMaxHealth(20); u.setHealth(20);
             u.setAttack(3.5f); u.setDefense(2.0f);
             u.setMovePoints(3); u.setRange(1);
@@ -516,6 +548,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::MothC:
+            u.setRequiredTechToSpawn(TechId::Diplomacy);
             u.setCost(5); u.setMaxHealth(10); u.setHealth(10);
             u.setAttack(0.0f); u.setDefense(0.1f);
             u.setMovePoints(2); u.setRange(1);
@@ -562,6 +595,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             break;
 
         case UnitType::LivingIsland:
+            u.setRequiredTechToSpawn(TechId::Navigation);
             u.setCost(20); u.setMaxHealth(20); u.setHealth(20);
             u.setAttack(4.0f); u.setDefense(4.0f);
             u.setMovePoints(2); u.setRange(1);
@@ -579,8 +613,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
 
         default:
             break;
-    }
-
+}
     // Veteran rule (Polytopia): after 3 kills a unit can be promoted, except for:
     // - Naval units
     // - Super units

@@ -83,6 +83,36 @@ static inline std::array<Pos, 8> neighbors8(Pos cur) {
     };
 }
 
+// Helper: does this unit have Hide?
+static inline bool unitHasHide(const Unit* u) {
+    return u && u->hasSkill(UnitSkill::Hide);
+}
+
+// Returns true if tile `p` is inside enemy ZoC for `mover`.
+// ZoC is projected by enemy units that do NOT have Hide onto their 8-neighborhood.
+// Movers with Hide ignore ZoC completely.
+static inline bool inEnemyZoC(const Game& game, Pos p, const Unit* mover) {
+    if (!mover) return false;
+    if (unitHasHide(mover)) return false; // Hide units are not blocked
+
+    const PlayerId moverOwner = mover->getOwnerId();
+
+    for (const Pos nb : neighbors8(p)) {
+        if (!game.getMap().inBounds(nb)) continue;
+        const UnitId occ = game.getMap().unitOn(nb);
+        if (occ == Map::kNoUnit) continue;
+
+        const Unit* other = game.getUnit(occ);
+        if (!other) continue;
+        if (other->getOwnerId() == moverOwner) continue; // friendly units don't block
+        if (unitHasHide(other)) continue;                // Hide units don't project ZoC
+
+        return true;
+    }
+
+    return false;
+}
+
 // Returns true if p is a land or mountain tile that is adjacent (8-neigh) to water or ocean.
 static inline bool isCoastalLandTile(const Game& game, Pos p) {
     if (!game.getMap().inBounds(p)) return false;
@@ -149,15 +179,24 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId movin
     if (!u) return false;
 
     // Only apply to water-capable units (WaterOnly or naval types).
-    if (!isWaterMover(game, u)) return false;
+    if (isWaterMover(game, u)) {
+        if (!game.getMap().inBounds(p)) return false;
+        const Tile& t = game.getMap().at(p);
+        const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        if (landish) {
+            // Any time a water-capable unit enters land, it must stop.
+            return true;
+        }
+    }
 
-    if (!game.getMap().inBounds(p)) return false;
-    const Tile& t = game.getMap().at(p);
-    const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
-    if (!landish) return false;
+    // Enemy ZoC rule:
+    // If you enter a tile that is within 1 of an enemy unit (that doesn't have Hide), you must STOP.
+    // Hide units are not blocked and do not stop.
+    if (inEnemyZoC(game, p, u)) {
+        return true;
+    }
 
-    // Any time a water-capable unit enters land, it must stop.
-    return true;
+    return false;
 }
 
 static inline int stepCostHalfPoints(const Game& game, UnitId movingUnit, Pos from, Pos to) {
@@ -356,9 +395,18 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     auto canStepOn = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
 
-        // Block occupied tiles (except destination; dest must be empty for move() anyway)
-        const auto occ = game.getMap().unitOn(p);
-        if (occ != Map::kNoUnit && !(p == to)) return false;
+        // Occupied tile logic:
+        const UnitId occ = game.getMap().unitOn(p);
+        if (occ != Map::kNoUnit) {
+            // Destination must be empty (checked earlier), but keep this defensive.
+            if (p == to) return false;
+
+            // Allow passing through FRIENDLY units; block ENEMY units.
+            const Unit* other = game.getUnit(occ);
+            if (other && other->getOwnerId() != moverOwner) {
+                return false;
+            }
+        }
 
         const Tile& t = game.getMap().at(p);
 
@@ -751,8 +799,17 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
         if (!game.getMap().inBounds(p)) return false;
 
         // block occupied tiles (except starting tile)
-        const auto occ = game.getMap().unitOn(p);
-        if (occ != Map::kNoUnit && !(p == start)) return false;
+        const UnitId occ = game.getMap().unitOn(p);
+        if (occ != Map::kNoUnit) {
+            // Can't end on an occupied tile, but allow passing through FRIENDLY units.
+            // (start is occupied by this unit)
+            if (!(p == start)) {
+                const Unit* other = game.getUnit(occ);
+                if (other && other->getOwnerId() != moverOwner) {
+                    return false;
+                }
+            }
+        }
 
         const Tile& t = game.getMap().at(p);
 

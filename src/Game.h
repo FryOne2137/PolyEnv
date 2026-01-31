@@ -114,9 +114,14 @@ public:
     std::vector<Pos> attackable(UnitId attackerId) const;
     std::vector<Pos> reachable(UnitId unitId) const;
 
+    bool buildRoad(PlayerId pid, Pos pos);
+
+
 
 
 private:
+    friend class UnitSpawnSystem;
+
     Map map;
 
     std::vector<Player> players;

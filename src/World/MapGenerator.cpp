@@ -279,6 +279,7 @@ void MapGenerator::generate(Map& map, const Params& params) {
         Tile& t = map.allTiles()[static_cast<size_t>(picked)];
         t.setTribe(tribes[playerIdx]);
         t.setSettlement(SettlementTypeEnum::City, static_cast<SettlementId>(playerIdx));
+        t.setRoadBridge(RoadBridgeEnum::Road);
     }
 
     s_lastCapitals.assign(P, Pos{});
@@ -534,6 +535,7 @@ void MapGenerator::generate(Map& map, const Params& params) {
                     t.setResource(ResourcesEnum::None);
                 }
                 t.setSettlement(SettlementTypeEnum::Village, nextSettlementId++);
+                t.setRoadBridge(RoadBridgeEnum::Road);
             } else if (proc(cell, fruit * (1.0f - crops / 2.0f))) {
                 t.setResource(ResourcesEnum::Fruit);
             } else if (proc(cell, crops * (1.0f - fruit / 2.0f))) {

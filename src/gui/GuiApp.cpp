@@ -10,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <array>
+#include <SFML/Graphics/Image.hpp>
 
 #include "MapRenderer.h"
 
@@ -55,8 +56,34 @@ static bool loadAnyFont(sf::Font& font) {
     return false;
 }
 
+static bool loadAnyWindowIcon(sf::Image& img) {
+    static const std::array<std::string, 6> kPrefixes = {"", "../", "../../", "../../../", "../../../../", "../../../../../"};
+
+    const std::string rel = "assets/Polytopia_game_engine_textures/tribes/Bardur/head.png";
+
+    // Absolute path support (just in case)
+    if (!rel.empty() && rel[0] == '/') {
+        if (existsFile(rel) && img.loadFromFile(rel)) return true;
+    }
+
+    for (const auto& pre : kPrefixes) {
+        const std::string candidate = pre + rel;
+        if (existsFile(candidate) && img.loadFromFile(candidate)) return true;
+    }
+
+    return false;
+}
+
 int GuiApp::run() {
     window.create(sf::VideoMode(1280, 720), "Polytopia Debug GUI (SFML)");
+    {
+        sf::Image icon;
+        if (loadAnyWindowIcon(icon)) {
+            window.setIcon(icon.getSize().x, icon.getSize().y, icon.getPixelsPtr());
+        } else {
+            std::cerr << "[ui] WARNING: window icon not found at assets/Polytopia_game_engine_textures/tribes/Vengir/head.png\n";
+        }
+    }
     window.setFramerateLimit(60);
 
     if (!loadAnyFont(font)) {

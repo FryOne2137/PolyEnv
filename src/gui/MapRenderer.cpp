@@ -17,6 +17,9 @@
 #include <filesystem>
 #include <iostream>
 #include <array>
+#include <sstream>
+#include <iomanip>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -165,6 +168,18 @@ static std::unordered_set<uint32_t> g_moveOverlaySet; // key: (y<<16)|x
 static bool g_attackOverlayValid = false;
 static std::unordered_set<uint32_t> g_attackOverlaySet; // key: (y<<16)|x
 
+static constexpr float kLeftSpawnPanelW = 150.f;
+
+// --- Spawn panel (left side) ---
+static bool g_spawnHitValid = false;
+static UnitType g_spawnSelectedType = UnitType::Unknown;
+
+struct SpawnIconHit {
+    sf::FloatRect rect;
+    UnitType type;
+};
+static std::vector<SpawnIconHit> g_spawnHits;
+
 // --- Context action button state (bottom bar under the map) ---
 enum class ActionKind { None, CaptureVillage, CaptureCity, TrainUnit, BuildBuilding,    ClearForest,
     Hunt,
@@ -177,6 +192,7 @@ enum class ActionKind { None, CaptureVillage, CaptureCity, TrainUnit, BuildBuild
     UpgradeRaftToRammer,
     UpgradeRaftToBomber,
     BecomeVeteran,
+    BuildRoad,
 
 };
 struct ActionButton {
@@ -434,6 +450,29 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
             const float dist2 = d.x * d.x + d.y * d.y;
 
             if (!dragMoved && dist2 < 25.f) {
+
+                // --- Left spawn panel click (gameplay view only) ---
+                // --- Left spawn panel click (gameplay view only) ---
+                // Klik ikonki = wybór + natychmiastowa próba spawnu na zaznaczonym tile.
+                if (!showOverview && game && up.x < kLeftSpawnPanelW && g_spawnHitValid) {
+                    for (const SpawnIconHit& h : g_spawnHits) {
+                        if (!h.rect.contains(up)) continue;
+
+                        g_spawnSelectedType = h.type; // zostaw zaznaczone do kolejnych spawnów
+
+                        // Spawn na aktualnie zaznaczonym tile (bez walidacji w GUI)
+                        if (selectedValid && game->getMap().inBounds(selectedPos)) {
+                            perfLog("SpawnUnit", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const UnitId uid = game->spawnUnit(g_spawnSelectedType, pid, selectedPos, /*canActImmediately=*/false);
+                                (void)uid;
+                            });
+                        }
+                        return; // consume
+                    }
+                    return; // klik w tło panelu
+                }
+
                 // --- Bottom action button (e.g. capture/train/build) ---
                 if (!showOverview && game && g_actionBtnCount > 0) {
                     for (int bi = 0; bi < g_actionBtnCount; ++bi) {
@@ -540,6 +579,13 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                                 }
                             });
                         }
+                     else if (ab.kind == ActionKind::BuildRoad) {
+                        perfLog("BuildRoad", [&] {
+                            const PlayerId pid = game->getCurrentPlayerId();
+                            const bool ok = game->buildRoad(pid, g_actionPos);
+                            (void)ok;
+                        });
+                    }
                         // Clear overlays after action.
                         g_moveSelectedUnit = kNoUnit;
                         clearUnitOverlays();
@@ -599,6 +645,19 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                 if (screenToTile(up, hit)) {
                     selectedPos = hit;
                     selectedValid = true;
+
+                    // Spawn mode: if unit selected, attempt to spawn on clicked tile.
+                    // No GUI validation: Game/Systems decide if allowed.
+                    // if (!showOverview && game && g_spawnSelectedType != UnitType::Unknown) {
+                    //     perfLog("SpawnUnit", [&] {
+                    //         const PlayerId pid = game->getCurrentPlayerId();
+                    //         const UnitId uid = game->spawnUnit(g_spawnSelectedType, pid, hit, /*canActImmediately=*/false);
+                    //         (void)uid;
+                    //     });
+                    //     g_moveSelectedUnit = kNoUnit;
+                    //     clearUnitOverlays();
+                    //     return;
+                    // }
 
                     // NOTE: capture (hint click) should work in both gameplay and Map View.
                     // We still disable movement overlay in Map View, but allow capture clicks.
@@ -713,19 +772,16 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
     }
 
     const float oldZoom = zoom;
-    const sf::Vector2f cs0 = computeCenterShift(oldZoom, lastRtSize);
-
-    // World point under cursor in the pre-origin, pre-centerShift coordinate system
+    sf::Vector2f cs0 = computeCenterShift(oldZoom, lastRtSize);
+    cs0.x += kLeftSpawnPanelW;
     const sf::Vector2f world = mouse - (cs0 + origin);
 
     const float factor = std::exp(delta * 0.12f);
     setZoom(zoom * factor);
 
-    const sf::Vector2f cs1 = computeCenterShift(zoom, lastRtSize);
-
-    // Adjust origin so the same world point stays under the cursor
-    origin = mouse - cs1 - world;
-}
+    sf::Vector2f cs1 = computeCenterShift(zoom, lastRtSize);
+    cs1.x += kLeftSpawnPanelW;
+    origin = mouse - cs1 - world;}
 
 sf::Vector2f MapRenderer::computeCenterShift(float z, const sf::Vector2u& rtSz) {
     sf::Vector2f shift{0.f, 0.f};
@@ -820,8 +876,10 @@ bool MapRenderer::screenToTile(const sf::Vector2f& screen, Pos& out) {
     const float scaledTileH = refH * tileSize / refW;
     const float yStep = scaledTileH * (606.f / 1908.f);
 
-    const sf::Vector2f cs = computeCenterShift(zoom, lastRtSize);
+    sf::Vector2f cs = computeCenterShift(zoom, lastRtSize);
+    cs.x += kLeftSpawnPanelW;
     const sf::Vector2f baseShift{cs.x + origin.x, cs.y + origin.y};
+
 
     for (int row = 0; row < map.getHeight(); ++row) {
         for (int column = 0; column < map.getWidth(); ++column) {
@@ -979,16 +1037,31 @@ static const char* unitTypeName(UnitType t) {
 }
 
 static std::string unitDisplayString(const Unit& u) {
-    std::string s = unitTypeName(u.getType());
+    std::ostringstream oss;
+    oss << unitTypeName(u.getType());
+
     if (u.isEmbarked()) {
         const UnitType base = u.getEmbarkedBaseType();
         if (base != UnitType::Unknown) {
-            s += " ( ";
-            s += unitTypeName(base);
-            s += ")";
+            oss << " (" << unitTypeName(base) << ")";
         }
     }
-    return s;
+
+    oss << "\nHP: " << u.getHealth() << "/" << u.getMaxHealth();
+
+    oss << std::fixed << std::setprecision(2);
+    oss << "\nATK: " << u.getAttack() << "  DEF: " << u.getDefense();
+
+    oss.unsetf(std::ios::floatfield);
+    oss << "\nRNG: " << u.getRange()
+        << "  MP: " << u.getMovePoints()
+        << "  VIS: " << u.getVisionRange();
+
+    oss << "\nKills: " << u.getKillCounter()
+        << "  Vet: " << (u.isVeteran() ? 1 : 0)
+        << "  Poison: " << (u.getIsPoisoned() ? 1 : 0);
+
+    return oss.str();
 }
 
 
@@ -1196,10 +1269,9 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     const float panelW = 400.f;
 
     sf::Vector2u mapRt = fullRt;
-    if (mapRt.x > static_cast<unsigned>(panelW)) {
-        mapRt.x = static_cast<unsigned>(float(mapRt.x) - panelW);
+    if (mapRt.x > static_cast<unsigned>(panelW + kLeftSpawnPanelW)) {
+        mapRt.x = static_cast<unsigned>(float(mapRt.x) - panelW - kLeftSpawnPanelW);
     }
-
     lastRtSize = mapRt;
     // JS uses a single "tile_size".
     const float tileSize = float(tilePx) * zoom;
@@ -1240,8 +1312,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     const float centerShiftX = (float(rtSz.x) - contentW) * 0.5f - minX;
     const float centerShiftY = (float(rtSz.y) - contentH) * 0.5f - minY;
 
-    const sf::Vector2f baseShift{centerShiftX + origin.x, centerShiftY + origin.y};
-
+    const sf::Vector2f baseShift{centerShiftX + origin.x + kLeftSpawnPanelW, centerShiftY + origin.y};
     // --- Fog-of-war (gameplay view only) ---
     // In Map View (overview) we show the full map without fog.
     const PlayerId curPid = game->getCurrentPlayerId();
@@ -1273,6 +1344,21 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             unitsByPos[key].push_back(&u);
         }
     }
+
+    // --- Road overlay segments (drawn above resources/buildings but below units) ---
+sf::VertexArray roadLines(sf::Triangles);
+    roadLines.clear();
+
+    struct UnitDrawCmd {
+        const Unit* u = nullptr;
+        TribeType tribeSource = TribeType::Unknown;
+        float ux = 0.f;
+        float uy = 0.f;
+        float s  = 0.f;
+        int stackIdx = 0;
+    };
+    std::vector<UnitDrawCmd> unitDraws;
+    unitDraws.reserve(unitsByPos.size() * 2 + 8);
 
     // Unit texture candidates for the new pack layout:
     // assets/Polytopia_game_engine_textures/tribes/<Tribe>/units/<unit>.png
@@ -1307,6 +1393,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         }
         return pickFirstExisting(out);
     };
+
+    // (Left spawn panel block moved below, after all other rendering)
 
     // Helpers identical to JS naming.
     auto isLandLike = [&](const Tile& t) {
@@ -1524,6 +1612,57 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                            s);
             }
 
+            // --- roads overlay (white paths) ---
+            // Draw connections between adjacent road tiles (including diagonals).
+            if (tile.getRoadBridge() == RoadBridgeEnum::Road) {
+                const sf::Vector2f c0{x + tileSize * 0.5f, y + yStep}; // center of diamond
+
+                auto addSeg = [&](int dx, int dy) {
+                    const Pos p2{column + dx, row + dy};
+                    if (!map.inBounds(p2)) return;
+                    const Tile& t2 = map.at(p2);
+                    if (t2.getRoadBridge() != RoadBridgeEnum::Road) return;
+
+                    // To avoid duplicates, only connect to "forward" neighbors.
+                    if (dy < 0) return;
+                    if (dy == 0 && dx <= 0) return;
+
+                    const float x2 = baseShift.x - tileSize / 2.f + (float(p2.x - p2.y) * tileSize / 2.f);
+                    const float y2 = baseShift.y + (float(p2.x + p2.y) * yStep);
+                    const sf::Vector2f c1{x2 + tileSize * 0.5f, y2 + yStep};
+
+                    const sf::Vector2f d = c1 - c0;
+                    const float len2 = d.x*d.x + d.y*d.y;
+                    if (len2 < 1e-6f) return;
+
+                    const float invLen = 1.f / std::sqrt(len2);
+                    const sf::Vector2f n{-d.y * invLen, d.x * invLen}; // prostopadły
+
+                    const float w = std::max(1.6f, tileSize * 0.055f);
+                    const sf::Vector2f off = n * (w * 0.5f);
+
+                    const sf::Color col(250, 250, 250, 230);
+
+                    const sf::Vector2f a = c0 + off;
+                    const sf::Vector2f b = c1 + off;
+                    const sf::Vector2f c = c1 - off;
+                    const sf::Vector2f d2 = c0 - off;
+
+                    // (a,b,c) + (a,c,d2)
+                    roadLines.append(sf::Vertex(a, col));
+                    roadLines.append(sf::Vertex(b, col));
+                    roadLines.append(sf::Vertex(c, col));
+                    roadLines.append(sf::Vertex(a, col));
+                    roadLines.append(sf::Vertex(c, col));
+                    roadLines.append(sf::Vertex(d2, col));                };
+
+                // 4 directions cover all undirected 8-neighborhood pairs (incl. diagonals)
+                addSeg(1, 0);
+                addSeg(0, 1);
+                addSeg(1, 1);
+                addSeg(1, -1);
+            }
+
             // --- attack targets overlay (gameplay view only) ---
             if (!showOverview && g_moveSelectedUnit != kNoUnit && g_attackOverlayValid) {
                 const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
@@ -1594,7 +1733,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 }
             }
 
-            // --- draw units on this tile (sprite from tribe pack) ---
+            // --- queue units on this tile (drawn later, above road lines) ---
             {
                 const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
                 auto itU = unitsByPos.find(key);
@@ -1605,34 +1744,15 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                         TribeType tribeSource = tribe;
                         if (game) {
                             const PlayerId owner = u->getOwnerId();
-                            // Best-effort: Game::getPlayer(owner) should exist for valid units.
                             tribeSource = game->getPlayer(owner).getTribeType();
                         }
 
-                        const sf::Texture& utex = unitTexture(tribeSource, u->getType());
-
                         // Units are drawn above the tile; scale is based on tileSize (width).
-                        // Make them a bit bigger for readability.
                         const float s = tileSize * 1.5f;
                         const float ux = x + (tileSize - s) * 0.5f;
-                        // Lift units a bit higher so they sit nicer on the isometric tile
                         const float uy = y - 0.4f * tileSize - float(idx) * 10.f;
-                        drawSprite(rt, utex, ux, uy, s);
 
-                        // HP bar
-                        const int hp = std::max(0, u->getHealth());
-                        const int mhp = std::max(1, u->getMaxHealth());
-                        const float frac = std::min(1.f, float(hp) / float(mhp));
-
-                        sf::RectangleShape barBg({s * 0.60f, 6.f});
-                        barBg.setPosition(ux + s * 0.20f, uy + s * 0.92f);
-                        barBg.setFillColor(sf::Color(0, 0, 0, 170));
-                        rt.draw(barBg);
-
-                        sf::RectangleShape barFg({s * 0.60f * frac, 6.f});
-                        barFg.setPosition(ux + s * 0.20f, uy + s * 0.92f);
-                        barFg.setFillColor(sf::Color(240, 240, 240, 235));
-                        rt.draw(barFg);
+                        unitDraws.push_back(UnitDrawCmd{u, tribeSource, ux, uy, s, idx});
 
                         ++idx;
                         if (idx >= 2) break; // avoid clutter
@@ -1640,6 +1760,19 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 }
             }
         }
+    }
+
+    // --- Draw roads (above resources/buildings, below units) ---
+    if (roadLines.getVertexCount() > 0) {
+        rt.draw(roadLines);
+    }
+
+    // --- Draw queued units (above roads) ---
+    for (const UnitDrawCmd& cmd : unitDraws) {
+        if (!cmd.u) continue;
+
+        const sf::Texture& utex = unitTexture(cmd.tribeSource, cmd.u->getType());
+        drawSprite(rt, utex, cmd.ux, cmd.uy, cmd.s);
     }
 
     // --- Bottom context actions (gameplay view only) ---
@@ -1670,7 +1803,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     const int row = g_actionBtnCount / maxPerRow;
                     const int col = g_actionBtnCount % maxPerRow;
 
-                    const float bx = pad + float(col) * (bw + gap);
+const float bx = kLeftSpawnPanelW + pad + float(col) * (bw + gap);
                     const float by = (mapH - barH) + pad + float(row) * (bh + 6.f);
 
                     g_actionBtns[g_actionBtnCount] = ActionButton{sf::FloatRect(bx, by, bw, bh), kind, ut, bt};
@@ -1707,8 +1840,6 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 pushBtn(ActionKind::CaptureCity,    "Capture City",    UnitType::Warrior, BuildingTypeEnum::None);
 
                 // Training
-                pushBtn(ActionKind::TrainUnit, "Train Warrior", UnitType::Warrior, BuildingTypeEnum::None);
-                pushBtn(ActionKind::TrainUnit, "Train Rider",   UnitType::Rider,   BuildingTypeEnum::None);
 
                 // Upgrades (Raft -> ship variants)
                 pushBtn(ActionKind::UpgradeRaftToScout,  "Upgrade -> Scout",  UnitType::Raft, BuildingTypeEnum::None);
@@ -1737,11 +1868,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 pushBtn(ActionKind::BurnForest,   "Burn Forest",  UnitType::Unknown, BuildingTypeEnum::None);
                 pushBtn(ActionKind::GrowForest,   "Grow Forest",  UnitType::Unknown, BuildingTypeEnum::None);
                 pushBtn(ActionKind::DestroyTile,  "Destroy",      UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::BuildRoad,    "Build Road",   UnitType::Unknown, BuildingTypeEnum::None);
 
                 if (g_actionBtnCount > 0) {
                     sf::RectangleShape bar;
-                    bar.setPosition(0.f, mapH - barH);
-                    bar.setSize({mapW, barH});
+bar.setPosition(kLeftSpawnPanelW, mapH - barH);                    bar.setSize({mapW, barH});
                     bar.setFillColor(sf::Color(15, 15, 15, 210));
                     bar.setOutlineThickness(1.f);
                     bar.setOutlineColor(sf::Color(70, 70, 70, 220));
@@ -1779,6 +1910,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                             pushBtn(sbtn.kind, "Fishing", UnitType::Unknown, BuildingTypeEnum::None);
                         } else if (sbtn.kind == ActionKind::DestroyTile) {
                             pushBtn(sbtn.kind, "Destroy", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::BuildRoad) {
+                            pushBtn(sbtn.kind, "Build Road", UnitType::Unknown, BuildingTypeEnum::None);
                         } else if (sbtn.kind == ActionKind::Organization) {
                             pushBtn(sbtn.kind, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
                         } else if (sbtn.kind == ActionKind::UpgradeRaftToScout) {
@@ -1894,14 +2027,33 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
                 auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
                     if (!hasFont) return;
-                    sf::Text t;
-                    t.setFont(uiFont);
-                    t.setString(s);
-                    t.setCharacterSize(sz);
-                    t.setFillColor(sf::Color(240, 240, 240, 255));
-                    t.setPosition(panelRect.left + panelPad, ty);
-                    rt.draw(t);
-                    ty += float(sz) + 6.f;
+
+                    // Support multi-line strings (e.g. unitDisplayString())
+                    std::string_view v(s);
+                    while (!v.empty()) {
+                        // Split on either '\n' or '\r' and handle CRLF.
+                        const size_t brk = v.find_first_of("\r\n");
+                        std::string_view line = (brk == std::string_view::npos) ? v : v.substr(0, brk);
+                        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setString(std::string(line));
+                        t.setCharacterSize(sz);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        t.setPosition(panelRect.left + panelPad, ty);
+                        rt.draw(t);
+
+                        ty += float(sz) + 6.f;
+
+                        if (brk == std::string_view::npos) break;
+
+                        // Consume the line break. If it's CRLF, consume both.
+                        const char c = v[brk];
+                        size_t adv = 1;
+                        if (c == '\r' && brk + 1 < v.size() && v[brk + 1] == '\n') adv = 2;
+                        v.remove_prefix(brk + adv);
+                    }
                 };
 
                 float ty = panelPad + 20.f;
@@ -1917,6 +2069,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
                     addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
                     addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                    addLine(ty, std::string("Road: ") + (st.getRoadBridge() == RoadBridgeEnum::Road ? "yes" : "no"), 14);
                     addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
 
                     // Resources list (Tile)
@@ -1989,14 +2142,33 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
                 auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
                     if (!hasFont) return;
-                    sf::Text t;
-                    t.setFont(uiFont);
-                    t.setString(s);
-                    t.setCharacterSize(sz);
-                    t.setFillColor(sf::Color(240, 240, 240, 255));
-                    t.setPosition(panelRect.left + panelPad, ty);
-                    rt.draw(t);
-                    ty += float(sz) + 6.f;
+
+                    // Support multi-line strings (e.g. unitDisplayString())
+                    std::string_view v(s);
+                    while (!v.empty()) {
+                        // Split on either '\n' or '\r' and handle CRLF.
+                        const size_t brk = v.find_first_of("\r\n");
+                        std::string_view line = (brk == std::string_view::npos) ? v : v.substr(0, brk);
+                        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setString(std::string(line));
+                        t.setCharacterSize(sz);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        t.setPosition(panelRect.left + panelPad, ty);
+                        rt.draw(t);
+
+                        ty += float(sz) + 6.f;
+
+                        if (brk == std::string_view::npos) break;
+
+                        // Consume the line break. If it's CRLF, consume both.
+                        const char c = v[brk];
+                        size_t adv = 1;
+                        if (c == '\r' && brk + 1 < v.size() && v[brk + 1] == '\n') adv = 2;
+                        v.remove_prefix(brk + adv);
+                    }
                 };
 
                 float yAfterPlayers = panelPad + 30.f;
@@ -2554,6 +2726,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                         addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
                         addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
                         addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                        addLine(ty, std::string("Road: ") + (st.getRoadBridge() == RoadBridgeEnum::Road ? "yes" : "no"), 14);
                         addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
 
                         // Resources list (Tile)
@@ -2611,7 +2784,102 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     }
                 }
             }
+        // --- Left spawn panel (gameplay view only) ---
+    // Moved: now rendered after map, context bar, and right panel to always appear on top.
+    if (!showOverview) {
+        sf::RectangleShape lp;
+        lp.setPosition({0.f, 0.f});
+        lp.setSize({kLeftSpawnPanelW, float(rtSzPanel.y)});
+        lp.setFillColor(sf::Color(18, 18, 18, 235));
+        lp.setOutlineThickness(1.f);
+        lp.setOutlineColor(sf::Color(70, 70, 70, 220));
+        rt.draw(lp);
+
+        if (ensureUIFontLoaded()) {
+            sf::Text t;
+            t.setFont(uiFont);
+            t.setCharacterSize(16);
+            t.setFillColor(sf::Color(235, 235, 235, 255));
+            t.setString("SPAWN");
+            t.setPosition(10.f, 8.f);
+            rt.draw(t);
         }
+
+        g_spawnHits.clear();
+        g_spawnHits.reserve(32);
+        g_spawnHitValid = true;
+
+        static const std::array<UnitType, 19> kSpawnList = {
+            UnitType::Warrior,
+            UnitType::Archer,
+            UnitType::Defender,
+            UnitType::Rider,
+            UnitType::MindBender,
+            UnitType::Swordsman,
+            UnitType::Catapult,
+            UnitType::Cloak,
+            UnitType::Knight,
+            UnitType::Giant,
+            UnitType::Bunny,
+            UnitType::Bunta,
+            UnitType::Raft,
+            UnitType::Scout,
+            UnitType::Rammer,
+            UnitType::Bomber,
+            UnitType::Dinghy,
+            UnitType::Pirate,
+            UnitType::Juggernaut
+        };
+
+        const float padX = 10.f;
+        const float padY = 36.f;
+        const float icon = 64.f;
+        const float gap = 8.f;
+        const int cols = 2;
+
+        const TribeType iconTribe = game->getPlayer(curPid).getTribeType();
+
+        for (size_t i = 0; i < kSpawnList.size(); ++i) {
+            const int col = int(i) % cols;
+            const int row = int(i) / cols;
+
+            const float x0 = padX + float(col) * (icon + gap);
+            const float y0 = padY + float(row) * (icon + gap);
+
+            const sf::FloatRect r(x0, y0, icon, icon);
+            g_spawnHits.push_back(SpawnIconHit{r, kSpawnList[i]});
+
+            // selection highlight
+            if (kSpawnList[i] == g_spawnSelectedType) {
+                sf::RectangleShape sel;
+                sel.setPosition({r.left - 2.f, r.top - 2.f});
+                sel.setSize({r.width + 4.f, r.height + 4.f});
+                sel.setFillColor(sf::Color(0,0,0,0));
+                sel.setOutlineThickness(2.f);
+                sel.setOutlineColor(sf::Color(240, 240, 240, 255));
+                rt.draw(sel);
+            }
+
+            sf::RectangleShape bg;
+            bg.setPosition({r.left, r.top});
+            bg.setSize({r.width, r.height});
+            bg.setFillColor(sf::Color(28, 28, 28, 235));
+            bg.setOutlineThickness(1.f);
+            bg.setOutlineColor(sf::Color(90, 90, 90, 255));
+            rt.draw(bg);
+
+            const sf::Texture& utex = unitTexture(iconTribe, kSpawnList[i]);
+            drawSprite(rt, utex, r.left, r.top, icon);
+        }
+    } else {
+        g_spawnHitValid = false;
+        g_spawnHits.clear();
+        g_spawnSelectedType = UnitType::Unknown;
+    }
+
+        }
+
+
 
 
 

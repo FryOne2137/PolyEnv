@@ -28,6 +28,7 @@ public:
     static bool destroy(Game& game, PlayerId pid, Pos pos);
 
     static bool destroyResource(Game& game, PlayerId pid, Pos pos) { return destroy(game, pid, pos); }
+    static bool buildRoad(Game& game, PlayerId pid, Pos pos);
 };
 
 #endif //GAME_ENGINE_TILEACTIONSYSTEM_H

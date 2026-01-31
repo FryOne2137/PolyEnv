@@ -13,6 +13,7 @@
 #include "Systems/InteractionSystem.h"
 #include "Systems/VisionSystem.h"
 #include "Systems/BuildingSystem.h"
+#include "Systems/UnitSpawnSystem.h"
 #include "Systems/TileActionSystem.h"
 #include "Systems/UnitUpgradeSystem.h"
 #include "units/UnitFactory.h"
@@ -233,62 +234,16 @@ const Unit* Game::getUnit(UnitId id) const {
 
 // Spawns a unit on the map. If `canActImmediately` is false, the unit cannot move/attack until next turn.
 UnitId Game::spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately) {
-    if (!map.inBounds(pos)) return kNoUnit;
-    if (map.unitOn(pos) != Map::kNoUnit) return kNoUnit;
 
-    // Units can be spawned ONLY on city tiles.
-    const Tile& t = map.at(pos);
-    if (t.getSettlementType() != SettlementTypeEnum::City) {
-        return kNoUnit;
-    }
-
-    // The city tile defines which city the unit belongs to.
-    const CityId cityForUnit = static_cast<CityId>(t.getSettlementId());
-    City* c = getCity(cityForUnit);
-    if (!c) return kNoUnit;
-
-    // The city must belong to the spawning player.
-    if (static_cast<PlayerId>(c->getOwnerId()) != owner) {
-        return kNoUnit;
-    }
-
-    // Capacity check (prevents training/spawning when the city is full).
-    if (c->getUnitsCount() >= c->maxUnitCapacity()) {
-        return kNoUnit;
-    }
-
-    UnitId id = static_cast<UnitId>(units.size());
-
-    // ✅ CREATE WITH FACTORY
-    Unit u = UnitFactory::create(type, owner, pos);
-    u.setId(id);
-
-    // Spend stars for trained units (start-of-game spawns are free).
     if (!canActImmediately) {
-        const int cost = std::max(0, u.getCost());
-        if (!players[owner].spendStars(cost)) {
-            return kNoUnit;
-        }
+        if (!isPlayersTurn(owner)) return kNoUnit;
+
+        if (owner == kNoPlayer) return kNoUnit;
+        if (static_cast<size_t>(owner) >= players.size()) return kNoUnit;
     }
 
-    // Freshly spawned unit must be ready to act this turn (unless you add a separate rule).
-    // If canActImmediately is true, unit can act this turn, otherwise it cannot.
-    u.setMovedThisTurn(!canActImmediately);
-    u.setAttackedThisTurn(!canActImmediately);
-    u.setVeteran(false);
-    u.setPoisoned(false);
-
-    units.push_back(u);
-    map.setUnitOn(pos, id);
-    players[owner].addUnit(id);
-
-    // Register the unit in its city (for capacity / city bookkeeping).
-    c->addUnit(id);
-
-    VisionSystem::revealFromUnit(*this, id);
-    return id;
+    return UnitSpawnSystem::spawnUnit(*this, map, type, owner, pos, canActImmediately);
 }
-
 
 
 bool Game::moveUnit(UnitId unitId, Pos to) {
@@ -402,6 +357,12 @@ bool Game::destroyTile(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::destroy(*this, pid, pos);
+}
+
+bool Game::buildRoad(PlayerId pid, Pos pos) {
+    if (!isPlayersTurn(pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::buildRoad(*this, pid, pos);
 }
 
 bool Game::foundCityFromVillage(PlayerId owner, Pos pos) {

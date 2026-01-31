@@ -10,6 +10,7 @@
 #include "../../src/World/Pos.h"
 #include "UnitSkill.h"
 #include "Core/Ids.h"
+#include "tech/TechDB.h"
 
 // In this architecture Unit is "data only". Game rules live in systems:
 // - MovementSystem (movement validation, reachable tiles, fog reveal)
@@ -131,6 +132,10 @@ public:
     int getVisionRange() const;
     void setVisionRange(int v);
 
+    // ---- Spawn requirements (definition-level; prefer UnitDB, but kept here for now) ----
+    TechId getRequiredTechToSpawn() const;
+    void setRequiredTechToSpawn(TechId v);
+
     // ---- Turn state ----
     bool movedThisTurn() const;
     bool attackedThisTurn() const;
@@ -178,6 +183,8 @@ private:
     int maxHealth = 0;
     float attack = 0;
     float defense = 0;
+
+    TechId requiredTechToSpawn = TechId::Count;
 
     int movePoints = 0;   // remaining movement points this turn
     int range = 1;

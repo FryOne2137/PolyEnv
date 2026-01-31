@@ -29,7 +29,15 @@ inline ResourcesEnum removeFlag(ResourcesEnum v, ResourcesEnum f) {
 
 // ---- common checks ----
 inline bool requireTech(const Game& game, PlayerId pid, TechId tech) {
+    // TechId::Count is used as "no requirement".
     if (tech == TechId::Count) return true;
+
+    const auto idx = static_cast<uint32_t>(tech);
+    const auto cnt = static_cast<uint32_t>(TechId::Count);
+
+    // Defensive: if an invalid/unknown tech id is passed, do NOT allow the action.
+    if (idx >= cnt) return false;
+
     return game.getPlayer(pid).hasTech(tech);
 }
 
@@ -269,5 +277,35 @@ bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
     if (hasBuilding) t.setBuildingType(BuildingTypeEnum::None);
     if (hasRoadBridge) t.setRoadBridge(RoadBridgeEnum::None);
 
+    return true;
+}
+
+
+bool TileActionSystem::buildRoad(Game& game, PlayerId pid, Pos pos) {
+    static constexpr TechId kTech = TechId::Roads;
+    static constexpr int kCost = 3;
+
+    if (!game.getMap().inBounds(pos)) return false;
+    if (!requireTech(game, pid, kTech)) return false;
+
+    Tile& t = game.getMap().at(pos);
+
+    // Only land tiles
+    if (t.getBaseTerrain() != BaseTerrainEnum::Land) return false;
+
+    // Must be own territory OR unclaimed territory
+    const CityId cid = t.getTerritoryCityId();
+    if (cid != kNoCity) {
+        const City* c = game.getCity(cid);
+        if (!c) return false;
+        if (static_cast<PlayerId>(c->getOwnerId()) != pid) return false;
+    }
+
+    // Already has road/bridge
+    if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
+
+    if (!spendStars(game, pid, kCost)) return false;
+
+    t.setRoadBridge(RoadBridgeEnum::Road);
     return true;
 }
