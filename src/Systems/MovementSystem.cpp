@@ -7,6 +7,8 @@
 #include "Game.h" // needs Game::getUnit and Game::getMap()
 #include "terrain/BaseTerrainEnum.h"
 #include "terrain/BuildingTypeEnum.h"
+#include "terrain/RoadBridgeEnum.h"
+#include "terrain/ResourcesEnum.h"
 #include "tech/TechDB.h" // TechId
 #include "Systems/VisionSystem.h"
 #include "units/UnitFactory.h"
@@ -159,16 +161,52 @@ static inline std::array<Pos, 6> hexNeighborsOddR(Pos cur) {
     };
 }
 
-static inline bool isRoadLikeTile(const Game& /*game*/, Pos /*p*/, UnitId /*movingUnit*/) {
-    // TODO: Wire to your map tile data.
-    // Expected: true if tile has a road OR is a city/village tile that counts as road.
-    return false;
+static inline bool isRoadLikeTile(const Game& game, Pos p, UnitId movingUnit) {
+    if (!game.getMap().inBounds(p)) return false;
+
+    // Some skills (e.g., Fly/Creep) may not use roads. If you add them later,
+    // gate them here.
+    if (movingUnit != Map::kNoUnit) {
+        const Unit* u = game.getUnit(movingUnit);
+        if (!u) return false;
+        // Example hooks (uncomment if you have these skills):
+        // if (u->hasSkill(UnitSkill::Fly)) return false;
+        // if (u->hasSkill(UnitSkill::Creep)) return false;
+    }
+
+    const Tile& t = game.getMap().at(p);
+
+    // Roads can't exist on mountains in Polytopia; treat mountain as non-roadlike defensively.
+    if (t.getBaseTerrain() == BaseTerrainEnum::Mountain) return false;
+
+    const RoadBridgeEnum rb = t.getRoadBridge();
+
+    // Compatibility + robustness:
+    // In Polytopia, city/village tiles behave like roads. Even if you already place roads under them,
+    // this makes older saves/maps (before you added auto-road under settlements) still work.
+    const SettlementTypeEnum st = t.getSettlementType();
+    const bool settlementRoad = (st == SettlementTypeEnum::City) || (st == SettlementTypeEnum::Village);
+
+    return settlementRoad || (rb == RoadBridgeEnum::Road) || (rb == RoadBridgeEnum::Bridge);
 }
 
-static inline bool isEnemyTerritoryForRoadBonus(const Game& /*game*/, Pos /*p*/, UnitId /*movingUnit*/) {
-    // TODO: Wire to ownership/territory system.
-    // Expected: true if road bonus should NOT apply on this tile (enemy territory).
-    return false;
+static inline bool isEnemyTerritoryForRoadBonus(const Game& game, Pos p, UnitId movingUnit) {
+    if (movingUnit == Map::kNoUnit) return false; // generic queries
+    const Unit* u = game.getUnit(movingUnit);
+    if (!u) return true; // be conservative
+
+    if (!game.getMap().inBounds(p)) return true;
+
+    const Tile& t = game.getMap().at(p);
+    const CityId cid = t.getTerritoryCityId();
+
+    // Neutral (no city) => treat as allowed for road bonus.
+    if (cid == kNoCity) return false;
+
+    const City* c = game.getCity(cid);
+    if (!c) return true;
+
+    return static_cast<PlayerId>(c->getOwnerId()) != u->getOwnerId();
 }
 
 static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId movingUnit) {
@@ -201,10 +239,17 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId movin
 
 static inline int stepCostHalfPoints(const Game& game, UnitId movingUnit, Pos from, Pos to) {
     // Base move cost is 1.0 move point (= 2 half-points).
-    // Road move cost is 0.5 (= 1 half-point) when both tiles are road-like AND in friendly/neutral territory.
+    // Road/bridge move cost is 0.5 (= 1 half-point) when both tiles are road-like AND the move
+    // is entirely within friendly or neutral territory (no bonus on enemy territory roads).
     const bool fromRoad = isRoadLikeTile(game, from, movingUnit);
     const bool toRoad   = isRoadLikeTile(game, to, movingUnit);
-    const bool roadOK   = fromRoad && toRoad && !isEnemyTerritoryForRoadBonus(game, to, movingUnit);
+
+    if (!fromRoad || !toRoad) return 2;
+
+    const bool fromEnemy = isEnemyTerritoryForRoadBonus(game, from, movingUnit);
+    const bool toEnemy   = isEnemyTerritoryForRoadBonus(game, to, movingUnit);
+
+    const bool roadOK = !fromEnemy && !toEnemy;
     return roadOK ? 1 : 2;
 }
 
@@ -327,6 +372,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         const bool toIsWater = (tt.getBaseTerrain() == BaseTerrainEnum::Water);
         const bool toIsOcean = (tt.getBaseTerrain() == BaseTerrainEnum::Ocean);
         const bool toIsPort  = (tt.getBuildingType() == BuildingTypeEnum::Port);
+        const bool toIsBridge = (tt.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         const bool fromIsLandish = (tf.getBaseTerrain() == BaseTerrainEnum::Land ||
                                    tf.getBaseTerrain() == BaseTerrainEnum::Mountain);
@@ -334,23 +380,29 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         const bool unitWaterCapable = isWaterMover(game, u);
 
         // --- Rules for LAND units (not water capable) ---
-        // From land -> Water/Ocean: ONLY onto a PORT, requires Fishing, and PORT must be inside mover-owned city territory.
+        // From land -> Water/Ocean:
+        // - PORT: requires Fishing and PORT must be inside mover-owned city territory (Ocean also requires Sailing).
+        // - BRIDGE on Water: allows land units to cross one water tile (Polytopia-style), no Fishing required.
         if (!unitWaterCapable && fromIsLandish && (toIsWater || toIsOcean)) {
-            if (!toIsPort) return false;
-            if (!hasFishing) return false;
+            if (toIsBridge && toIsWater) {
+                // Bridge crossing is allowed without port/fishing/ownership rules.
+            } else {
+                if (!toIsPort) return false;
+                if (!hasFishing) return false;
 
-            const CityId tid = tt.getTerritoryCityId();
-            if (tid == kNoCity) return false;
-            const City* tc = game.getCity(tid);
-            if (!tc) return false;
-            if (static_cast<PlayerId>(tc->getOwnerId()) != mover) return false;
+                const CityId tid = tt.getTerritoryCityId();
+                if (tid == kNoCity) return false;
+                const City* tc = game.getCity(tid);
+                if (!tc) return false;
+                if (static_cast<PlayerId>(tc->getOwnerId()) != mover) return false;
 
-            // Ocean travel requires Sailing (even when entering via an ocean port).
-            if (toIsOcean && !hasSailing) return false;
+                // Ocean travel requires Sailing (even when entering via an ocean port).
+                if (toIsOcean && !hasSailing) return false;
+            }
         }
 
-        // Land unit cannot step onto Water/Ocean otherwise.
-        if (!unitWaterCapable && (toIsWater || toIsOcean) && !toIsPort) {
+        // Land unit cannot step onto Water/Ocean otherwise (Bridge on Water is allowed).
+        if (!unitWaterCapable && (toIsWater || toIsOcean) && !(toIsPort || (toIsBridge && toIsWater))) {
             return false;
         }
 
@@ -417,6 +469,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         const bool pIsOcean = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
         const bool pIsPort  = (t.getBuildingType() == BuildingTypeEnum::Port);
         const bool pIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool pIsBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         const bool hasFishing = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
         const bool hasSailing = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
@@ -430,8 +483,9 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
                 if (!isCoastalLandTile(game, p)) return false;
             }
         } else {
-            // Land units: cannot traverse Water/Ocean unless it's a valid owned Port with Fishing.
-            if ((pIsWater || pIsOcean) && !pIsPort) return false;
+            // Land units: cannot traverse Water/Ocean unless it's a valid owned Port with Fishing,
+            // OR a Bridge on Water (Polytopia-style).
+            if ((pIsWater || pIsOcean) && !(pIsPort || (pIsBridge && pIsWater))) return false;
         }
 
         // Port tiles: always require Fishing and must be inside mover-owned city territory.
@@ -820,6 +874,7 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
         const bool toIsOcean = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
         const bool toIsPort  = (t.getBuildingType() == BuildingTypeEnum::Port);
         const bool toIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool toIsBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         const bool hasFishing = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
         const bool hasSailing = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
@@ -834,8 +889,9 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
                 if (!isCoastalLandTile(game, p)) return false;
             }
         } else {
-            // Land units: cannot step onto Water/Ocean unless it's a valid owned Port.
-            if ((toIsWater || toIsOcean) && !toIsPort) return false;
+            // Land units: cannot step onto Water/Ocean unless it's a valid owned Port,
+            // OR a Bridge on Water (Polytopia-style).
+            if ((toIsWater || toIsOcean) && !(toIsPort || (toIsBridge && toIsWater))) return false;
         }
 
         // Port entry rule: always requires Fishing and owned territory (+ Sailing if ocean).

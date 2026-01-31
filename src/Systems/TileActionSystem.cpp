@@ -309,3 +309,44 @@ bool TileActionSystem::buildRoad(Game& game, PlayerId pid, Pos pos) {
     t.setRoadBridge(RoadBridgeEnum::Road);
     return true;
 }
+
+bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
+    static constexpr TechId kTech = TechId::Roads;
+    static constexpr int kCost = 5;
+
+    if (!game.getMap().inBounds(pos)) return false;
+    if (!requireTech(game, pid, kTech)) return false;
+
+    Tile& t = game.getMap().at(pos);
+
+    // Bridge can be placed only on WATER (not Ocean).
+    if (t.getBaseTerrain() != BaseTerrainEnum::Water) return false;
+
+    // Must be own territory OR unclaimed territory
+    const CityId cid = t.getTerritoryCityId();
+    if (cid != kNoCity) {
+        const City* c = game.getCity(cid);
+        if (!c) return false;
+        if (static_cast<PlayerId>(c->getOwnerId()) != pid) return false;
+    }
+
+    // Must not already have a road/bridge
+    if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
+
+    auto isLandish = [&](Pos p) -> bool {
+        if (!game.getMap().inBounds(p)) return false;
+        const BaseTerrainEnum bt = game.getMap().at(p).getBaseTerrain();
+        return (bt == BaseTerrainEnum::Land) || (bt == BaseTerrainEnum::Mountain);
+    };
+
+    const bool ns = isLandish(Pos{pos.x, pos.y - 1}) && isLandish(Pos{pos.x, pos.y + 1});
+    const bool ew = isLandish(Pos{pos.x - 1, pos.y}) && isLandish(Pos{pos.x + 1, pos.y});
+
+    // Must connect across opposite sides (N-S or E-W), but NOT both (no cross).
+    if (!(ns ^ ew)) return false;
+
+    if (!spendStars(game, pid, kCost)) return false;
+
+    t.setRoadBridge(RoadBridgeEnum::Bridge);
+    return true;
+}

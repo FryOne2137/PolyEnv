@@ -115,6 +115,10 @@ public:
     std::vector<Pos> reachable(UnitId unitId) const;
 
     bool buildRoad(PlayerId pid, Pos pos);
+    bool buildBridge(PlayerId pid, Pos pos);
+
+    bool explorer(PlayerId pid, Pos start);
+
 
 
 

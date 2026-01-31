@@ -365,6 +365,21 @@ bool Game::buildRoad(PlayerId pid, Pos pos) {
     return TileActionSystem::buildRoad(*this, pid, pos);
 }
 
+bool Game::explorer(PlayerId pid, Pos start) {
+    std::cout << "[explorer] pid=" << int(pid) << " start=(" << start.x << "," << start.y << ")\n";
+    if (!isPlayersTurn(pid)) return false;
+    if (!map.inBounds(start)) return false;
+    VisionSystem::doExplorer(*this, pid, start);
+    return true;
+}
+
+bool Game::buildBridge(PlayerId pid, Pos pos) {
+    if (!isPlayersTurn(pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::buildBridge(*this, pid, pos);
+}
+
+
 bool Game::foundCityFromVillage(PlayerId owner, Pos pos) {
     if (!map.inBounds(pos)) return false;
 
@@ -528,4 +543,6 @@ bool Game::becomeVeteran(UnitId unitId) {
     if (!isPlayersTurn(u->getOwnerId())) return false;
     return UnitUpgradeSystem::becomeVeteran(*this, unitId);
 }
+
+
 

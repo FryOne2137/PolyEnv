@@ -1,5 +1,32 @@
 //
 // Created by Fryderyk Niedzwiecki on 15/01/2026.
+#include <queue>
+#include <random>
+#include <limits>
+#include "World/Tile.h"
+#include "VisionSystem.h"
+
+
+// Local helper for explorer fog checks
+bool VisionSystem::isFogForPlayer(const Tile& t, PlayerIndex idx) {
+    const VisibilityEnum v = t.getVisibility();
+    // Prefer a project helper if it exists.
+    // Fallback: treat VisibilityEnum as a bitmask.
+    return (static_cast<uint32_t>(v) & (1u << static_cast<uint32_t>(idx))) == 0;
+}
+
+// Local helper for explorer lighthouse detection
+bool VisionSystem::tileHasLighthouse(const Tile& t) {
+#ifdef BUILDING_TYPE_ENUM_HAS_LIGHTHOUSE
+    return t.getBuildingType() == BuildingTypeEnum::Lighthouse;
+#else
+    // Try common patterns (adapt if these members exist in your Tile class)
+    // return t.hasBuilding(BuildingTypeEnum::Lighthouse);
+    // return t.getBuilding() == BuildingTypeEnum::Lighthouse;
+    return false;
+#endif
+}
+
 //
 
 #include "VisionSystem.h"
@@ -55,5 +82,232 @@ void VisionSystem::revealArea(Game& game, PlayerId pid, Pos center, int range) {
             reveal(v, static_cast<PlayerIndex>(pid));
             t.setVisibility(v);
         }
+    }
+}
+
+
+
+// Explorer reward logic (see Explorer wiki page).
+// Replace the stub or body of doExplorer with this implementation.
+// This function must be placed in the appropriate .cpp file where other gameplay actions are implemented.
+// If a declaration exists in a header, do not modify it.
+void VisionSystem::doExplorer(Game& game, PlayerId pid, Pos start) // <-- adapt signature to match project, do NOT change existing signature!
+{
+    // ---- Resolve required inputs (pid + start position) before running ----
+    // NOTE: the surrounding function signature must already provide or be able to resolve these.
+    // Make sure you end up with:
+    //   PlayerId pid;
+    //   Pos pos;
+
+    auto& map = game.getMap();
+
+    // Tech gating for terrain
+    const Player& pl = game.getPlayer(pid);
+
+    auto canEnter = [&](Pos p) -> bool {
+        if (!map.inBounds(p)) return false;
+        const Tile& t = map.at(p);
+        const auto bt = t.getBaseTerrain();
+
+        // Default: land is always ok
+        if (bt == BaseTerrainEnum::Mountain) {
+            // Requires Climbing
+            // If TechId naming differs, adapt to the project enum.
+            return pl.hasTech(TechId::Climbing);
+        }
+        if (bt == BaseTerrainEnum::Water) {
+            // Requires Sailing
+            return pl.hasTech(TechId::Sailing);
+        }
+        if (bt == BaseTerrainEnum::Ocean) {
+            // Requires Navigation
+            return pl.hasTech(TechId::Navigation);
+        }
+        return true;
+    };
+
+    auto revealExplorerPlus = [&](Pos center) {
+        constexpr int kDirs = 5;
+        const int dx[kDirs] = {0, 1, -1, 0, 0};
+        const int dy[kDirs] = {0, 0, 0, 1, -1};
+
+        for (int i = 0; i < kDirs; ++i) {
+            Pos p{center.x + dx[i], center.y + dy[i]};
+            if (!map.inBounds(p)) continue;
+            Tile& tt = map.at(p);
+            VisibilityEnum vv = tt.getVisibility();
+            reveal(vv, static_cast<PlayerIndex>(pid));
+            tt.setVisibility(vv);
+        }
+    };
+
+    auto countFogClearedFrom = [&](Pos center, bool& outHasLighthouse) -> int {
+        outHasLighthouse = false;
+        int cnt = 0;
+
+        constexpr int kDirs = 5;
+        const int dx[kDirs] = {0, 1, -1, 0, 0};
+        const int dy[kDirs] = {0, 0, 0, 1, -1};
+
+        for (int i = 0; i < kDirs; ++i) {
+            Pos p{center.x + dx[i], center.y + dy[i]};
+            if (!map.inBounds(p)) continue;
+            const Tile& tt = map.at(p);
+            if (isFogForPlayer(tt, static_cast<PlayerIndex>(pid))) {
+                ++cnt;
+                if (tileHasLighthouse(tt)) outHasLighthouse = true;
+            }
+        }
+
+        // Cap 5 to 4 (as described)
+        if (cnt >= 4) cnt = 4;
+        return cnt;
+    };
+
+    // 8-neighborhood movement (supports diagonal preference described in the wiki)
+    static const int ndx[8] = { 1, -1,  0,  0,  1,  1, -1, -1};
+    static const int ndy[8] = { 0,  0,  1, -1,  1, -1,  1, -1};
+
+    // Deterministic RNG for tie-breaking (still "random" but stable per turn/player/pos)
+    const uint32_t seed = static_cast<uint32_t>(game.getTurnNumber()) * 2654435761u
+                        ^ (static_cast<uint32_t>(pid) + 1u) * 2246822519u
+                        ^ (static_cast<uint32_t>(start.x & 0xFFFF) << 16)
+                        ^ (static_cast<uint32_t>(start.y & 0xFFFF));
+    std::mt19937 rng(seed);
+
+    // Reveal starting area
+    Pos pos = start;
+    revealExplorerPlus(pos);
+
+    Pos prev = pos;
+    bool hasPrev = false;
+
+    // ---- 15 moves ----
+    for (int step = 0; step < 15; ++step) {
+        // BFS from current pos up to distance 4 to find reachable tiles (ignoring units)
+        const int w = map.getWidth();
+        const int h = map.getHeight();
+        const int N = w * h;
+
+        std::vector<int> dist(static_cast<size_t>(N), -1);
+        auto idxOf = [&](Pos p) -> int { return p.y * w + p.x; };
+
+        std::queue<Pos> q;
+        dist[static_cast<size_t>(idxOf(pos))] = 0;
+        q.push(pos);
+
+        while (!q.empty()) {
+            Pos cur = q.front();
+            q.pop();
+            const int cd = dist[static_cast<size_t>(idxOf(cur))];
+            if (cd >= 4) continue;
+
+            for (int i = 0; i < 8; ++i) {
+                Pos np{cur.x + ndx[i], cur.y + ndy[i]};
+                if (!map.inBounds(np)) continue;
+                if (!canEnter(np)) continue;
+
+                const int ni = idxOf(np);
+                if (dist[static_cast<size_t>(ni)] != -1) continue;
+                dist[static_cast<size_t>(ni)] = cd + 1;
+                q.push(np);
+            }
+        }
+
+        // Seed score map from tiles that can clear fog (within dist<=4)
+        // Lower score is better.
+        const int kInf = 1000;
+        std::vector<int> score(static_cast<size_t>(N), kInf);
+
+        std::queue<std::pair<Pos,int>> bfs;
+
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                Pos p{x, y};
+                const int di = dist[static_cast<size_t>(idxOf(p))];
+                if (di < 0 || di > 4) continue;
+                if (!canEnter(p)) continue;
+
+                bool hasLh = false;
+                const int fogCnt = countFogClearedFrom(p, hasLh);
+                if (fogCnt <= 0) continue;
+
+                // Base scores from wiki examples:
+                // 143=4 fog, 153=3, 163=2, 173=1; lighthouse bonus -33.
+                int s = 183 - 10 * fogCnt;
+                if (hasLh) s -= 33;
+
+                const int pi = idxOf(p);
+                if (s < score[static_cast<size_t>(pi)]) {
+                    score[static_cast<size_t>(pi)] = s;
+                    bfs.push({p, 0});
+                }
+            }
+        }
+
+        // BFS propagate scores outward, +100 per layer, capped at 3 iterations
+        while (!bfs.empty()) {
+            auto [cur, depth] = bfs.front();
+            bfs.pop();
+            if (depth >= 3) continue;
+
+            const int baseS = score[static_cast<size_t>(idxOf(cur))];
+
+            for (int i = 0; i < 8; ++i) {
+                Pos np{cur.x + ndx[i], cur.y + ndy[i]};
+                if (!map.inBounds(np)) continue;
+                if (!canEnter(np)) continue;
+
+                const int ni = idxOf(np);
+                const int ns = baseS + 100;
+                if (ns < score[static_cast<size_t>(ni)]) {
+                    score[static_cast<size_t>(ni)] = ns;
+                    bfs.push({np, depth + 1});
+                }
+            }
+        }
+
+        // Choose the best adjacent step.
+        std::vector<Pos> best;
+        int bestScore = kInf;
+
+        for (int i = 0; i < 8; ++i) {
+            Pos np{pos.x + ndx[i], pos.y + ndy[i]};
+            if (!map.inBounds(np)) continue;
+            if (!canEnter(np)) continue;
+
+            int s = score[static_cast<size_t>(idxOf(np))];
+
+            // If no fog scores exist, all adjacent tiles are equal except backtrack penalty.
+            if (s == kInf) s = 500;
+
+            // Avoid direct backtracking with a small penalty.
+            if (hasPrev && np.x == prev.x && np.y == prev.y) {
+                s += 5;
+            }
+
+            if (s < bestScore) {
+                bestScore = s;
+                best.clear();
+                best.push_back(np);
+            } else if (s == bestScore) {
+                best.push_back(np);
+            }
+        }
+
+        // No available steps at all => go poof
+        if (best.empty()) {
+            break;
+        }
+
+        // Random tie-break among equals
+        std::uniform_int_distribution<size_t> pick(0, best.size() - 1);
+        Pos next = best[pick(rng)];
+
+        prev = pos;
+        hasPrev = true;
+        pos = next;
+
+        revealExplorerPlus(pos);
     }
 }

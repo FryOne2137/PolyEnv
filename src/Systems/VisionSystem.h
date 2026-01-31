@@ -10,6 +10,7 @@
 #include "units/Unit.h"      // UnitId, PlayerId
 #include "World/Pos.h"       // Pos
 #include "terrain/VisibilityEnum.h"
+#include "World/Tile.h"
 
 class Game;
 
@@ -29,6 +30,13 @@ public:
 
     // Helper: convert playerId (0..15) into a VisibilityEnum bit.
     static VisibilityEnum bitForPlayer(PlayerId playerId);
+    static void doExplorer(Game& game, PlayerId pid, Pos start);
+
+private:
+    static bool isFogForPlayer(const Tile& t, PlayerIndex idx);
+    static bool tileHasLighthouse(const Tile& t);
+
+
 };
 
 #endif //GAME_ENGINE_VISIONSYSTEM_H
