@@ -232,6 +232,26 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId movin
         }
     }
 
+    // Terrain terminal rule:
+    // Mountains and Forests are blocking/terminal tiles: you can enter them, but you cannot
+    // continue moving from them during the same turn.
+    {
+        if (!game.getMap().inBounds(p)) return false;
+        const Tile& t = game.getMap().at(p);
+
+        if (t.getBaseTerrain() == BaseTerrainEnum::Mountain) {
+            return true;
+        }
+
+        // Forest is modeled as a resource on a land tile.
+        // Forest WITHOUT a road is terminal; Forest WITH a road/bridge/settlement-road is NOT terminal.
+        if (t.getResource() == ResourcesEnum::Forest) {
+            if (!isRoadLikeTile(game, p, movingUnit)) {
+                return true;
+            }
+        }
+    }
+
     // Enemy ZoC rule:
     // If you enter a tile that is within 1 of an enemy unit (that doesn't have Hide), you must STOP.
     // Hide units are not blocked and do not stop.
@@ -707,19 +727,21 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     auto canStepOn = [&](Pos p) -> bool {
         if (!map.inBounds(p)) return false;
 
-        // Occupied tile logic:
+        // Occupied tiles are blocked (no passing through friendly units).
+        // The only exception is the starting tile which is occupied by this moving unit.
         const UnitId occ = map.unitOn(p);
         if (occ != Map::kNoUnit) {
-            // Destination must be empty (checked earlier), but keep this defensive.
-            if (p == to) return false;
-
-            // Allow passing through FRIENDLY units; block ENEMY units.
-            const Unit* other = game.getUnit(occ);
-            if (other && other->getOwnerId() != moverOwner) {
-                return false;
+            if (p == from) {
+                // ok
+            } else {
+                const Unit* occU = game.getUnit(occ);
+                if (!occU) return false; // be conservative
+                if (occU->getOwnerId() != moverOwner) {
+                    return false; // enemy blocks
+                }
+                // friendly -> passable (destination is still required to be empty)
             }
         }
-
         const Tile& t = map.at(p);
 
         // Mountain restriction: cannot enter mountains without Climbing.
@@ -1018,19 +1040,21 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
     auto canStep = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
 
-        // block occupied tiles (except starting tile)
+        // Occupied tiles are blocked (no passing through friendly units).
+        // The only exception is the starting tile which is occupied by this moving unit.
         const UnitId occ = game.getMap().unitOn(p);
         if (occ != Map::kNoUnit) {
-            // Can't end on an occupied tile, but allow passing through FRIENDLY units.
-            // (start is occupied by this unit)
-            if (!(p == start)) {
-                const Unit* other = game.getUnit(occ);
-                if (other && other->getOwnerId() != moverOwner) {
-                    return false;
+            if (p == start) {
+                // ok
+            } else {
+                const Unit* occU = game.getUnit(occ);
+                if (!occU) return false; // be conservative
+                if (occU->getOwnerId() != moverOwner) {
+                    return false; // enemy blocks
                 }
+                // friendly -> passable
             }
         }
-
         const Tile& t = game.getMap().at(p);
 
         // Mountain restriction: cannot enter mountains without Climbing.
@@ -1092,12 +1116,16 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             const Pos curP = fromIdx(ci, w);
 
             if (curP != start) {
-                const Tile& tn = game.getMap().at(curP);
-                if (tileVisibleToPlayer(tn, moverOwner)) {
-                    // Dedup without sorting.
-                    if (g_bucket.outStamp[static_cast<size_t>(ci)] != g_bucket.outEpoch) {
-                        g_bucket.outStamp[static_cast<size_t>(ci)] = g_bucket.outEpoch;
-                        out.push_back(curP);
+                if (game.getMap().unitOn(curP) != Map::kNoUnit) {
+                    // never show occupied tiles as reachable destinations
+                } else {
+                    const Tile& tn = game.getMap().at(curP);
+                    if (tileVisibleToPlayer(tn, moverOwner)) {
+                        // Dedup without sorting.
+                        if (g_bucket.outStamp[static_cast<size_t>(ci)] != g_bucket.outEpoch) {
+                            g_bucket.outStamp[static_cast<size_t>(ci)] = g_bucket.outEpoch;
+                            out.push_back(curP);
+                        }
                     }
                 }
             }
