@@ -33,7 +33,7 @@ public:
         float initialLand = 0.5f;
         int smoothing = 3;
         int relief = 4;
-        uint32_t seed = 0; // 0 = losowo
+        uint32_t seed = 0;
 
         std::vector<TribeType> tribes; // 2..16
     };
@@ -43,13 +43,18 @@ public:
     // Tworzy nową grę: generuje mapę + tworzy graczy + ustawia turę 0
     void newGame(const NewGameConfig &cfg);
 
+
+
     // ---- Tura / kolejność ----
     PlayerId getCurrentPlayerId() const { return currentPlayer; }
     Player &getCurrentPlayer() { return players[currentPlayer]; }
     const Player &getCurrentPlayer() const { return players[currentPlayer]; }
     uint32_t getTurnNumber() const { return turnNumber; }
+    uint32_t getWorldSeed() const { return worldSeed; }
 
     bool endTurn(); // przechodzi do następnego gracza
+    bool handleRuin(UnitId unitId, Pos pos);
+    bool handleStarfish(UnitId unitId, Pos pos);
 
     // ---- Dostęp do stanu (AI/UI) ----
     const Map &getMap() const { return map; }
@@ -123,8 +128,12 @@ public:
 
 
 
+
+
 private:
     friend class UnitSpawnSystem;
+
+    uint32_t worldSeed = 1;
 
     Map map;
 

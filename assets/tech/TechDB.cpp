@@ -4,6 +4,9 @@
 
 #include "TechDB.h"
 #include <cmath>
+#include <vector>
+#include <random>
+#include <algorithm>
 
 static constexpr TechId NONE = TechId::Count;
 
@@ -47,6 +50,43 @@ const TechData& TechDB::getTech(TechId id) {
 TechId TechDB::getPrerequisite(TechId id) {
     return getTech(id).prerequisite;
 }
+
+static bool containsTech(const std::vector<TechId>& v, TechId id) {
+    return std::find(v.begin(), v.end(), id) != v.end();
+}
+
+std::vector<TechId> TechDB::getObtainableTechsThisRound(const std::vector<TechId>& ownedTechs) {
+    std::vector<TechId> result;
+    result.reserve(TechDB::TECH_COUNT);
+
+    for (size_t i = 0; i < TechDB::TECH_COUNT; ++i) {
+        TechId id = static_cast<TechId>(i);
+        const TechData& t = getTech(id);
+
+        // skip already owned
+        if (containsTech(ownedTechs, id))
+            continue;
+
+        // Obtainable this round:
+        // - any Tier1 tech
+        // - OR any tech whose prerequisite (lower tier) is already owned
+        if (t.tier == TechTier::Tier1 || (t.prerequisite != NONE && containsTech(ownedTechs, t.prerequisite))) {
+            result.push_back(id);
+        }
+    }
+
+    return result;
+}
+
+TechId TechDB::rollRandomObtainableTechThisRound(
+    const std::vector<TechId>& ownedTechs,
+    uint32_t r
+) {
+    std::vector<TechId> pool = getObtainableTechsThisRound(ownedTechs);
+    if (pool.empty()) return TechId::Count;
+    return pool[r % pool.size()];
+}
+
 
 // Wiki formula:
 // cost = tier * cities + 4

@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <string_view>
 #include <array>
+#include <vector>
+
 
 enum class TechTier : uint8_t {
     Tier1 = 1,
@@ -66,6 +68,8 @@ public:
 
     // Dane techów
     static const TechData& getTech(TechId id);
+    static std::vector<TechId> getObtainableTechsThisRound(const std::vector<TechId>& ownedTechs);
+    static TechId rollRandomObtainableTechThisRound(const std::vector<TechId>& ownedTechs,uint32_t r);
 
     // Cena technologii
     static int calculatePrice(TechId id, int cityCount, bool hasLiteracy);

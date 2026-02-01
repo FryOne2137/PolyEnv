@@ -51,6 +51,10 @@ bool Player::hasTech(TechId tech) const {
     return (techMask & (1ull << id)) != 0ull;
 }
 
+const std::vector<TechId>& Player::getTechs() const {
+    return techs;
+}
+
 void Player::addTech(TechId tech) {
     if (tech == TechId::Count) return;
 

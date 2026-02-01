@@ -6,6 +6,7 @@
 
 
 #include <algorithm>
+#include <iostream>
 
 UnitId UnitSpawnSystem::spawnUnit(Game& game, Map& map, UnitType type, PlayerId owner, Pos pos, bool canActImmediately) {
     // --- Basic placement checks ---
@@ -71,6 +72,40 @@ UnitId UnitSpawnSystem::spawnUnit(Game& game, Map& map, UnitType type, PlayerId 
 
     // Register the unit in its city (for capacity / city bookkeeping).
     c->addUnit(id);
+
+    VisionSystem::revealFromUnit(game, id);
+    return id;
+}
+
+UnitId UnitSpawnSystem::spawnUnitForced(Game& game, Map& map, UnitType type, PlayerId owner, Pos pos, bool canActImmediately, bool makeVeteran) {
+
+    if (!map.inBounds(pos)) {
+        return kNoUnit;
+    }
+    const UnitId occ0 = map.unitOn(pos);
+    if (occ0 != Map::kNoUnit) {
+        return kNoUnit;
+    }
+
+    // --- Create prototype with factory (stats + required tech) ---
+    UnitId id = static_cast<UnitId>(game.units.size());
+    Unit u = UnitFactory::create(type, owner, pos);
+    u.setId(id);
+
+
+
+    // Forced spawns are free; canActImmediately controls readiness.
+    u.setMovedThisTurn(!canActImmediately);
+    u.setAttackedThisTurn(!canActImmediately);
+    u.setVeteran(makeVeteran);
+    u.setPoisoned(false);
+    u.setKillCounter(0);
+
+
+    // --- Commit to game state ---
+    game.units.push_back(u);
+    map.setUnitOn(pos, id);
+    game.getPlayer(owner).addUnit(id);
 
     VisionSystem::revealFromUnit(game, id);
     return id;

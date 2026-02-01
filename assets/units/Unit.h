@@ -142,6 +142,13 @@ public:
     void setMovedThisTurn(bool v);
     void setAttackedThisTurn(bool v);
 
+    // ---- Direction tracking (for forced spawns / push logic) ----
+    Pos getLastMoveDir() const;
+    void setLastMoveDir(Pos d);
+
+    Pos getLastAttackDir() const;
+    void setLastAttackDir(Pos d);
+
     // ---- Status ----
     bool isVeteran() const;
     void setVeteran(bool v);
@@ -199,6 +206,9 @@ private:
 
     bool hasMovedThisTurn = false;
     bool hasAttackedThisTurn = false;
+
+    Pos lastMoveDir{0,0};
+    Pos lastAttackDir{0,0};
 
     uint64_t skillMask = 0;
 };

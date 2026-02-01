@@ -11,6 +11,9 @@
 static bool mapSizeActive = false;
 static std::string mapSizeBuffer = "16";
 
+static bool seedActive = false;
+static std::string seedBuffer = "0";
+
 static int clampInt(int v, int lo, int hi) {
     return std::max(lo, std::min(hi, v));
 }
@@ -56,6 +59,7 @@ TribeSelectScreen::TribeSelectScreen() {
     textureStore = &TextureStore::instance();
 
     mapSize = 16; // default map size
+    mapSeed = 0; // default seed
 
     // Map gen sliders (0..100) like in the original repo
     initialLand  = 50;
@@ -69,6 +73,7 @@ void TribeSelectScreen::setFont(sf::Font* f) { font = f; }
 const std::vector<TribeType>& TribeSelectScreen::getSelectedTribes() const { return selected; }
 
 int TribeSelectScreen::getMapSize() const { return mapSize; }
+int TribeSelectScreen::getMapSeed() const { return mapSeed; }
 int TribeSelectScreen::getInitialLand() const { return initialLand; }
 int TribeSelectScreen::getSmoothing() const { return smoothing; }
 int TribeSelectScreen::getRelief() const { return relief; }
@@ -165,14 +170,23 @@ void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow&
         }
         activeSlider = ActiveSlider::None;
 
-        // Map size input box focus
+        // Map size + seed input box focus
         sf::FloatRect mapSizeBox(900.f, 550.f, 140.f, 40.f);
+        sf::FloatRect seedBox   (1100.f, 550.f, 140.f, 40.f);
+
         if (inside(mapSizeBox, mp)) {
             mapSizeActive = true;
+            seedActive = false;
             return;
-        } else {
-            mapSizeActive = false;
         }
+        if (inside(seedBox, mp)) {
+            seedActive = true;
+            mapSizeActive = false;
+            return;
+        }
+
+        mapSizeActive = false;
+        seedActive = false;
 
         // Determine clicked tribe index directly from mouse position
         const float leftX = 40.f;
@@ -196,18 +210,39 @@ void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow&
         activeSlider = ActiveSlider::None;
     }
 
-    if (ev.type == sf::Event::TextEntered && mapSizeActive) {
+    if (ev.type == sf::Event::TextEntered && (mapSizeActive || seedActive)) {
+        auto& buf = mapSizeActive ? mapSizeBuffer : seedBuffer;
+
+        // allow digits; for seed also allow leading '-'
         if (ev.text.unicode >= '0' && ev.text.unicode <= '9') {
-            if (mapSizeBuffer.size() < 3)
-                mapSizeBuffer.push_back(static_cast<char>(ev.text.unicode));
-        } else if (ev.text.unicode == 8 && !mapSizeBuffer.empty()) { // backspace
-            mapSizeBuffer.pop_back();
+            if (buf.size() < 12) // enough for int32 including sign
+                buf.push_back(static_cast<char>(ev.text.unicode));
+        } else if (ev.text.unicode == '-' && seedActive) {
+            if (buf.empty())
+                buf.push_back('-');
+        } else if (ev.text.unicode == 8 && !buf.empty()) { // backspace
+            buf.pop_back();
         }
 
-        if (!mapSizeBuffer.empty()) {
-            int v = std::stoi(mapSizeBuffer);
-            if (v >= 11)
-                mapSize = v;
+        // Apply value
+        if (mapSizeActive) {
+            if (!mapSizeBuffer.empty()) {
+                try {
+                    int v = std::stoi(mapSizeBuffer);
+                    if (v >= 11)
+                        mapSize = v;
+                } catch (...) {
+                    // ignore invalid partial input
+                }
+            }
+        } else {
+            if (!seedBuffer.empty() && seedBuffer != "-") {
+                try {
+                    mapSeed = std::stoi(seedBuffer);
+                } catch (...) {
+                    // ignore invalid partial input
+                }
+            }
         }
     }
 }
@@ -310,25 +345,39 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
     drawButton(popBtn);
     drawButton(clearBtn);
 
-    // Map size input
+    // Map size + seed inputs
     sf::FloatRect mapSizeBox(900.f, 550.f, 140.f, 40.f);
+    sf::FloatRect seedBox   (1100.f, 550.f, 140.f, 40.f);
 
-    sf::RectangleShape box;
-    box.setPosition(mapSizeBox.left, mapSizeBox.top);
-    box.setSize({mapSizeBox.width, mapSizeBox.height});
-    box.setFillColor(mapSizeActive ? sf::Color(60, 60, 60) : sf::Color(40, 40, 40));
-    box.setOutlineThickness(2);
-    box.setOutlineColor(sf::Color(120, 120, 120));
-    rt.draw(box);
+    auto drawInputBox = [&](const sf::FloatRect& r, bool active) {
+        sf::RectangleShape b;
+        b.setPosition(r.left, r.top);
+        b.setSize({r.width, r.height});
+        b.setFillColor(active ? sf::Color(60, 60, 60) : sf::Color(40, 40, 40));
+        b.setOutlineThickness(2);
+        b.setOutlineColor(sf::Color(120, 120, 120));
+        rt.draw(b);
+    };
+
+    drawInputBox(mapSizeBox, mapSizeActive);
+    drawInputBox(seedBox, seedActive);
 
     if (font) {
         sf::Text msLabel("Map size (min 11):", *font, 18);
         msLabel.setPosition(840.f, 520.f);
         rt.draw(msLabel);
 
+        sf::Text seedLabel("Seed:", *font, 18);
+        seedLabel.setPosition(1100.f, 520.f);
+        rt.draw(seedLabel);
+
         sf::Text msValue(mapSizeBuffer, *font, 20);
         msValue.setPosition(mapSizeBox.left + 10.f, mapSizeBox.top + 8.f);
         rt.draw(msValue);
+
+        sf::Text seedValue(seedBuffer, *font, 20);
+        seedValue.setPosition(seedBox.left + 10.f, seedBox.top + 8.f);
+        rt.draw(seedValue);
     }
 
     // Sliders

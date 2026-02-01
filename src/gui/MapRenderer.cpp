@@ -181,7 +181,13 @@ struct SpawnIconHit {
 static std::vector<SpawnIconHit> g_spawnHits;
 
 // --- Context action button state (bottom bar under the map) ---
-enum class ActionKind { None, CaptureVillage, CaptureCity, TrainUnit, BuildBuilding,    ClearForest,
+enum class ActionKind {
+    None,
+    CaptureVillage,
+    CaptureCity,
+    TrainUnit,
+    BuildBuilding,
+    ClearForest,
     Hunt,
     Fishing,
     BurnForest,
@@ -195,7 +201,8 @@ enum class ActionKind { None, CaptureVillage, CaptureCity, TrainUnit, BuildBuild
     BuildRoad,
     BuildBridge,
     Explorer,
-
+    ExploreRuin,
+    CollectStarfish,
 };
 struct ActionButton {
     sf::FloatRect rect;
@@ -588,26 +595,41 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                                     (void)ok;
                                 }
                             });
+                        } else if (ab.kind == ActionKind::BuildRoad) {
+                            perfLog("BuildRoad", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->buildRoad(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::BuildBridge) {
+                            perfLog("BuildBridge", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->buildBridge(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::Explorer) {
+                            perfLog("Explorer", [&] {
+                                const PlayerId pid = game->getCurrentPlayerId();
+                                const bool ok = game->explorer(pid, g_actionPos);
+                                (void)ok;
+                            });
+                        } else if (ab.kind == ActionKind::ExploreRuin) {
+                            perfLog("ExploreRuin", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->handleRuin(uid, g_actionPos);
+                                    (void)ok;
+                                }
+                            });
+                        } else if (ab.kind == ActionKind::CollectStarfish) {
+                            perfLog("CollectStarfish", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->handleStarfish(uid, g_actionPos);
+                                    (void)ok;
+                                }
+                            });
                         }
-                     else if (ab.kind == ActionKind::BuildRoad) {
-                        perfLog("BuildRoad", [&] {
-                            const PlayerId pid = game->getCurrentPlayerId();
-                            const bool ok = game->buildRoad(pid, g_actionPos);
-                            (void)ok;
-                        });
-                     } else if (ab.kind == ActionKind::BuildBridge) {
-                         perfLog("BuildBridge", [&] {
-                             const PlayerId pid = game->getCurrentPlayerId();
-                             const bool ok = game->buildBridge(pid, g_actionPos);
-                             (void)ok;
-                         });
-                     }else if (ab.kind == ActionKind::Explorer) {
-                         perfLog("Explorer", [&] {
-                             const PlayerId pid = game->getCurrentPlayerId();
-                             const bool ok = game->explorer(pid, g_actionPos);
-                             (void)ok;
-                         });
-                     }
                         // Clear overlays after action.
                         g_moveSelectedUnit = kNoUnit;
                         clearUnitOverlays();
@@ -1827,7 +1849,6 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             const Pos p0 = selectedValid ? selectedPos : Pos{0, 0};
             if (selectedValid && m0.inBounds(p0)) {
                 const Tile& t0 = m0.at(p0);
-
                 // Build a small action bar under the map (left side).
                 const float mapW = float(mapRt.x);
                 const float mapH = float(rt.getSize().y);
@@ -1911,6 +1932,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 pushBtn(ActionKind::BuildRoad,    "Build Road",   UnitType::Unknown, BuildingTypeEnum::None);
                 pushBtn(ActionKind::BuildBridge,  "Build Bridge", UnitType::Unknown, BuildingTypeEnum::None);
                 pushBtn(ActionKind::Explorer,     "Explorer",     UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::ExploreRuin,     "Explore Ruin",     UnitType::Unknown, BuildingTypeEnum::None);
+                pushBtn(ActionKind::CollectStarfish, "Collect Starfish", UnitType::Unknown, BuildingTypeEnum::None);
 
                 if (g_actionBtnCount > 0) {
                     sf::RectangleShape bar;
@@ -1968,6 +1991,10 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                             pushBtn(sbtn.kind, "Build Bridge", UnitType::Unknown, BuildingTypeEnum::None);
                         } else if (sbtn.kind == ActionKind::Explorer) {
                             pushBtn(sbtn.kind, "Explorer", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::ExploreRuin) {
+                            pushBtn(sbtn.kind, "Explore Ruin", UnitType::Unknown, BuildingTypeEnum::None);
+                        } else if (sbtn.kind == ActionKind::CollectStarfish) {
+                            pushBtn(sbtn.kind, "Collect Starfish", UnitType::Unknown, BuildingTypeEnum::None);
                         }
 
                         g_actionPos = p0;

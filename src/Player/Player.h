@@ -28,6 +28,7 @@ public:
 
     bool hasTech(TechId tech) const;
     void addTech(TechId tech);
+    const std::vector<TechId>& getTechs() const;
 
     CityId getCapitalId() const;
     void setCapitalId(CityId id);

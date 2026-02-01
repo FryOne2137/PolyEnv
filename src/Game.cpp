@@ -15,6 +15,34 @@
 #include "Systems/BuildingSystem.h"
 #include "Systems/UnitSpawnSystem.h"
 #include "Systems/TileActionSystem.h"
+#include <random>
+
+#include "terrain/ResourcesEnum.h"
+namespace {
+    // SplitMix32-style mixing for deterministic pseudo-randomness.
+    static inline uint32_t mix32(uint32_t x) {
+        x += 0x9e3779b9u;
+        x = (x ^ (x >> 16)) * 0x85ebca6bu;
+        x = (x ^ (x >> 13)) * 0xc2b2ae35u;
+        x ^= (x >> 16);
+        return x;
+    }
+
+    static inline uint32_t seededPosRng(uint32_t worldSeed, Pos pos, uint32_t salt) {
+        const uint32_t x = static_cast<uint32_t>(pos.x);
+        const uint32_t y = static_cast<uint32_t>(pos.y);
+        uint32_t h = worldSeed;
+        h ^= mix32(x * 0x27d4eb2du);
+        h ^= mix32(y * 0x165667b1u);
+        h ^= mix32(salt);
+        return mix32(h);
+    }
+
+    static inline int clampInt(int v, int lo, int hi) {
+        return (v < lo) ? lo : (v > hi) ? hi : v;
+    }
+}
+
 #include "Systems/UnitUpgradeSystem.h"
 #include "units/UnitFactory.h"
 
@@ -90,16 +118,27 @@ const City* Game::getCity(CityId id) const {
 }
 
 void Game::newGame(const NewGameConfig& cfg) {
+
+
     // 1) aktywne plemiona na mapie
     map.setActiveTribes(cfg.tribes);
 
     // 2) generacja mapy
+    // Single source of truth for determinism.
+    if (cfg.seed == 0) {
+        std::random_device rd;
+        worldSeed = (static_cast<uint32_t>(rd()) << 16) ^ static_cast<uint32_t>(rd());
+        if (worldSeed == 0) worldSeed = 1u;
+    } else {
+        worldSeed = cfg.seed;
+    }
+
     MapGenerator::Params p;
     p.mapSize = cfg.mapSize;
     p.initialLand = cfg.initialLand;
     p.smoothing = cfg.smoothing;
     p.relief = cfg.relief;
-    p.seed = cfg.seed;
+    p.seed = worldSeed;
 
     MapGenerator::generate(map, p);
 
@@ -256,11 +295,32 @@ bool Game::moveUnit(UnitId unitId, Pos to) {
     bool ok = MovementSystem::move(*this, unitId, to);
     if (!ok) return false;
 
-    // Fog-of-war: reveal newly seen area from this unit's new position.
-    // VisionSystem::revealFromUnit(*this, unitId);
+    return true;
+}
 
-    // interakcje: ruin/starfish/village itd.
-    InteractionSystem::onUnitEnteredTile(*this, unitId, to);
+bool Game::handleRuin(UnitId unitId, Pos pos) {
+    Unit* u = getUnit(unitId);
+    if (!u) return false;
+
+    // kolejka tur (tak jak przy ruchu/ataku)
+    if (!isPlayersTurn(u->getOwnerId())) return false;
+
+    if (!map.inBounds(pos)) return false;
+
+    InteractionSystem::handleRuin(*this, unitId, pos);
+    return true;
+}
+
+bool Game::handleStarfish(UnitId unitId, Pos pos) {
+    Unit* u = getUnit(unitId);
+    if (!u) return false;
+
+    // kolejka tur
+    if (!isPlayersTurn(u->getOwnerId())) return false;
+
+    if (!map.inBounds(pos)) return false;
+
+    InteractionSystem::handleStarfish(*this, unitId, pos);
     return true;
 }
 
@@ -380,6 +440,8 @@ bool Game::buildBridge(PlayerId pid, Pos pos) {
 }
 
 
+
+
 bool Game::foundCityFromVillage(PlayerId owner, Pos pos) {
     if (!map.inBounds(pos)) return false;
 
@@ -450,6 +512,7 @@ bool Game::foundCityFromVillage(PlayerId owner, Pos pos) {
 
     return true;
 }
+
 
 City* Game::getCityBySettlementId(SettlementId sid) {
     if (sid == kNoSettlement) return nullptr;
@@ -543,6 +606,8 @@ bool Game::becomeVeteran(UnitId unitId) {
     if (!isPlayersTurn(u->getOwnerId())) return false;
     return UnitUpgradeSystem::becomeVeteran(*this, unitId);
 }
+
+
 
 
 

@@ -1,3 +1,7 @@
+
+
+// Forced push used by ruin/super-unit spawns. Returns true if unit survived.
+
 //
 // Created by Fryderyk Niedzwiecki on 15/01/2026.
 //
@@ -336,6 +340,183 @@ static inline bool tileVisibleToPlayer(const Tile& t, PlayerId pid) {
     const uint16_t mask = static_cast<uint16_t>(1u) << static_cast<uint16_t>(pid);
     return (vis & mask) != 0;
 }
+
+static Pos dirToDelta(int dx, int dy) {
+    if (dx > 0 && dy == 0) return Pos{1,0};
+    if (dx < 0 && dy == 0) return Pos{-1,0};
+    if (dx == 0 && dy > 0) return Pos{0,1};
+    if (dx == 0 && dy < 0) return Pos{0,-1};
+    return Pos{0,1}; // default south
+}
+
+static Pos rotateCCW(Pos d) { return Pos{-d.y, d.x}; }
+static Pos rotateCW(Pos d)  { return Pos{ d.y, -d.x}; }
+
+
+bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
+    Unit* u = game.getUnit(pushedUnit);
+    if (!u) return false;
+
+    const Pos from = spawnPos;
+
+    // Precompute tech flags once (owner of the pushed unit).
+    const PlayerId moverOwner = u->getOwnerId();
+    const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
+    const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
+    const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
+
+    // Direction preference rules:
+    // - If the unit moved this turn: prefer its last move direction (friendly) / opposite (enemy).
+    // - Else if it attacked this turn: prefer its last attack direction.
+    // - Else: prefer its stored last move direction if present (even if it happened on a previous turn).
+    // - If we still have no direction, fall back to pushing toward the map center.
+    Pos dir{0,0};
+
+    const Pos storedMove = u->getLastMoveDir();
+    const Pos storedAtk  = u->getLastAttackDir();
+
+    if (u->movedThisTurn()) {
+        // Friendly/enemy relative to the current player (spawner owner should be passed in if you need exact parity).
+        dir = (u->getOwnerId() == game.getCurrentPlayerId()) ? storedMove : Pos{-storedMove.x, -storedMove.y};
+    } else if (u->attackedThisTurn()) {
+        dir = storedAtk;
+    } else if (!(storedMove.x == 0 && storedMove.y == 0)) {
+        // Use last movement as a *preference* even when the unit didn't move this turn.
+        dir = storedMove;
+    } else {
+        const int cx = game.getMap().getWidth() / 2;
+        const int cy = game.getMap().getHeight() / 2;
+        dir = dirToDelta(cx - from.x, cy - from.y);
+    }
+
+    if (dir.x == 0 && dir.y == 0) dir = Pos{0,1}; // south fallback
+
+    const bool unitWaterCapable = isWaterMover(game, u);
+
+    auto passableForPush = [&](Pos to) -> bool {
+        if (!game.getMap().inBounds(to)) return false;
+        if (game.getMap().unitOn(to) != Map::kNoUnit) return false;
+
+        const Tile& tt = game.getMap().at(to);
+
+        // Mountain requires Climbing.
+        if (tt.getBaseTerrain() == BaseTerrainEnum::Mountain && !hasClimbing) return false;
+
+        const bool toIsWater   = (tt.getBaseTerrain() == BaseTerrainEnum::Water);
+        const bool toIsOcean   = (tt.getBaseTerrain() == BaseTerrainEnum::Ocean);
+        const bool toIsPort    = (tt.getBuildingType() == BuildingTypeEnum::Port);
+        const bool toIsLandish = (tt.getBaseTerrain() == BaseTerrainEnum::Land || tt.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool toIsBridge  = (tt.getRoadBridge() == RoadBridgeEnum::Bridge);
+
+        // Ocean requires Sailing (even for water-capable units).
+        if (toIsOcean && !hasSailing) return false;
+
+        // Water-capable units may be pushed onto water; onto land only if coastal.
+        if (unitWaterCapable) {
+            if (toIsLandish) {
+                if (!isCoastalLandTile(game, to)) return false;
+            }
+        } else {
+            // Land units: cannot be pushed onto Water/Ocean unless it's a valid owned Port (requires Fishing)
+            // OR a Bridge on Water (Polytopia-style).
+            if ((toIsWater || toIsOcean) && !(toIsPort || (toIsBridge && toIsWater))) {
+                return false;
+            }
+        }
+
+        // Port tiles: always require Fishing and must be inside mover-owned city territory (+ Sailing if ocean).
+        if (toIsPort) {
+            if (!hasFishing) return false;
+
+            const CityId tid = tt.getTerritoryCityId();
+            if (tid == kNoCity) return false;
+            const City* tc = game.getCity(tid);
+            if (!tc) return false;
+            if (static_cast<PlayerId>(tc->getOwnerId()) != moverOwner) return false;
+
+            if (toIsOcean && !hasSailing) return false;
+        }
+
+        return true;
+    };
+
+    // Try tiles: forward, then CCW/CW spiral.
+    // Try ALL neighboring tiles; `dir` is only a preference.
+// Rank candidates by dot(dir, delta): best aligned with preferred direction first.
+std::array<Pos, 8> cand = {
+    Pos{ 1, 0}, Pos{-1, 0}, Pos{0, 1}, Pos{0,-1},
+    Pos{ 1, 1}, Pos{ 1,-1}, Pos{-1, 1}, Pos{-1,-1}
+};
+
+auto dot = [&](Pos a, Pos b) -> int { return a.x * b.x + a.y * b.y; };
+
+std::sort(cand.begin(), cand.end(), [&](const Pos& a, const Pos& b) {
+    const int da = dot(dir, a);
+    const int db = dot(dir, b);
+    if (da != db) return da > db; // większy dot = bliżej preferencji
+
+    // tie-breaker: preferuj kardynalne nad diagonalnymi (stabilniejsze pchanie)
+    const int ma = std::abs(a.x) + std::abs(a.y);
+    const int mb = std::abs(b.x) + std::abs(b.y);
+    if (ma != mb) return ma < mb;
+
+    // stabilny finalny porządek
+    if (a.x != b.x) return a.x < b.x;
+    return a.y < b.y;
+});
+
+for (const Pos d : cand) {
+    const Pos to = Pos{from.x + d.x, from.y + d.y};
+    if (!passableForPush(to)) continue;
+
+    game.getMap().setUnitOn(from, Map::kNoUnit);
+    game.getMap().setUnitOn(to, pushedUnit);
+    u->setPos(to);
+
+    // Disembark if an embarked carrier ends up on land.
+    {
+        const Tile& dst = game.getMap().at(to);
+        const bool dstIsLandish = (dst.getBaseTerrain() == BaseTerrainEnum::Land ||
+                                  dst.getBaseTerrain() == BaseTerrainEnum::Mountain);
+
+        if (dstIsLandish && u->isEmbarked()) {
+            const UnitType original = u->getEmbarkedBaseType();
+            if (original != UnitType::Unknown) {
+                Unit nu = UnitFactory::create(original, u->getOwnerId(), to);
+                nu.setId(u->getId());
+
+                // Keep HP / status.
+                nu.setHealth(u->getHealth());
+                nu.setVeteran(u->isVeteran());
+                nu.setPoisoned(u->poisoned());
+                nu.setAttackedThisTurn(u->attackedThisTurn());
+
+                nu.clearEmbarkedBaseType();
+                nu.removeSkill(UnitSkill::WaterOnly);
+
+                // Disembarking ends movement/action for this turn.
+                nu.setMovedThisTurn(true);
+                nu.setAttackedThisTurn(true);
+
+                *u = nu;
+            }
+        }
+    }
+
+    return true;
+}
+
+    // No space -> remove unit entirely (no kill credit).
+    game.getMap().setUnitOn(from, Map::kNoUnit);
+    u->setHealth(0);
+    u->setPos(Pos{-9999, -9999});
+    u->setMovedThisTurn(true);
+    u->setAttackedThisTurn(true);
+
+    return false;
+}
+
+// Forced push used by ruin/super-unit spawns. Returns true if unit survived.
 
 
 int MovementSystem::shortestPathDistance(const Game& game, Pos from, Pos to) {
@@ -680,6 +861,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     game.getMap().setUnitOn(to, unitId);
 
     // Update unit
+    const Pos moveDir{to.x - from.x, to.y - from.y};
+    u->setLastMoveDir(moveDir);
     u->setPos(to);
     // One move per turn: movement budget is based on base movePoints, but we don't carry leftover MP.
     u->setMovedThisTurn(true);
@@ -711,19 +894,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             }
         }
 
-#ifndef NDEBUG
-        // Helpful debug to verify why embark does/doesn't trigger.
-        if (dstIsPort) {
-            std::cout << "[Move] stepped onto PORT at (" << to.x << "," << to.y << ")"
-                      << " srcLand=" << (srcIsLandish ? 1 : 0)
-                      << " uType=" << int(u->getType())
-                      << " waterCapable=" << (isWaterMover(game, u) ? 1 : 0)
-                      << " embarked=" << (u->isEmbarked() ? 1 : 0)
-                      << " hasFishing=" << (hasFishing ? 1 : 0)
-                      << " owned=" << (portOwnedByMover ? 1 : 0)
-                      << "\n";
-        }
-#endif
+        // (Debug log removed)
 
         // Embark: land unit -> Raft/Juggernaut when stepping onto a Port from land.
         // Do NOT use isWaterCapable() here as the only gate, because some future unit types
@@ -760,9 +931,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
                 *u = nu;
 
-#ifndef NDEBUG
-                std::cout << "[Move] EMBARK: " << int(original) << " -> " << int(naval) << "\n";
-#endif
+                // (Debug log removed)
             }
         }
 
@@ -788,9 +957,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
                 *u = nu;
 
-#ifndef NDEBUG
-                std::cout << "[Move] DISEMBARK: -> " << int(original) << "\n";
-#endif
+                // (Debug log removed)
             }
         }
     }

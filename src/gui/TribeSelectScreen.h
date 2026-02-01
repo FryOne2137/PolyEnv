@@ -23,6 +23,8 @@ public:
     int getInitialLand() const;
     int getSmoothing() const;
     int getRelief() const;
+    int getMapSeed() const ;
+
 
     TribeSelectScreen();
 
@@ -71,6 +73,8 @@ private:
 
     enum class ActiveSlider { None, InitialLand, Smoothing, Relief };
     ActiveSlider activeSlider = ActiveSlider::None;
+
+    int mapSeed=0;
 };
 
 #endif //GAME_ENGINE_TRIBESELECTSCREEN_H

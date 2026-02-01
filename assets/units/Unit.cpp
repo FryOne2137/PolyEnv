@@ -67,6 +67,22 @@ void Unit::setAttack(float v){attack=v;};
 int Unit::getKillCounter() const { return killCounter; }
 void Unit::addKill() { ++killCounter; }
 
+Pos Unit::getLastMoveDir() const {
+    return lastMoveDir;
+}
+
+void Unit::setLastMoveDir(Pos d) {
+    lastMoveDir = d;
+}
+
+Pos Unit::getLastAttackDir() const {
+    return lastAttackDir;
+}
+
+void Unit::setLastAttackDir(Pos d) {
+    lastAttackDir = d;
+}
+
 // ---- Skills (bitmask) ----
 bool Unit::hasSkill(UnitSkill skill) const {
     return (skillMask & static_cast<uint64_t>(skill)) != 0ULL;

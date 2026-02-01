@@ -102,13 +102,11 @@ static void killUnit(Game& game, UnitId uid) {
         game.getMap().setUnitOn(p, Map::kNoUnit);
     }
 
-    // 2) Remove from owner's unit list
     const PlayerId owner = u->getOwnerId();
     if (owner != kNoPlayer) {
         game.getPlayer(owner).removeUnit(uid);
     }
 
-    // 3) Mark as dead/inert (kept in Game::units vector)
     u->setHealth(0);
     u->setPos(Pos{-9999, -9999});
     u->setMovedThisTurn(true);
@@ -121,7 +119,6 @@ std::vector<Pos> CombatSystem::attackable(const Game& game, UnitId attackerId) {
     const Unit* attacker = game.getUnit(attackerId);
     if (!attacker) return out;
 
-    // If the unit already attacked, there are no attackable targets this turn.
     if (attacker->attackedThisTurn()) return out;
 
     // After moving, attacking is only allowed for units with Dash.
@@ -206,6 +203,38 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     // Apply damage to defender
     defender->setHealth(std::max(0, defender->getHealth() - attackResult));
 
+    // --- Splash (Polytopia Bomber-style) ---
+    // If attacker has Splash, deal half of the main attack damage (rounded down)
+    // to all ENEMY units adjacent to the target (8-neighborhood).
+    if (attacker->hasSkill(UnitSkill::Splash)) {
+        const int splashDamage = std::max(0, attackResult / 2); // half, rounded down
+        if (splashDamage > 0) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dy == 0) continue; // skip the target tile itself
+
+                    const Pos p{targetPos.x + dx, targetPos.y + dy};
+                    if (!game.getMap().inBounds(p)) continue;
+
+                    const UnitId sid = game.getMap().unitOn(p);
+                    if (sid == Map::kNoUnit) continue;
+
+                    Unit* su = game.getUnit(sid);
+                    if (!su) continue;
+
+                    // Only enemy units take splash.
+                    if (su->getOwnerId() == attacker->getOwnerId()) continue;
+
+                    su->setHealth(std::max(0, su->getHealth() - splashDamage));
+                    if (su->getHealth() <= 0) {
+                        attacker->addKill();
+                        killUnit(game, sid);
+                    }
+                }
+            }
+        }
+    }
+
     // We set attackedThisTurn at the END of this function.
     // This lets a melee unit advance into the killed unit's tile using MovementSystem::move
     // without being blocked by the post-attack flag.
@@ -238,6 +267,13 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
         // Finalize attack flags
         attacker->setAttackedThisTurn(attackedThisTurnFinal);
 
+        // Remember last attack direction (for forced spawn push logic)
+        {
+            const Pos from = attackerPos;
+            const Pos to   = targetPos;
+            attacker->setLastAttackDir(Pos{to.x - from.x, to.y - from.y});
+        }
+
         // Escape: after attacking, unit may move again this turn (including after the post-kill advance)
         if (attacker->hasSkill(UnitSkill::Escape)) {
             attacker->setMovedThisTurn(false);
@@ -257,6 +293,13 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
             defender->addKill();
             killUnit(game, attackerId);
         }
+    }
+
+    // Remember last attack direction (for forced spawn push logic)
+    {
+        const Pos from = attackerPos;
+        const Pos to   = targetPos;
+        attacker->setLastAttackDir(Pos{to.x - from.x, to.y - from.y});
     }
 
     // Finalize attack flags

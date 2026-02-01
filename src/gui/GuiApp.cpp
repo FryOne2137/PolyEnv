@@ -179,9 +179,12 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
 
     std::cerr << "[mapgen] initialLand=" << cfg.initialLand
               << " smoothing=" << cfg.smoothing
-              << " relief=" << cfg.relief << "\n";
+              << " relief=" << cfg.relief
+              << " seed=" << static_cast<uint32_t>(selectScreen.getMapSeed())
+              << "\n";
 
-    // cfg.seed = 0;
+    cfg.seed = static_cast<uint32_t>(selectScreen.getMapSeed());
+    std::cerr << "[mapgen] seed=" << cfg.seed << " (0=random)\n";
 
     using clock = std::chrono::high_resolution_clock;
     const auto t0 = clock::now();

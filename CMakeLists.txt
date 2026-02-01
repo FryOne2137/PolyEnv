@@ -145,6 +145,7 @@ set(ENGINE_SOURCES
         src/Systems/UnitUpgradeSystem.h
         src/Systems/UnitSpawnSystem.cpp
         src/Systems/UnitSpawnSystem.h
+        src/Systems/RewardSystem.h
 )
 
 # ---- Engine library (no mains, no SFML) ----
