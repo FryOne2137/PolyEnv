@@ -238,7 +238,15 @@ static void rebuildMoveOverlay(const Game* game, UnitId uid) {
     // Only current player's units.
     if (u->getOwnerId() != game->getCurrentPlayerId()) return;
 
-    const std::vector<Pos> tiles = game->reachable(uid);
+    std::vector<Pos> tiles;
+    {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        tiles = game->reachable(uid);
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
+        std::cout << "[Perf] reachable took " << us << " us" << std::endl;
+    }
     g_moveOverlaySet.reserve(tiles.size() * 2u + 1u);
     for (const Pos& p : tiles) {
         g_moveOverlaySet.insert(posKey(p));

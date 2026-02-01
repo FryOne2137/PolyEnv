@@ -14,6 +14,7 @@
 #include "units/UnitFactory.h"
 
 #include <queue>
+#include <vector>
 #include <algorithm>
 #include <limits>
 #include <array>
@@ -259,6 +260,75 @@ struct DijkstraNode {
     bool operator>(const DijkstraNode& other) const { return dist > other.dist; }
 };
 
+namespace {
+// Thread-local scratch to avoid allocations and enable very fast bucket-Dijkstra (Dial)
+// when the maximum distance (budget) is small (true for per-turn unit movement).
+struct BucketScratch {
+    std::vector<int> distHalf;   // valid when stamp[i] == epoch
+    std::vector<int> prev;       // predecessor index for path reconstruction (when used)
+    std::vector<int> stamp;      // epoch stamp for distHalf
+
+    std::vector<int> next;       // linked-list next pointers for bucket queues
+    std::vector<int> head;       // bucket heads (size = maxD+1)
+
+    std::vector<int> outStamp;   // epoch stamp for reachable output de-dup
+
+    int epoch = 1;
+    int outEpoch = 1;
+
+    void ensure(int n) {
+        if (static_cast<int>(distHalf.size()) < n) {
+            distHalf.resize(n);
+            prev.resize(n);
+            stamp.resize(n, 0);
+            next.resize(n);
+            outStamp.resize(n, 0);
+        }
+    }
+
+    void bumpEpoch() {
+        if (++epoch == std::numeric_limits<int>::max()) {
+            std::fill(stamp.begin(), stamp.end(), 0);
+            epoch = 1;
+        }
+    }
+
+    void bumpOutEpoch() {
+        if (++outEpoch == std::numeric_limits<int>::max()) {
+            std::fill(outStamp.begin(), outStamp.end(), 0);
+            outEpoch = 1;
+        }
+    }
+
+    inline int getDist(int i, int INF) const {
+        return (stamp[static_cast<size_t>(i)] == epoch) ? distHalf[static_cast<size_t>(i)] : INF;
+    }
+
+    inline void setDist(int i, int d) {
+        stamp[static_cast<size_t>(i)] = epoch;
+        distHalf[static_cast<size_t>(i)] = d;
+    }
+
+    inline void resetBuckets(int maxD) {
+        head.assign(static_cast<size_t>(maxD + 1), -1);
+    }
+
+    inline void pushBucket(int d, int node) {
+        next[static_cast<size_t>(node)] = head[static_cast<size_t>(d)];
+        head[static_cast<size_t>(d)] = node;
+    }
+
+    inline int popBucket(int d) {
+        const int node = head[static_cast<size_t>(d)];
+        head[static_cast<size_t>(d)] = next[static_cast<size_t>(node)];
+        return node;
+    }
+};
+
+static thread_local BucketScratch g_bucket;
+
+} // namespace
+
 // Fog-of-war: helper to test if a tile is currently visible/revealed to a player.
 // VisibilityEnum is treated as a bitmask where bit (1 << playerId) marks visibility.
 static inline bool tileVisibleToPlayer(const Tile& t, PlayerId pid) {
@@ -433,8 +503,11 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     }
 
     // Weighted Dijkstra for this unit with half-point costs.
-    const int w = game.getMap().getWidth();
-    const int n = w * game.getMap().getHeight();
+    // Optimized: bucket-Dijkstra (Dial) because distances are small (<= mp*2 half-points) and edge weights are {1,2}.
+    auto& map = game.getMap();
+    const int w = map.getWidth();
+    const int h = map.getHeight();
+    const int n = w * h;
     const int INF = std::numeric_limits<int>::max() / 4;
 
     const int mp = u->getMovePoints();
@@ -442,13 +515,19 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     const int budgetHalf = mp * 2;
 
     const PlayerId moverOwner = u->getOwnerId();
+
+    // Precompute tech flags once.
     const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
+    const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
+    const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
+
+    const bool unitWaterCapable = isWaterMover(game, u);
 
     auto canStepOn = [&](Pos p) -> bool {
-        if (!game.getMap().inBounds(p)) return false;
+        if (!map.inBounds(p)) return false;
 
         // Occupied tile logic:
-        const UnitId occ = game.getMap().unitOn(p);
+        const UnitId occ = map.unitOn(p);
         if (occ != Map::kNoUnit) {
             // Destination must be empty (checked earlier), but keep this defensive.
             if (p == to) return false;
@@ -460,20 +539,16 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             }
         }
 
-        const Tile& t = game.getMap().at(p);
+        const Tile& t = map.at(p);
 
         // Mountain restriction: cannot enter mountains without Climbing.
         if (t.getBaseTerrain() == BaseTerrainEnum::Mountain && !hasClimbing) return false;
 
-        const bool pIsWater = (t.getBaseTerrain() == BaseTerrainEnum::Water);
-        const bool pIsOcean = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
-        const bool pIsPort  = (t.getBuildingType() == BuildingTypeEnum::Port);
+        const bool pIsWater   = (t.getBaseTerrain() == BaseTerrainEnum::Water);
+        const bool pIsOcean   = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
+        const bool pIsPort    = (t.getBuildingType() == BuildingTypeEnum::Port);
         const bool pIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
-        const bool pIsBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
-
-        const bool hasFishing = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
-        const bool hasSailing = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
-        const bool unitWaterCapable = isWaterMover(game, u);
+        const bool pIsBridge  = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         // Water-capable units: Water is OK, Ocean only with Sailing.
         if (unitWaterCapable) {
@@ -504,177 +579,100 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         return true;
     };
 
-    std::vector<int> distHalf(static_cast<size_t>(n), INF);
-    std::priority_queue<DijkstraNode, std::vector<DijkstraNode>, std::greater<DijkstraNode>> pq;
-    std::vector<int> prev(static_cast<size_t>(n), -1);
+    // --- Bucket Dijkstra ---
+    g_bucket.ensure(n);
+    g_bucket.bumpEpoch();
+    g_bucket.resetBuckets(budgetHalf);
 
-    distHalf[static_cast<size_t>(idx(from, w))] = 0;
-    pq.push(DijkstraNode{0, from});
+    const int startI = idx(from, w);
+    const int goalI  = idx(to, w);
+
+    g_bucket.setDist(startI, 0);
+    g_bucket.prev[static_cast<size_t>(startI)] = -1;
+    g_bucket.pushBucket(0, startI);
 
     bool found = false;
-    int bestTo = INF;
 
-    while (!pq.empty()) {
-        const DijkstraNode node = pq.top();
-        pq.pop();
+    for (int d = 0; d <= budgetHalf; ++d) {
+        while (g_bucket.head[static_cast<size_t>(d)] != -1) {
+            const int ci = g_bucket.popBucket(d);
 
-        const int ci = idx(node.p, w);
-        if (node.dist != distHalf[static_cast<size_t>(ci)]) continue;
+            // Skip stale entries.
+            if (g_bucket.getDist(ci, INF) != d) continue;
 
-        if (node.p == to) {
-            found = true;
-            bestTo = node.dist;
-            break;
-        }
+            if (ci == goalI) {
+                found = true;
+                break;
+            }
 
-        // If current tile forces a stop, don't expand further.
-        if (node.p != from && isTerminalAfterEntering(game, node.p, unitId)) {
-            continue;
-        }
+            const Pos curP = fromIdx(ci, w);
 
-        for (const Pos nb : neighbors8(node.p)) {
-            if (!canStepOn(nb)) continue;
+            // If current tile forces a stop, don't expand further.
+            if (curP != from && isTerminalAfterEntering(game, curP, unitId)) {
+                continue;
+            }
 
-            const int step = stepCostHalfPoints(game, unitId, node.p, nb);
-            int nd = node.dist + step;
+            for (const Pos nb : neighbors8(curP)) {
+                if (!canStepOn(nb)) continue;
 
-            // Budget rule with "last 0.5 can still enter a 1-cost tile" approximation:
-            // If we have exactly 1 half-point left, allow one more step even if it costs 2,
-            // but only as a terminal move.
-            if (nd > budgetHalf) {
-                const int remaining = budgetHalf - node.dist;
-                if (!(remaining == 1 && step == 2)) {
-                    continue;
+                const int step = stepCostHalfPoints(game, unitId, curP, nb);
+                int nd = d + step;
+
+                // Budget rule with "last 0.5 can still enter a 1-cost tile" approximation:
+                if (nd > budgetHalf) {
+                    const int remaining = budgetHalf - d;
+                    if (!(remaining == 1 && step == 2)) {
+                        continue;
+                    }
+                    nd = budgetHalf;
                 }
-                // We allow this one final step by clamping to budgetHalf.
-                nd = budgetHalf;
-            }
 
-            const int ni = idx(nb, w);
-            if (nd < distHalf[static_cast<size_t>(ni)]) {
-                distHalf[static_cast<size_t>(ni)] = nd;
-                prev[static_cast<size_t>(ni)] = ci;
-                pq.push(DijkstraNode{nd, nb});
+                const int ni = idx(nb, w);
+                const int old = g_bucket.getDist(ni, INF);
+                if (nd < old) {
+                    g_bucket.setDist(ni, nd);
+                    g_bucket.prev[static_cast<size_t>(ni)] = ci;
+                    g_bucket.pushBucket(nd, ni);
+                }
             }
         }
+
+        if (found) break;
     }
 
     if (!found) return false;
 
-    // Reconstruct path (inclusive: from -> ... -> to)
+    // Reconstruct path (inclusive: from -> ... -> to) using the predecessor chain.
     std::vector<Pos> path;
     path.reserve(64);
 
-    auto buildFromPrev = [&]() -> bool {
+    {
         const int startI = idx(from, w);
-        int curI = idx(to, w);
+        const int goalI  = idx(to, w);
+        int curI = goalI;
 
-        if (curI != startI && prev[static_cast<size_t>(curI)] == -1) {
-            return false; // no chain
-        }
-
-        std::vector<Pos> rev;
-        rev.reserve(64);
-
-        int safety = 0;
-        while (curI != -1 && safety++ < n) {
-            rev.push_back(fromIdx(curI, w));
-            if (curI == startI) break;
-            curI = prev[static_cast<size_t>(curI)];
-        }
-
-        if (rev.empty() || rev.back().x != from.x || rev.back().y != from.y) {
-            return false; // chain did not reach start
-        }
-
-        std::reverse(rev.begin(), rev.end());
-        path = std::move(rev);
-        return true;
-    };
-
-    // Fallback: reconstruct by distHalf gradient (works with roads/costs)
-    auto buildFromDist = [&]() -> bool {
-        const int startI = idx(from, w);
-        int curI = idx(to, w);
-
-        if (distHalf[static_cast<size_t>(curI)] >= INF) return false;
-
-        std::vector<Pos> rev;
-        rev.reserve(64);
-
-        int safety = 0;
-        while (safety++ < n) {
-            rev.push_back(fromIdx(curI, w));
-            if (curI == startI) break;
-
-            const Pos curP = fromIdx(curI, w);
-            const int curD = distHalf[static_cast<size_t>(curI)];
-
-            int bestPrev = -1;
-            int bestPrevDist = INF;
-
-            for (const Pos nb : neighbors8(curP)) {
-                if (!game.getMap().inBounds(nb)) continue;
-
-                // allow stepping onto start even though it's occupied by this unit (map not updated yet)
-                const auto occ = game.getMap().unitOn(nb);
-                if (occ != Map::kNoUnit && !(nb == from) && !(nb == to)) continue;
-
-                // keep same terrain restrictions as in forward search
-                const Tile& tnb = game.getMap().at(nb);
-                if (tnb.getBaseTerrain() == BaseTerrainEnum::Mountain && !hasClimbing) continue;
-
-                // If the predecessor tile would have been terminal, we should not be reconstructing
-                // a path that continues beyond it. This matters especially for WaterOnly units that
-                // can step onto coastal land only as a terminal end.
-                if (nb != from && isTerminalAfterEntering(game, curP, unitId)) {
-                    // We are currently at curP and trying to come from nb. If curP is terminal, it can be
-                    // the final tile but we shouldn't have arrived here from another land tile and then
-                    // continued; the forward search already prevented expansions from terminal tiles.
-                    // Keep reconstruction conservative by allowing only if curP is the destination.
-                    // (We are reconstructing from destination backwards, so allow this step.)
-                }
-
-                const int ni = idx(nb, w);
-                const int nbD = distHalf[static_cast<size_t>(ni)];
-                if (nbD >= INF) continue;
-
-                const int step = stepCostHalfPoints(game, unitId, nb, curP);
-
-                // normal case
-                bool ok = (nbD + step == curD);
-
-                // handle the “clamp to budgetHalf” last-step rule:
-                // if cur is at budgetHalf, allow predecessor that overshoots but was clamped
-                if (!ok && curD == budgetHalf && nbD < curD && nbD + step > curD) {
-                    ok = true;
-                }
-
-                if (!ok) continue;
-
-                if (nbD < bestPrevDist) {
-                    bestPrevDist = nbD;
-                    bestPrev = ni;
-                }
-            }
-
-            if (bestPrev == -1) return false;
-            curI = bestPrev;
-        }
-
-        if (rev.empty() || !(rev.back() == from)) return false;
-        std::reverse(rev.begin(), rev.end());
-        path = std::move(rev);
-        return true;
-    };
-
-    if (!buildFromPrev()) {
-        // only if prev-chain fails
-        if (!buildFromDist()) {
-            // hard fallback (should be rare)
-            path.clear();
+        // If we somehow lack a chain (should be rare), fall back to a direct segment.
+        if (curI != startI && g_bucket.prev[static_cast<size_t>(curI)] == -1) {
             path.push_back(from);
             path.push_back(to);
+        } else {
+            std::vector<Pos> rev;
+            rev.reserve(64);
+
+            int safety = 0;
+            while (curI != -1 && safety++ < n) {
+                rev.push_back(fromIdx(curI, w));
+                if (curI == startI) break;
+                curI = g_bucket.prev[static_cast<size_t>(curI)];
+            }
+
+            if (rev.empty() || !(rev.back() == from)) {
+                path.push_back(from);
+                path.push_back(to);
+            } else {
+                std::reverse(rev.begin(), rev.end());
+                path = std::move(rev);
+            }
         }
     }
     // Update map occupancy
@@ -840,14 +838,15 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
     const int budgetHalf = mp * 2;
     const int INF = std::numeric_limits<int>::max() / 4;
 
-    std::vector<int> distHalf(static_cast<size_t>(n), INF);
-    std::priority_queue<DijkstraNode, std::vector<DijkstraNode>, std::greater<DijkstraNode>> pq;
+    // Removed unused distHalf and pq from previous implementation.
 
     std::vector<Pos> out;
     out.reserve(128);
 
     const PlayerId moverOwner = u->getOwnerId();
     const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
+    const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
+    const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
 
     auto canStep = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
@@ -870,14 +869,12 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
         // Mountain restriction: cannot enter mountains without Climbing.
         if (t.getBaseTerrain() == BaseTerrainEnum::Mountain && !hasClimbing) return false;
 
-        const bool toIsWater = (t.getBaseTerrain() == BaseTerrainEnum::Water);
-        const bool toIsOcean = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
-        const bool toIsPort  = (t.getBuildingType() == BuildingTypeEnum::Port);
+        const bool toIsWater   = (t.getBaseTerrain() == BaseTerrainEnum::Water);
+        const bool toIsOcean   = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
+        const bool toIsPort    = (t.getBuildingType() == BuildingTypeEnum::Port);
         const bool toIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
-        const bool toIsBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
+        const bool toIsBridge  = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
-        const bool hasFishing = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
-        const bool hasSailing = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
         const bool unitWaterCapable = isWaterMover(game, u);
 
         if (unitWaterCapable) {
@@ -910,57 +907,62 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
         return true;
     };
 
-    distHalf[static_cast<size_t>(idx(start, w))] = 0;
-    pq.push(DijkstraNode{0, start});
+    // Bucket-Dijkstra (Dial) for reachable: extremely fast for small budgets and weights {1,2}.
+    g_bucket.ensure(n);
+    g_bucket.bumpEpoch();
+    g_bucket.bumpOutEpoch();
+    g_bucket.resetBuckets(budgetHalf);
 
-    while (!pq.empty()) {
-        const DijkstraNode node = pq.top();
-        pq.pop();
+    const int startI = idx(start, w);
+    g_bucket.setDist(startI, 0);
+    g_bucket.pushBucket(0, startI);
 
-        const int ci = idx(node.p, w);
-        if (node.dist != distHalf[static_cast<size_t>(ci)]) continue;
+    for (int d = 0; d <= budgetHalf; ++d) {
+        while (g_bucket.head[static_cast<size_t>(d)] != -1) {
+            const int ci = g_bucket.popBucket(d);
+            if (g_bucket.getDist(ci, INF) != d) continue; // stale
 
-        if (node.p != start) {
-            const Tile& tn = game.getMap().at(node.p);
-            if (tileVisibleToPlayer(tn, moverOwner)) {
-                out.push_back(node.p);
-            }
-        }
+            const Pos curP = fromIdx(ci, w);
 
-        // Terminal tile: you can END here, but you can't move further this turn.
-        if (node.p != start && isTerminalAfterEntering(game, node.p, unitId)) {
-            continue;
-        }
-
-        for (const Pos nb : neighbors8(node.p)) {
-            if (!canStep(nb)) continue;
-
-            const int step = stepCostHalfPoints(game, unitId, node.p, nb);
-            int nd = node.dist + step;
-
-            if (nd > budgetHalf) {
-                const int remaining = budgetHalf - node.dist;
-                if (!(remaining == 1 && step == 2)) {
-                    continue;
+            if (curP != start) {
+                const Tile& tn = game.getMap().at(curP);
+                if (tileVisibleToPlayer(tn, moverOwner)) {
+                    // Dedup without sorting.
+                    if (g_bucket.outStamp[static_cast<size_t>(ci)] != g_bucket.outEpoch) {
+                        g_bucket.outStamp[static_cast<size_t>(ci)] = g_bucket.outEpoch;
+                        out.push_back(curP);
+                    }
                 }
-                nd = budgetHalf;
             }
 
-            const int ni = idx(nb, w);
-            if (nd < distHalf[static_cast<size_t>(ni)]) {
-                distHalf[static_cast<size_t>(ni)] = nd;
-                pq.push(DijkstraNode{nd, nb});
+            // Terminal tile: you can END here, but you can't move further this turn.
+            if (curP != start && isTerminalAfterEntering(game, curP, unitId)) {
+                continue;
+            }
+
+            for (const Pos nb : neighbors8(curP)) {
+                if (!canStep(nb)) continue;
+
+                const int step = stepCostHalfPoints(game, unitId, curP, nb);
+                int nd = d + step;
+
+                if (nd > budgetHalf) {
+                    const int remaining = budgetHalf - d;
+                    if (!(remaining == 1 && step == 2)) {
+                        continue;
+                    }
+                    nd = budgetHalf;
+                }
+
+                const int ni = idx(nb, w);
+                const int old = g_bucket.getDist(ni, INF);
+                if (nd < old) {
+                    g_bucket.setDist(ni, nd);
+                    g_bucket.pushBucket(nd, ni);
+                }
             }
         }
     }
-
-    std::sort(out.begin(), out.end(), [](const Pos& a, const Pos& b) {
-        if (a.y != b.y) return a.y < b.y;
-        return a.x < b.x;
-    });
-    out.erase(std::unique(out.begin(), out.end(), [](const Pos& a, const Pos& b) {
-        return a.x == b.x && a.y == b.y;
-    }), out.end());
 
     return out;
 }
