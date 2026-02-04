@@ -6,11 +6,11 @@
 
 class Settlement {
 public:
-    SettlementId getId() const;
-    Pos getPos() const;
+    SettlementId getId() const ;
+    Pos getPos() const ;
 
-    void setId(SettlementId v);
-    void setPos(Pos p);
+    void setId(SettlementId v) { id = v; }
+    void setPos(Pos p) { pos = p; }
 
 protected:
     Pos pos{};

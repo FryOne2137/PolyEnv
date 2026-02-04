@@ -75,6 +75,10 @@ static inline Pos fromIdx(int i, int w) {
     return Pos{ i % w, i / w };
 }
 
+// Fast neighbor deltas for 8-neighborhood.
+static constexpr int kNbDx8[8] = {  1, -1,  0,  0,  1,  1, -1, -1 };
+static constexpr int kNbDy8[8] = {  0,  0,  1, -1,  1, -1,  1, -1 };
+
 // 8-neighborhood (square grid with diagonals). This matches the previous behavior where
 // "corners" were reachable.
 static inline std::array<Pos, 8> neighbors8(Pos cur) {
@@ -104,7 +108,8 @@ static inline bool inEnemyZoC(const Game& game, Pos p, const Unit* mover) {
 
     const PlayerId moverOwner = mover->getOwnerId();
 
-    for (const Pos nb : neighbors8(p)) {
+    for (int i = 0; i < 8; ++i) {
+        const Pos nb{ p.x + kNbDx8[i], p.y + kNbDy8[i] };
         if (!game.getMap().inBounds(nb)) continue;
         const UnitId occ = game.getMap().unitOn(nb);
         if (occ == Map::kNoUnit) continue;
@@ -128,7 +133,8 @@ static inline bool isCoastalLandTile(const Game& game, Pos p) {
     if (!landish) return false;
 
     // Coastal = touches Water or Ocean in 8-neighborhood.
-    for (const Pos nb : neighbors8(p)) {
+    for (int i = 0; i < 8; ++i) {
+        const Pos nb{ p.x + kNbDx8[i], p.y + kNbDy8[i] };
         if (!game.getMap().inBounds(nb)) continue;
         const Tile& tn = game.getMap().at(nb);
         if (tn.getBaseTerrain() == BaseTerrainEnum::Water || tn.getBaseTerrain() == BaseTerrainEnum::Ocean) {
@@ -214,15 +220,15 @@ static inline bool isEnemyTerritoryForRoadBonus(const Game& game, Pos p, UnitId 
     return static_cast<PlayerId>(c->getOwnerId()) != u->getOwnerId();
 }
 
-static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId movingUnit) {
+static inline bool isTerminalAfterEntering(const Game& game, Pos p, const Unit* mover, UnitId movingUnit, bool unitWaterCapable) {
     // WaterOnly / naval movement rule:
     // - Water-capable units may enter land ONLY to disembark, and must STOP immediately.
     //   This prevents walking multiple tiles inland in a single move.
-    const Unit* u = game.getUnit(movingUnit);
+    const Unit* u = mover;
     if (!u) return false;
 
     // Only apply to water-capable units (WaterOnly or naval types).
-    if (isWaterMover(game, u)) {
+    if (unitWaterCapable) {
         if (!game.getMap().inBounds(p)) return false;
         const Tile& t = game.getMap().at(p);
         const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
@@ -493,6 +499,19 @@ for (const Pos d : cand) {
     game.getMap().setUnitOn(to, pushedUnit);
     u->setPos(to);
 
+    // Fog-of-war: reveal around the forced-moved unit's new position.
+    {
+        const PlayerId pid = u->getOwnerId();
+        const int baseVision = u->getVisionRange();
+        const Pos pp = to;
+        VisionSystem::revealArea(game, pid, pp, baseVision);
+
+        const Tile& endTile = game.getMap().at(to);
+        if (endTile.getBaseTerrain() == BaseTerrainEnum::Mountain) {
+            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision));
+        }
+    }
+
     // Disembark if an embarked carrier ends up on land.
     {
         const Tile& dst = game.getMap().at(to);
@@ -589,7 +608,8 @@ int MovementSystem::shortestPathDistance(const Game& game, Pos from, Pos to) {
             return node.dist / 2;
         }
 
-        for (const Pos nb : neighbors8(node.p)) {
+        for (int i = 0; i < 8; ++i) {
+            const Pos nb{ node.p.x + kNbDx8[i], node.p.y + kNbDy8[i] };
             if (!canStepOn(nb)) continue;
 
             const int step = stepCostHalfPoints(game, movingUnit, node.p, nb);
@@ -811,11 +831,12 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             const Pos curP = fromIdx(ci, w);
 
             // If current tile forces a stop, don't expand further.
-            if (curP != from && isTerminalAfterEntering(game, curP, unitId)) {
+            if (curP != from && isTerminalAfterEntering(game, curP, u, unitId, unitWaterCapable)) {
                 continue;
             }
 
-            for (const Pos nb : neighbors8(curP)) {
+            for (int i = 0; i < 8; ++i) {
+                const Pos nb{ curP.x + kNbDx8[i], curP.y + kNbDy8[i] };
                 if (!canStepOn(nb)) continue;
 
                 const int step = stepCostHalfPoints(game, unitId, curP, nb);
@@ -1036,6 +1057,7 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
     const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
     const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
     const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
+    const bool unitWaterCapable = isWaterMover(game, u);
 
     auto canStep = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
@@ -1065,8 +1087,6 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
         const bool toIsPort    = (t.getBuildingType() == BuildingTypeEnum::Port);
         const bool toIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
         const bool toIsBridge  = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
-
-        const bool unitWaterCapable = isWaterMover(game, u);
 
         if (unitWaterCapable) {
             // WaterOnly/naval: Water ok, Ocean only with Sailing.
@@ -1131,11 +1151,12 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             }
 
             // Terminal tile: you can END here, but you can't move further this turn.
-            if (curP != start && isTerminalAfterEntering(game, curP, unitId)) {
+            if (curP != start && isTerminalAfterEntering(game, curP, u, unitId, unitWaterCapable)) {
                 continue;
             }
 
-            for (const Pos nb : neighbors8(curP)) {
+            for (int i = 0; i < 8; ++i) {
+                const Pos nb{ curP.x + kNbDx8[i], curP.y + kNbDy8[i] };
                 if (!canStep(nb)) continue;
 
                 const int step = stepCostHalfPoints(game, unitId, curP, nb);

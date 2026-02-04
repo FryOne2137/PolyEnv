@@ -11,6 +11,10 @@ static const std::array<BuildingInfo, 256> kInfo = []{
         a[static_cast<uint8_t>(bt)] = bi;
     };
 
+    const TerrainMask kMonumentTerrain = TerrainMask(
+    terrainBit(BaseTerrainEnum::Land) | terrainBit(BaseTerrainEnum::Water)
+);
+
     // ===== Resource Buildings (dopasuj koszty/tech wg Twojej bazy) =====
     set(BuildingTypeEnum::Farm, {
         /*cost*/5,
@@ -80,14 +84,13 @@ static const std::array<BuildingInfo, 256> kInfo = []{
     });
 
     // ===== Monuments (tu możesz dopisać własne reguły, często nie są “buildable” normalnie) =====
-    set(BuildingTypeEnum::AltarOfPeace,  {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-    set(BuildingTypeEnum::EmperorsTomb,  {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-    set(BuildingTypeEnum::EyeOfGod,      {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-    set(BuildingTypeEnum::GateOfPower,   {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-    set(BuildingTypeEnum::GrandBazaar,   {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-    set(BuildingTypeEnum::ParkOfFortune, {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-    set(BuildingTypeEnum::TowerOfWisdom, {0, TechId::Count, TerrainMask(terrainBit(BaseTerrainEnum::Land)), 0, 0, true, true});
-
+    set(BuildingTypeEnum::AltarOfPeace,  {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
+    set(BuildingTypeEnum::EmperorsTomb,  {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
+    set(BuildingTypeEnum::EyeOfGod,      {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
+    set(BuildingTypeEnum::GateOfPower,   {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
+    set(BuildingTypeEnum::GrandBazaar,   {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
+    set(BuildingTypeEnum::ParkOfFortune, {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
+    set(BuildingTypeEnum::TowerOfWisdom, {0, TechId::Count, kMonumentTerrain, 0, 3, true, true});
     return a;
 }();
 

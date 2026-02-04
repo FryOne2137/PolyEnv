@@ -3,6 +3,8 @@
 #include <queue>
 #include <random>
 #include <limits>
+
+#include "Systems/LighthouseSystem.h"
 #include "World/Tile.h"
 #include "VisionSystem.h"
 
@@ -78,9 +80,16 @@ void VisionSystem::revealArea(Game& game, PlayerId pid, Pos center, int range) {
             if (!map.inBounds(p)) continue;
 
             Tile& t = map.at(p);
+            const bool wasFog = isFogForPlayer(t, static_cast<PlayerIndex>(pid));
+
             VisibilityEnum v = t.getVisibility();
             reveal(v, static_cast<PlayerIndex>(pid));
             t.setVisibility(v);
+
+            // Hook: tile właśnie stał się odkryty dla tego gracza
+            if (wasFog) {
+                LighthouseSystem::onTileRevealed(game, pid, p);
+            }
         }
     }
 }
@@ -134,10 +143,18 @@ void VisionSystem::doExplorer(Game& game, PlayerId pid, Pos start) // <-- adapt 
         for (int i = 0; i < kDirs; ++i) {
             Pos p{center.x + dx[i], center.y + dy[i]};
             if (!map.inBounds(p)) continue;
+
+
             Tile& tt = map.at(p);
+            const bool wasFog = isFogForPlayer(tt, static_cast<PlayerIndex>(pid));
+
             VisibilityEnum vv = tt.getVisibility();
             reveal(vv, static_cast<PlayerIndex>(pid));
             tt.setVisibility(vv);
+
+            if (wasFog) {
+                LighthouseSystem::onTileRevealed(game, pid, p);
+            }
         }
     };
 
@@ -310,4 +327,17 @@ void VisionSystem::doExplorer(Game& game, PlayerId pid, Pos start) // <-- adapt 
 
         revealExplorerPlus(pos);
     }
+}
+
+int VisionSystem::countRevealedTiles(const Game& game, PlayerId playerId) {
+    const Map& map = game.getMap();
+    const PlayerIndex idx = static_cast<PlayerIndex>(playerId);
+
+    int count = 0;
+    for (const Tile& t : map.allTiles()) {
+        if (isRevealed(t.getVisibility(), idx)) {
+            ++count;
+        }
+    }
+    return count;
 }

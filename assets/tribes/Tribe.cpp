@@ -1,3 +1,4 @@
+// Tribe.cpp
 //
 // Created by Fryderyk Niedzwiecki on 10/01/2026.
 //
@@ -10,10 +11,11 @@
 #include "techs/Tech.h"
 #include "units/Unit.h"
 
-Tribe::Tribe(TribeType type, std::string name, uint8_t stars, TechId tech, UnitType startUnitType)
+Tribe::Tribe(TribeType type, std::string name, uint8_t stars, uint16_t startScore_, TechId tech, UnitType startUnitType)
     : tribeType(type),
       tribeName(std::move(name)),
       startStars(stars),
+      startScore(startScore_),
       startTech(tech) {
     startUnit.setType(startUnitType);
 }
@@ -24,6 +26,10 @@ TribeType Tribe::getType() const {
 
 uint8_t Tribe::getStartStars() const {
     return startStars;
+}
+
+uint16_t Tribe::getStartScore() const {
+    return startScore;
 }
 
 const std::string& Tribe::getName() const {
@@ -61,12 +67,44 @@ uint8_t Tribe::defaultStartStars(TribeType type) {
     // If you later add game-mode modifiers, do it outside of Tribe.
     switch (type) {
         case TribeType::XinXi: return 7;
-        case TribeType::Oumaji: return 6;
+        case TribeType::Oumaji: return 255;
         case TribeType::Hoodrick: return 7;
         case TribeType::Luxidoor: return 2;
         case TribeType::Quetzali: return 7;
         case TribeType::Yadakk: return 7;
         default:                  return 5;
+    }
+}
+
+// ✅ Startowy Score wg Twojej tabeli (Tribe Starting Scores)
+uint16_t Tribe::defaultStartScore(TribeType type) {
+    switch (type) {
+        case TribeType::XinXi:    return 515;
+        case TribeType::Imperius: return 515;
+        case TribeType::Bardur:   return 515;
+        case TribeType::Kickoo:   return 515;
+        case TribeType::Luxidoor: return 515;
+        case TribeType::Elyrion:  return 515;
+
+        case TribeType::Oumaji:   return 520;
+
+        case TribeType::AiMo:     return 615;
+        case TribeType::Zebasi:   return 615;
+        case TribeType::Yadakk:   return 615;
+
+        case TribeType::Hoodrick: return 620;
+        case TribeType::Quetzali: return 620;
+
+        case TribeType::Polaris:  return 630;
+
+        case TribeType::Vengir:   return 730;
+
+        case TribeType::Aquarion: return 415;
+
+        // brak na Twoim screenie → ustawiam bezpieczny default
+        case TribeType::Cymanti:  return 515;
+
+        default:                  return 515;
     }
 }
 
@@ -86,10 +124,6 @@ TechId Tribe::defaultStartTech(TribeType type) {
         case TribeType::AiMo:     return TechId::Philosophy;
         case TribeType::Quetzali: return TechId::Strategy;
         case TribeType::Yadakk:   return TechId::Roads;
-        // case TribeType::Aquarion: return TechId::Count;
-        // case TribeType::Elyrion:  return TechId::ForestMagic;
-        // case TribeType::Polaris:  return TechId::Frostwork;
-        // case TribeType::Cymanti:  return TechId::Farming;
         default:                  return TechId::Count;
     }
 }
@@ -122,11 +156,12 @@ UnitType Tribe::defaultStartUnitType(TribeType type) {
 Tribe Tribe::makeDefault(TribeType type) {
     const char* nm = Tribe::defaultName(type);
     const uint8_t stars = Tribe::defaultStartStars(type);
+    const uint16_t sc = Tribe::defaultStartScore(type);
 
     TechId techId = Tribe::defaultStartTech(type);
     UnitType unitType = Tribe::defaultStartUnitType(type);
 
-    return Tribe(type, std::string(nm), stars, techId, unitType);
+    return Tribe(type, std::string(nm), stars, sc, techId, unitType);
 }
 
 const Unit& Tribe::getStartUnit() const {

@@ -9,6 +9,8 @@
 
 #include <algorithm>
 
+#include "MonumentSystem.h"
+
 
 int TurnSystem::calcIncomeForPlayer(const Game& game, PlayerId pid) {
     const Player& p = game.getPlayer(pid);
@@ -27,9 +29,13 @@ int TurnSystem::calcIncomeForPlayer(const Game& game, PlayerId pid) {
 
 
 void TurnSystem::startTurn(Game& game) {
+    const PlayerId pid = game.getCurrentPlayerId();
+
 
     if (game.getTurnNumber()!=0) {
-        applyIncomeForCurrentPlayer(game);
+        applyIncomeForCurrentPlayer(game,pid);
+        MonumentSystem::onStarsUpdated(game,pid);
+
     }
 
     // TODO: start-of-turn effects:
@@ -87,8 +93,7 @@ void TurnSystem::refreshUnitsForCurrentPlayer(Game& game) {
     }
 }
 
-void TurnSystem::applyIncomeForCurrentPlayer(Game& game) {
-    const PlayerId pid = game.getCurrentPlayerId();
+void TurnSystem::applyIncomeForCurrentPlayer(Game& game,PlayerId pid) {
     Player& p = game.getPlayer(pid);
 
     const int income = TurnSystem::calcIncomeForPlayer(game, pid);

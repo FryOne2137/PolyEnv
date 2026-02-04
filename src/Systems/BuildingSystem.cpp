@@ -4,6 +4,23 @@
 #include "World/Tile.h"
 #include "Player/Player.h"
 #include "Buildings/BuildingDB.h"
+#include "terrain/BuildingTypeEnum.h"
+
+static inline bool isMonument(BuildingTypeEnum t) {
+    switch (t) {
+        case BuildingTypeEnum::AltarOfPeace:
+        case BuildingTypeEnum::EmperorsTomb:
+        case BuildingTypeEnum::EyeOfGod:
+        case BuildingTypeEnum::GateOfPower:
+        case BuildingTypeEnum::GrandBazaar:
+        case BuildingTypeEnum::ParkOfFortune:
+        case BuildingTypeEnum::TowerOfWisdom:
+            return true;
+        default:
+            return false;
+    }
+}
+
 
 static inline bool terrainAllowed(BuildingDB::TerrainMask mask, BaseTerrainEnum t) {
     const uint8_t bit = uint8_t(1u) << static_cast<uint8_t>(t);
@@ -24,6 +41,13 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
     const auto& bi = BuildingDB::info(type);
 
     if (tile.getBuildingType() != BuildingTypeEnum::None) return false;
+
+    // Monument rules: must be earned first and can only be placed once.
+    if (isMonument(type)) {
+        const Player& pl = game.getPlayer(pid);
+        if (!pl.hasEarnedMonument(type)) return false;
+        if (pl.hasPlacedMonument(type)) return false;
+    }
 
     if (bi.requiresTerritory && tile.getTerritoryCityId() == kNoCity) return false;
 
@@ -54,20 +78,23 @@ bool BuildingSystem::build(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum t
 
     tile.setBuildingType(type);
 
+    if (isMonument(type)) {
+        (void)p.placeMonument(type);
+    }
+
     const CityId cid = tile.getTerritoryCityId();
     if (cid != kNoCity) {
         if (City* c = game.getCity(cid)) {
             const auto& bi = BuildingDB::info(type);
-            const uint16_t curPop = c->getPopulation();
-            const uint16_t addPop = static_cast<uint16_t>(bi.populationGain);
-            c->setPopulation(static_cast<uint16_t>(curPop + addPop));
-
-            // If the building adds multiple population, the city might level up multiple times.
-            while (c->canLevelUp()) {
-                if (!c->levelUp()) break;
-            }
+            const uint8_t addPop = static_cast<uint8_t>(bi.populationGain);
+            (void)c->addPopulation(addPop);
         }
     }
 
     return true;
+}
+
+bool BuildingSystem::buildMonument(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type) {
+    // Kept for explicit monument calls; logic lives in build()/canBuild().
+    return build(game, pid, pos, type);
 }

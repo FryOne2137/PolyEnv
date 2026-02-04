@@ -13,7 +13,7 @@ class City : public Settlement {
 public:
     CityId getCityId() const { return cityId; }
     uint8_t getLevel() const { return level; }
-    uint16_t getPopulation() const { return population; }
+    int16_t getPopulation() const { return population; }
     uint8_t getStarsPerRound() const;
     uint8_t getOwnerId() const { return ownerId; }
     uint8_t populationNeededToLevelUp() const ;
@@ -30,14 +30,14 @@ public:
 
     void setCityId(CityId id) { cityId = id; }
     void setLevel(uint8_t v) { level = v; }
-    void setPopulation(uint16_t v) { population = v; }
+    void setPopulation(int16_t v) { population = v; }
     void setStarsPerRound(uint8_t v) { starsPerRound = v; }
 
     void addUnit(UnitId id);
     void removeUnit(UnitId id);
 
-    bool levelUp();
-    bool canLevelUp() const;
+
+    bool addPopulation(uint16_t v);
 
     uint8_t maxUnitCapacity() const;
 uint8_t getUnitsCount() const;
@@ -46,7 +46,7 @@ private:
     CityId cityId = kNoCity;
     uint8_t ownerId = 0;
     uint8_t level = 1;
-    uint16_t population = 0;
+    int16_t population = 0;
     uint8_t starsPerRound = 1;
     bool isCapital = false;
 
@@ -57,6 +57,7 @@ private:
 
 
     std::string name;
+    bool levelUp();
 };
 
 #endif

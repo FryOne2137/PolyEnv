@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "MonumentSystem.h"
+
 namespace {
 
 // ---- common bitmask helpers ----
@@ -64,20 +66,7 @@ inline bool ensureOwnTerritory(Game& game, PlayerId pid, Pos pos, CityId& outCid
     return true;
 }
 
-inline void addCityPopulation(Game& game, CityId cid, int addPop) {
-    if (cid == kNoCity) return;
-    City* c = game.getCity(cid);
-    if (!c) return;
 
-    const uint16_t cur = c->getPopulation();
-    const uint16_t inc = static_cast<uint16_t>(std::max(0, addPop));
-    c->setPopulation(static_cast<uint16_t>(cur + inc));
-
-    // If a single action adds multiple population, it may level up multiple times.
-    while (c->canLevelUp()) {
-        if (!c->levelUp()) break;
-    }
-}
 
 } // namespace
 
@@ -109,7 +98,9 @@ bool TileActionSystem::hunt(Game& game, PlayerId pid, Pos pos) {
     nr = addFlag(nr, ResourcesEnum::Crops);
     t.setResource(nr);
 
-    addCityPopulation(game, cid, kPopGain);
+    if (City* c = game.getCity(cid)) {
+        (void)c->addPopulation(static_cast<uint8_t>(kPopGain));
+    }
     return true;
 }
 
@@ -136,7 +127,9 @@ bool TileActionSystem::oraganization(Game& game, PlayerId pid, Pos pos) {
     ResourcesEnum nr = removeFlag(r, ResourcesEnum::Fruit);
     t.setResource(nr);
 
-    addCityPopulation(game, cid, kPopGain);
+    if (City* c = game.getCity(cid)) {
+        (void)c->addPopulation(static_cast<uint8_t>(kPopGain));
+    }
     return true;
 }
 
@@ -165,7 +158,9 @@ bool TileActionSystem::fishing(Game& game, PlayerId pid, Pos pos) {
     if (hasFlag(r, ResourcesEnum::Fish)) {
         if (!spendStars(game, pid, kFishCost)) return false;
         t.setResource(removeFlag(r, ResourcesEnum::Fish));
-        addCityPopulation(game, cid, kFishPop);
+        if (City* c = game.getCity(cid)) {
+            (void)c->addPopulation(static_cast<uint8_t>(kFishPop));
+        }
         return true;
     }
 
@@ -196,6 +191,7 @@ bool TileActionSystem::clearForest(Game& game, PlayerId pid, Pos pos) {
 
     // Reward stars
     game.getPlayer(pid).addStars(kReward);
+    MonumentSystem::onStarsUpdated(game,pid);
 
     return true;
 }

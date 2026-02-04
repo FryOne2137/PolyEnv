@@ -7,7 +7,9 @@
 #include "Game.h"
 #include "World/Map.h"
 #include "World/Tile.h"
+#include "World/Settlements/City.h"
 #include "Player/Player.h"
+#include "Systems/MonumentSystem.h"
 
 #include "terrain/ResourcesEnum.h"
 #include "terrain/SettlementTypeEnum.h"
@@ -25,20 +27,6 @@
 #include "UnitSpawnSystem.h"
 #include "Systems/MovementSystem.h"  // Added include as per instructions
 
-inline void addCityPopulation(Game& game, CityId cid, int addPop) {
-    if (cid == kNoCity) return;
-    City* c = game.getCity(cid);
-    if (!c) return;
-
-    const uint16_t cur = c->getPopulation();
-    const uint16_t inc = static_cast<uint16_t>(std::max(0, addPop));
-    c->setPopulation(static_cast<uint16_t>(cur + inc));
-
-    // If a single action adds multiple population, it may level up multiple times.
-    while (c->canLevelUp()) {
-        if (!c->levelUp()) break;
-    }
-}
 
 
 // --- deterministic RNG (seed + position) ---
@@ -129,6 +117,8 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
     switch (reward) {
         case RuinReward::Stars:
             pl.addStars(kRuinStarsReward);
+            MonumentSystem::onStarsUpdated(game,unit->getOwnerId());
+
             break;
 
         case RuinReward::Tech: {
@@ -142,15 +132,20 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
             } else {
                 // fallback (should be rare): give stars if no tech available
                 pl.addStars(kRuinStarsReward);
+                MonumentSystem::onStarsUpdated(game,unit->getOwnerId());
+
             }
             break;
         }
 
         case RuinReward::Population: {
             if (City* cap = game.getCity(pl.getCapitalId())) {
-                addCityPopulation(game, pl.getCapitalId(), 3);
+                cap->addPopulation(3);
+                MonumentSystem::onCityReachedLevel5(game,pos);
             } else {
                 pl.addStars(kRuinStarsReward);
+                MonumentSystem::onStarsUpdated(game,unit->getOwnerId());
+
             }
             break;
         }
@@ -186,7 +181,6 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
                     /*canActImmediately=*/false, // free but cannot act this turn
                     /*makeVeteran=*/true
                 );
-                std::cout << "[rammer] " << uid << std::endl;
 
             } else {
                 uid = UnitSpawnSystem::spawnUnitForced(
@@ -197,7 +191,6 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
                     /*canActImmediately=*/false, // free but cannot act this turn
                     /*makeVeteran=*/true
                 );
-                std::cout << "[Swordsman] " << uid << std::endl;
             }
 
             // Removed manual blocking of unit turn; spawnUnitForced already sets flags.
@@ -208,8 +201,9 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
             // Consumes the whole turn.
     tile.setResource(ResourcesEnum::None);
     tile.setSettlement(SettlementTypeEnum::None, kNoSettlement);
-    unit->setMovedThisTurn(true);
     unit->setAttackedThisTurn(true);
+
+    unit->setMovedThisTurn(true);
 }
 
 InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Player& player, Pos ruinPos) {

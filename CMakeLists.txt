@@ -146,6 +146,14 @@ set(ENGINE_SOURCES
         src/Systems/UnitSpawnSystem.cpp
         src/Systems/UnitSpawnSystem.h
         src/Systems/RewardSystem.h
+        src/Systems/CitiesConnectionSystem.cpp
+        src/Systems/CitiesConnectionSystem.h
+        src/Systems/MonumentSystem.cpp
+        src/Systems/MonumentSystem.h
+        src/Systems/LighthouseSystem.cpp
+        src/Systems/LighthouseSystem.h
+        src/Systems/ScoreSystem.cpp
+        src/Systems/ScoreSystem.h
 )
 
 # ---- Engine library (no mains, no SFML) ----

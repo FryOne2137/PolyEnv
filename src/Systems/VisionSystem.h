@@ -25,6 +25,9 @@ public:
     // NOTE: This function only ADDS visibility (like Polytopia fog). It does not hide tiles again.
     static void revealForPlayerFromUnits(Game& game, PlayerId playerId);
 
+    static int countRevealedTiles(const Game& game, PlayerId playerId);
+
+
     // Reveal a square/chebyshev disk centered at `center` with radius `range`.
     static void revealArea(Game& game, PlayerId playerId, Pos center, int range);
 

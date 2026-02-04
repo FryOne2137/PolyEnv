@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <array>
 
 #include "World/Map.h"
 #include "World/Pos.h"
@@ -43,6 +44,7 @@ public:
     // Tworzy nową grę: generuje mapę + tworzy graczy + ustawia turę 0
     void newGame(const NewGameConfig &cfg);
 
+    bool buyTech(PlayerId pid, TechId tech);
 
 
     // ---- Tura / kolejność ----
@@ -52,7 +54,11 @@ public:
     uint32_t getTurnNumber() const { return turnNumber; }
     uint32_t getWorldSeed() const { return worldSeed; }
 
-    bool endTurn(); // przechodzi do następnego gracza
+    uint16_t getLighthouseDiscoveredByMask(uint8_t lighthouseIdx) const;
+    bool hasPlayerDiscoveredLighthouse(uint8_t lighthouseIdx, PlayerId pid) const;
+    bool markLighthouseDiscovered(uint8_t lighthouseIdx, PlayerId pid); // true tylko przy pierwszym odkryciu
+
+    bool endTurn(PlayerId pid); // przechodzi do następnego gracza
     bool handleRuin(UnitId unitId, Pos pos);
     bool handleStarfish(UnitId unitId, Pos pos);
 
@@ -74,6 +80,10 @@ public:
     // Fabryka jednostek w świecie (na razie minimalnie)
     UnitId spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately=false);
 
+    std::vector<BuildingTypeEnum> getPlayerEarnedMonuments(PlayerId pid) const;
+    std::vector<BuildingTypeEnum> getPlayerPlacedMonuments(PlayerId pid) const;
+    std::vector<BuildingTypeEnum> getPlayerOwnedMonuments(PlayerId pid) const;
+
     // ---- Helpers for systems ----
     Player &getPlayer(PlayerId id) { return players[id]; }
     const Player &getPlayer(PlayerId id) const { return players[id]; }
@@ -89,6 +99,8 @@ public:
 
     const std::vector<City> &getCities() const { return cities; }
     std::vector<City> &getCities() { return cities; }
+
+    int getPlayerScore(PlayerId pid) const;
 
     bool foundCityFromVillage(PlayerId owner, Pos pos);
     bool captureCityAt(PlayerId newOwner, Pos pos);
@@ -119,16 +131,13 @@ public:
     std::vector<Pos> attackable(UnitId attackerId) const;
     std::vector<Pos> reachable(UnitId unitId) const;
 
+    bool attack(PlayerId pid, UnitId attackerId, Pos target);
+
     bool buildRoad(PlayerId pid, Pos pos);
     bool buildBridge(PlayerId pid, Pos pos);
 
     bool explorer(PlayerId pid, Pos start);
-
-
-
-
-
-
+    bool isPlayersTurn(PlayerId pid) const { return pid == currentPlayer; };
 
 private:
     friend class UnitSpawnSystem;
@@ -144,7 +153,7 @@ private:
     PlayerId currentPlayer = 0;
     uint32_t turnNumber = 0;
 
-    bool isPlayersTurn(PlayerId pid) const { return pid == currentPlayer; }
+    std::array<uint16_t, 4> lighthouseDiscoveredBy = {0, 0, 0, 0};
 };
 
 #endif // GAME_ENGINE_GAME_H

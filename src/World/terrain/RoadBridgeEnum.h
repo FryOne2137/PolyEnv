@@ -11,6 +11,7 @@ enum class RoadBridgeEnum : uint8_t{
     None = 0,
     Road = 1,
     Bridge = 2,
+    WaterConnection=3,
 };
 
 

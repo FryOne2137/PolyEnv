@@ -5,6 +5,7 @@
 #include "Player.h"
 
 #include <algorithm>
+#include "terrain/BuildingTypeEnum.h"
 
 // ---- Ctors ----
 Player::Player(PlayerId id, TribeType tribe, int startStars, CityId capital)
@@ -55,6 +56,35 @@ const std::vector<TechId>& Player::getTechs() const {
     return techs;
 }
 
+// ---- Monuments ----
+
+uint64_t Player::monumentBit(BuildingTypeEnum monument) {
+    return 1ull << static_cast<uint8_t>(monument);
+}
+
+bool Player::hasEarnedMonument(BuildingTypeEnum monument) const {
+    return (earnedMonumentMask & monumentBit(monument)) != 0ull;
+}
+
+bool Player::hasPlacedMonument(BuildingTypeEnum monument) const {
+    return (placedMonumentMask & monumentBit(monument)) != 0ull;
+}
+
+bool Player::addMonument(BuildingTypeEnum monument) {
+    const uint64_t bit = monumentBit(monument);
+    if ((earnedMonumentMask & bit) != 0ull) return false;
+    earnedMonumentMask |= bit;
+    return true;
+}
+
+bool Player::placeMonument(BuildingTypeEnum monument) {
+    const uint64_t bit = monumentBit(monument);
+    if ((earnedMonumentMask & bit) == 0ull) return false;
+    if ((placedMonumentMask & bit) != 0ull) return false;
+    placedMonumentMask |= bit;
+    return true;
+}
+
 void Player::addTech(TechId tech) {
     if (tech == TechId::Count) return;
 
@@ -66,6 +96,20 @@ void Player::addTech(TechId tech) {
 
     techMask |= bit;
     techs.push_back(tech);
+    if (hasAllTechUnlocked()) {
+        (void)addMonument(BuildingTypeEnum::TowerOfWisdom);
+    }
+}
+
+bool Player::hasAllTechUnlocked() const {
+    // TechId is contiguous: [0..TechId::Count-1]
+    const uint8_t count = static_cast<uint8_t>(TechId::Count);
+    if (count == 0 || count > 64) return false;
+
+    const uint64_t requiredMask =
+        (count == 64) ? 0xFFFF'FFFF'FFFF'FFFFull : ((1ull << count) - 1ull);
+
+    return (techMask & requiredMask) == requiredMask;
 }
 
 // ---- Cities / Units (ids, not pointers) ----
@@ -115,6 +159,37 @@ void Player::addUnit(UnitId id) {
     units.push_back(id);
 }
 
+uint16_t Player::getKillerCount() const {
+    return killerCount;
+}
+
+uint8_t Player::getNoAttackTurns() const {
+    return noAttackTurns;
+}
+
+void Player::setAttackedThisTurn(bool v) {
+    attackedThisTurn = v;
+}
+
+bool Player::getAttackedThisTurn() const {
+    return attackedThisTurn;
+}
+
+void Player::resetNoAttackTurns() {
+    noAttackTurns = 0;
+}
+
+void Player::incrementNoAttackTurns() {
+    if (noAttackTurns < 255) {
+        ++noAttackTurns;
+    }
+}
+
+bool Player::addKill(int kills) {
+    killerCount += kills;
+    return true;
+}
+
 void Player::removeUnit(UnitId id) {
     if (id == kNoUnit) return;
     auto it = std::remove(units.begin(), units.end(), id);
@@ -122,3 +197,33 @@ void Player::removeUnit(UnitId id) {
         units.erase(it, units.end());
     }
 }
+
+std::vector<BuildingTypeEnum> Player::getEarnedMonuments() const {
+    std::vector<BuildingTypeEnum> out;
+    out.reserve(kAllMonuments.size());
+    for (BuildingTypeEnum m : kAllMonuments) {
+        if (hasEarnedMonument(m)) out.push_back(m);
+    }
+    return out;
+}
+
+std::vector<BuildingTypeEnum> Player::getPlacedMonuments() const {
+    std::vector<BuildingTypeEnum> out;
+    out.reserve(kAllMonuments.size());
+    for (BuildingTypeEnum m : kAllMonuments) {
+        if (hasPlacedMonument(m)) out.push_back(m);
+    }
+    return out;
+}
+
+std::vector<BuildingTypeEnum> Player::getOwnedMonuments() const {
+    std::vector<BuildingTypeEnum> out;
+    out.reserve(kAllMonuments.size());
+    for (BuildingTypeEnum m : kAllMonuments) {
+        if (hasEarnedMonument(m) || hasPlacedMonument(m)) out.push_back(m);
+    }
+    return out;
+}
+
+
+

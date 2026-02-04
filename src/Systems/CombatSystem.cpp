@@ -5,7 +5,7 @@
 #include "CombatSystem.h"
 
 #include "Systems/MovementSystem.h"
-
+#include "Systems/MonumentSystem.h"
 #include "Game.h"
 #include "terrain/SettlementTypeEnum.h"
 #include "City.h"
@@ -90,6 +90,23 @@ static double computeDefenceBonus(const Game& game, const Unit& defender) {
     return bonus;
 }
 
+static inline void awardKillToPlayer(Game& game, PlayerId pid, const Unit& killerUnit, int kills = 1) {
+    if (kills <= 0) return;
+
+    const PlayerId owner = killerUnit.getOwnerId();
+    if (owner == kNoPlayer) return;
+
+    // Safety: only award if the caller-specified player matches the unit owner
+    // and it is currently that player's turn.
+    if (pid != owner) return;
+
+    Player& pl = game.getPlayer(owner);
+    pl.addKill(kills);
+
+    // After updating total kills, check monument unlock condition.
+    MonumentSystem::onKillsUpdated(game, owner, static_cast<int>(pl.getKillerCount()));
+}
+
 // Kill helper lives in a SYSTEM (not in Game public API).
 static void killUnit(Game& game, UnitId uid) {
     Unit* u = game.getUnit(uid);
@@ -105,6 +122,16 @@ static void killUnit(Game& game, UnitId uid) {
     const PlayerId owner = u->getOwnerId();
     if (owner != kNoPlayer) {
         game.getPlayer(owner).removeUnit(uid);
+    }
+
+    // 2) If the unit was stationed in a city tile, remove it from that City's unit list.
+    if (game.getMap().inBounds(p)) {
+        const Tile& t = game.getMap().at(p);
+        if (t.getSettlementType() == SettlementTypeEnum::City) {
+            if (City* c = game.getCityBySettlementId(t.getSettlementId())) {
+                c->removeUnit(uid);
+            }
+        }
     }
 
     u->setHealth(0);
@@ -228,6 +255,7 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
                     su->setHealth(std::max(0, su->getHealth() - splashDamage));
                     if (su->getHealth() <= 0) {
                         attacker->addKill();
+                        awardKillToPlayer(game, attacker->getOwnerId(), *attacker);
                         killUnit(game, sid);
                     }
                 }
@@ -243,6 +271,7 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     // If defender died, no retaliation
     if (defender->getHealth() <= 0) {
         attacker->addKill();
+        awardKillToPlayer(game, attacker->getOwnerId(), *attacker);
 
         // Kill first (clears map occupancy on targetPos)
         killUnit(game, defenderId);
@@ -291,6 +320,7 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
         attacker->setHealth(std::max(0, attacker->getHealth() - defenceResult));
         if (attacker->getHealth() <= 0) {
             defender->addKill();
+            awardKillToPlayer(game, defender->getOwnerId(), *defender);
             killUnit(game, attackerId);
         }
     }

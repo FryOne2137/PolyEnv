@@ -42,16 +42,6 @@ bool City::levelUp() {
     return true;
 }
 
-bool City::canLevelUp() const {
-
-    uint8_t populationNeeded = populationNeededToLevelUp();
-
-
-    if (population < populationNeeded) {
-        return false;
-    }
-    return true;
-}
 
 uint8_t City::maxUnitCapacity() const {
     return getLevel()+1;
@@ -71,5 +61,16 @@ uint8_t City::getStarsPerRound() const {
     }
 
     return starsPerRound+20;
+}
+
+bool City::addPopulation(uint16_t v) {
+    population += v;
+
+    if (population >= populationNeededToLevelUp()) {
+        return levelUp();
+    }
+
+
+    return true;
 }
 

@@ -101,7 +101,7 @@ int GuiApp::run() {
 
                 // UI actions coming from the in-game renderer
                 if (mapRenderer->consumeEndTurnClicked()) {
-                    game.endTurn(); // rotates currentPlayer by id
+                    game.endTurn(game.getCurrentPlayerId()); // rotates currentPlayer by id
                 }
                 if (mapRenderer->consumeToggleOverviewRequested()) {
                     mapRenderer->toggleOverview();
