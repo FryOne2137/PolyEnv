@@ -12,7 +12,14 @@
 #include "terrain/VisibilityEnum.h"
 #include "World/Tile.h"
 
+class Map;
 class Game;
+
+enum class RevealSource : uint8_t {
+    Initial,   // start gry
+    Unit,      // normalna jednostka
+    Explorer   // explorer
+};
 
 // Fog-of-war / visibility updates.
 // Each unit reveals tiles within its vision range (in tiles, not pixels).
@@ -26,16 +33,19 @@ public:
     static void revealForPlayerFromUnits(Game& game, PlayerId playerId);
 
     static int countRevealedTiles(const Game& game, PlayerId playerId);
+    static int meetingReward(int enemyScore);
+
 
 
     // Reveal a square/chebyshev disk centered at `center` with radius `range`.
-    static void revealArea(Game& game, PlayerId playerId, Pos center, int range);
-
+    static void revealArea(Game& game,PlayerId pid,Pos center,int range,RevealSource source);
     // Helper: convert playerId (0..15) into a VisibilityEnum bit.
     static VisibilityEnum bitForPlayer(PlayerId playerId);
     static void doExplorer(Game& game, PlayerId pid, Pos start);
 
 private:
+    static bool isCornerTile(const Map& map, Pos p);
+
     static bool isFogForPlayer(const Tile& t, PlayerIndex idx);
     static bool tileHasLighthouse(const Tile& t);
 

@@ -504,11 +504,14 @@ for (const Pos d : cand) {
         const PlayerId pid = u->getOwnerId();
         const int baseVision = u->getVisionRange();
         const Pos pp = to;
-        VisionSystem::revealArea(game, pid, pp, baseVision);
+        VisionSystem::revealArea(game, pid, pp, baseVision,RevealSource::Unit);
 
         const Tile& endTile = game.getMap().at(to);
         if (endTile.getBaseTerrain() == BaseTerrainEnum::Mountain) {
-            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision));
+            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision),RevealSource::Unit);
+        }
+        if (baseVision == 2) {
+            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision),RevealSource::Unit);
         }
     }
 
@@ -629,6 +632,8 @@ int MovementSystem::shortestPathDistance(const Game& game, Pos from, Pos to) {
 bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     Unit* u = game.getUnit(unitId);
     if (!u) return false;
+
+    const int visionBeforeTransform = u->getVisionRange();
 
     const Pos from = u->getPos();
     if (from == to) return false;
@@ -1005,23 +1010,27 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         }
     }
 
+    const int visionAfterTransform = u->getVisionRange();
+    const int revealVision = std::max(visionBeforeTransform, visionAfterTransform);
+
     // Fog-of-war: reveal tiles the unit passed through (whole path) using the unit's vision range.
     // If the unit ends on a Mountain tile, ensure at least radius 2 from the destination.
-    {
-        const PlayerId pid = u->getOwnerId();
-        const int baseVision = u->getVisionRange();
+    const PlayerId pid = u->getOwnerId();
 
-        // Reveal along the whole traversed path.
-        for (const Pos& pp : path) {
-            VisionSystem::revealArea(game, pid, pp, baseVision);
-        }
-
-        // If the unit ends on a mountain, grant the mountain vision bonus at the final position.
-        const Tile& endTile = game.getMap().at(to);
-        if (endTile.getBaseTerrain() == BaseTerrainEnum::Mountain) {
-            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision));
-        }
+    // Reveal along the whole traversed path with "best" vision (e.g. sailor->land keeps 2 for this move).
+    for (const Pos& pp : path) {
+        VisionSystem::revealArea(game, pid, pp, revealVision, RevealSource::Unit);
     }
+
+    // Always reveal at final position again (safety + requirement)
+    VisionSystem::revealArea(game, pid, to, revealVision, RevealSource::Unit);
+
+    // Mountain bonus at destination (still using revealVision)
+    const Tile& endTile = game.getMap().at(to);
+    if (endTile.getBaseTerrain() == BaseTerrainEnum::Mountain) {
+        VisionSystem::revealArea(game, pid, to, std::max(2, revealVision), RevealSource::Unit);
+    }
+
 
     return true;
 }

@@ -65,10 +65,15 @@ public:
     bool placeMonument(BuildingTypeEnum monument);   // called when building is placed
     static uint64_t monumentBit(BuildingTypeEnum monument);
 
+    bool hasMet(PlayerId other) const ;
+
+    bool markMet(PlayerId other);
+
 private:
 
     PlayerId playerId = 0;
     TribeType tribeType = TribeType::Unknown;
+    uint16_t metPlayersMask = 0;
 
     uint16_t killerCount = 0;
     uint8_t noAttackTurns = 0;

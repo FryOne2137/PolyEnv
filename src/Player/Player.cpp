@@ -225,5 +225,15 @@ std::vector<BuildingTypeEnum> Player::getOwnedMonuments() const {
     return out;
 }
 
+bool Player::hasMet(PlayerId other) const {
+    return (metPlayersMask & (uint16_t(1) << other)) != 0;
+}
+
+bool Player::markMet(PlayerId other) {
+    const uint16_t bit = uint16_t(1) << other;
+    if (metPlayersMask & bit) return false;
+    metPlayersMask |= bit;
+    return true;
+}
 
 

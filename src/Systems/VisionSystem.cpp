@@ -8,27 +8,19 @@
 #include "World/Tile.h"
 #include "VisionSystem.h"
 
+#include "ScoreSystem.h"
+
 
 // Local helper for explorer fog checks
 bool VisionSystem::isFogForPlayer(const Tile& t, PlayerIndex idx) {
-    const VisibilityEnum v = t.getVisibility();
-    // Prefer a project helper if it exists.
-    // Fallback: treat VisibilityEnum as a bitmask.
-    return (static_cast<uint32_t>(v) & (1u << static_cast<uint32_t>(idx))) == 0;
+    return !isRevealed(t.getVisibility(), idx);
 }
+
 
 // Local helper for explorer lighthouse detection
 bool VisionSystem::tileHasLighthouse(const Tile& t) {
-#ifdef BUILDING_TYPE_ENUM_HAS_LIGHTHOUSE
     return t.getBuildingType() == BuildingTypeEnum::Lighthouse;
-#else
-    // Try common patterns (adapt if these members exist in your Tile class)
-    // return t.hasBuilding(BuildingTypeEnum::Lighthouse);
-    // return t.getBuilding() == BuildingTypeEnum::Lighthouse;
-    return false;
-#endif
 }
-
 //
 
 #include "VisionSystem.h"
@@ -56,7 +48,7 @@ void VisionSystem::revealFromUnit(Game& game, UnitId uid) {
     if (t.getBaseTerrain() == BaseTerrainEnum::Mountain) {
         r = std::max(r, 2);
     }
-    revealArea(game, pid, p, r);
+revealArea(game, pid, p, r, RevealSource::Unit);
 }
 
 
@@ -71,7 +63,13 @@ void VisionSystem::revealForPlayerFromUnits(Game& game, PlayerId playerId) {
     }
 }
 
-void VisionSystem::revealArea(Game& game, PlayerId pid, Pos center, int range) {
+void VisionSystem::revealArea(
+    Game& game,
+    PlayerId pid,
+    Pos center,
+    int range,
+    RevealSource source
+) {
     Map& map = game.getMap();
 
     for (int dy = -range; dy <= range; ++dy) {
@@ -80,15 +78,50 @@ void VisionSystem::revealArea(Game& game, PlayerId pid, Pos center, int range) {
             if (!map.inBounds(p)) continue;
 
             Tile& t = map.at(p);
+
+            // ✅ podczas Initial nie odsłaniamy rogów
+            if (source == RevealSource::Initial && isCornerTile(map, p)) {
+                continue;
+            }
+
             const bool wasFog = isFogForPlayer(t, static_cast<PlayerIndex>(pid));
 
             VisibilityEnum v = t.getVisibility();
             reveal(v, static_cast<PlayerIndex>(pid));
             t.setVisibility(v);
 
-            // Hook: tile właśnie stał się odkryty dla tego gracza
-            if (wasFog) {
-                LighthouseSystem::onTileRevealed(game, pid, p);
+            if (!wasFog) continue;
+
+            // 🔒 BLOKADA: start gry nic nie odpala
+            if (source == RevealSource::Initial)
+                continue;
+
+            // ✅ UNIT + EXPLORER
+            LighthouseSystem::onTileRevealed(game, pid, p);
+
+            Player& me = game.getPlayer(pid);
+
+            // ---- WROGA JEDNOSTKA ----
+            const UnitId uid = map.unitOn(p);
+            if (uid != Map::kNoUnit) {
+                const Unit* u = game.getUnit(uid);
+                if (u && u->getOwnerId() != pid) {
+                    if (me.markMet(u->getOwnerId())) {
+                        const int enemyScore = ScoreSystem::getScore(game, u->getOwnerId());
+                        me.addStars(meetingReward(enemyScore));
+                    }
+                }
+            }
+
+            // ---- WROGIE MIASTO ----
+            if (t.getSettlementType() == SettlementTypeEnum::City) {
+                City* c = game.getCityBySettlementId(t.getSettlementId());
+                if (c && c->getOwnerId() != pid) {
+                    if (me.markMet(c->getOwnerId())) {
+                        const int enemyScore = ScoreSystem::getScore(game, c->getOwnerId());
+                        me.addStars(meetingReward(enemyScore));
+                    }
+                }
             }
         }
     }
@@ -144,19 +177,11 @@ void VisionSystem::doExplorer(Game& game, PlayerId pid, Pos start) // <-- adapt 
             Pos p{center.x + dx[i], center.y + dy[i]};
             if (!map.inBounds(p)) continue;
 
-
-            Tile& tt = map.at(p);
-            const bool wasFog = isFogForPlayer(tt, static_cast<PlayerIndex>(pid));
-
-            VisibilityEnum vv = tt.getVisibility();
-            reveal(vv, static_cast<PlayerIndex>(pid));
-            tt.setVisibility(vv);
-
-            if (wasFog) {
-                LighthouseSystem::onTileRevealed(game, pid, p);
-            }
+            // ✅ jednolite reveal (latarnia + meeting + blokada Initial)
+            revealArea(game, pid, p, 0, RevealSource::Explorer);
         }
     };
+
 
     auto countFogClearedFrom = [&](Pos center, bool& outHasLighthouse) -> int {
         outHasLighthouse = false;
@@ -340,4 +365,19 @@ int VisionSystem::countRevealedTiles(const Game& game, PlayerId playerId) {
         }
     }
     return count;
+}
+
+int VisionSystem::meetingReward(int enemyScore) {
+    const int thousands = (enemyScore + 999) / 1000; // ceil
+    int stars = 1 + 2 * thousands;
+    return std::min(stars, 11);
+}
+
+ bool VisionSystem::isCornerTile(const Map& map, Pos p) {
+    const int w = map.getWidth();
+    const int h = map.getHeight();
+    return (p.x == 0 && p.y == 0) ||
+           (p.x == 0 && p.y == h - 1) ||
+           (p.x == w - 1 && p.y == 0) ||
+           (p.x == w - 1 && p.y == h - 1);
 }

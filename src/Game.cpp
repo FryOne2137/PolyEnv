@@ -263,7 +263,7 @@ void Game::newGame(const NewGameConfig& cfg) {
     // 4c) initial fog-of-war: each player sees radius 2 around their capital.
     if (capitals.size() == players.size()) {
         for (size_t i = 0; i < players.size(); ++i) {
-            VisionSystem::revealArea(*this, static_cast<PlayerId>(i), capitals[i], 2);
+            VisionSystem::revealArea(*this, static_cast<PlayerId>(i), capitals[i], 2,RevealSource::Initial);
         }
     }
 
