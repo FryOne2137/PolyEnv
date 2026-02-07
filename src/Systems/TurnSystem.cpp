@@ -6,26 +6,18 @@
 
 #include "Game.h"   // Game, Player, Unit access
 #include "Systems/CitySystem.h"
+
 #include "Systems/PlayerSystem.h"
-
-
+#include "World/Map.h"
+#include "World/Tile.h"
+#include "terrain/BuildingTypeEnum.h"
 #include <algorithm>
-
 #include "Systems/MonumentSystem.h"
 #include "Systems/UnitSystem.h"
-
+#include "Systems/StarsSystem.h"
 
 int TurnSystem::calcIncomeForPlayer(const Game& game, PlayerId pid) {
-
-    // Base income so stars still increase even if city ownership/lookup isn't fully wired yet.
-    int income = 0;
-
-    for (CityId cid : PlayerSystem::getCities(game, pid)) {
-        if (!CitySystem::cityExists(game, cid)) continue;
-        income += static_cast<int>(CitySystem::getCityStarsPerRound(game, cid));
-    }
-
-    return std::max(0, income);
+    return StarsSystem::calcIncomeForPlayer(game, pid);
 }
 
 
@@ -112,28 +104,6 @@ void TurnSystem::refreshUnitsForCurrentPlayer(Game& game) {
     }
 }
 
-void TurnSystem::applyIncomeForCurrentPlayer(Game& game,PlayerId pid) {
-
-    int income = 0;
-
-    for (CityId cid : PlayerSystem::getCities(game, pid)) {
-        if (!CitySystem::cityExists(game, cid)) continue;
-
-        // No income if city is under siege (enemy unit inside the city)
-        if (CitySystem::isCityUnderSiege(game, cid)) {
-            continue;
-        }
-
-        // No income if city was infiltrated; clear infiltration after income collection attempt.
-        if (CitySystem::getCityIsInfiltrated(game, cid)) {
-            (void)CitySystem::setCityIsInfiltrated(game, cid, false);
-            continue;
-        }
-
-        income += static_cast<int>(CitySystem::getCityStarsPerRound(game, cid));
-    }
-
-    if (income > 0) {
-        PlayerSystem::addStars(game, pid, income);
-    }
+void TurnSystem::applyIncomeForCurrentPlayer(Game& game, PlayerId pid) {
+    StarsSystem::applyIncomeForPlayer(game, pid);
 }

@@ -161,6 +161,8 @@ set(ENGINE_SOURCES
         src/Systems/PlayerSystem.h
         src/Systems/InfiltrationSystem.cpp
         src/Systems/InfiltrationSystem.h
+        src/Systems/StarsSystem.cpp
+        src/Systems/StarsSystem.h
 )
 
 # ---- Engine library (no mains, no SFML) ----

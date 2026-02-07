@@ -525,3 +525,47 @@ void CitySystem::removeUnitFromAnyCity(Game& game, UnitId unitId) {
         CitySystem::removeUnitFromCity(game, unitId, city.getCityId());
     }
 }
+
+uint8_t CitySystem::getCityParkCount(const Game& game, CityId cityId) {
+    if (cityId == kNoCity) return 0;
+    const City* c = game.getCity(cityId);
+    if (!c) return 0;
+    return c->getParkCount();
+}
+
+bool CitySystem::setCityParkCount(Game& game, CityId cityId, uint8_t v) {
+    if (cityId == kNoCity) return false;
+    City* c = game.getCity(cityId);
+    if (!c) return false;
+    c->setParkCount(v);
+    return true;
+}
+
+bool CitySystem::addCityParkCount(Game& game, CityId cityId, uint8_t delta) {
+    if (delta == 0) return true;
+    if (cityId == kNoCity) return false;
+    City* c = game.getCity(cityId);
+    if (!c) return false;
+
+    // Saturating add (avoid uint8 overflow)
+    const int cur = static_cast<int>(c->getParkCount());
+    const int nxt = std::clamp(cur + static_cast<int>(delta), 0, 255);
+    c->setParkCount(static_cast<uint8_t>(nxt));
+    return true;
+}
+
+bool CitySystem::setCityWallEnabled(Game& game, CityId cityId, bool enabled) {
+    if (cityId == kNoCity) return false;
+    City* c = game.getCity(cityId);
+    if (!c) return false;
+    c->setCityWallEnabled(enabled);
+    return true;
+}
+
+bool CitySystem::setCityWorkshopEnabled(Game& game, CityId cityId, bool enabled) {
+    if (cityId == kNoCity) return false;
+    City* c = game.getCity(cityId);
+    if (!c) return false;
+    c->setWorkshopEnabled(enabled);
+    return true;
+}

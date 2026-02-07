@@ -8,6 +8,7 @@
 #include "Systems/InteractionSystem.h"
 #include "Systems/VisionSystem.h"
 #include "terrain/VisibilityEnum.h"
+#include "Systems/BuildingSystem.h"
 #include "Game.h"
 #include "tech/TechDB.h"
 #include <SFML/Window/Mouse.hpp>
@@ -1211,7 +1212,7 @@ static std::vector<std::string> monumentCandidates(TribeType tribe, BuildingType
     return out;
 }
 
-static std::vector<std::string> buildingCandidates(BuildingTypeEnum b) {
+static std::vector<std::string> buildingCandidates(BuildingTypeEnum b, int level) {
     const std::string root = "assets/Polytopia_game_engine_textures/common/";
     std::vector<std::string> out;
     out.reserve(8);
@@ -1226,11 +1227,36 @@ static std::vector<std::string> buildingCandidates(BuildingTypeEnum b) {
         case BuildingTypeEnum::Mine:        add("Mine"); break;
         case BuildingTypeEnum::LumberHut:   add("Lumber_Hut"); break;
         case BuildingTypeEnum::Port:        add("Port"); break;
-        case BuildingTypeEnum::Market:      add("Market01"); break;
-        case BuildingTypeEnum::Forge:       add("Forge_1"); break;
-        case BuildingTypeEnum::Sawmill:     add("Sawmill_1"); break;
-        case BuildingTypeEnum::Windmill:    add("Windmill_0"); break;
-        case BuildingTypeEnum::Lighthouse:  add("Lighthouse"); break;
+        case BuildingTypeEnum::Market:
+            // Market has only one sprite in this pack.
+            add("Market01");
+            break;
+
+        case BuildingTypeEnum::Forge: {
+            const int lvl = std::max(1, level);
+            add("Forge_" + std::to_string(lvl));
+            // Fallback
+            add("Forge_1");
+            break;
+        }
+
+        case BuildingTypeEnum::Sawmill: {
+            const int lvl = std::max(1, level);
+            add("Sawmill_" + std::to_string(lvl));
+            // Fallback
+            add("Sawmill_1");
+            break;
+        }
+
+        case BuildingTypeEnum::Windmill: {
+            const int lvl = std::max(1, level);
+            add("Windmill_" + std::to_string(lvl));
+            // Fallbacks for packs that use 0-based numbering
+            add("Windmill_" + std::to_string(std::max(0, lvl - 1)));
+            add("Windmill_0");
+            add("Windmill_1");
+            break;
+        }        case BuildingTypeEnum::Lighthouse:  add("Lighthouse"); break;
         default: break;
     }
 
@@ -1776,8 +1802,17 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 const BuildingTypeEnum btt = tile.getBuildingType();
                 const sf::Texture& bt = [&]() -> const sf::Texture& {
                     if (!isMonument(btt)) {
-                        return pickFirstExisting(buildingCandidates(btt));
-                    }
+                        // Level-based building sprites (Forge/Sawmill/Windmill). Market stays single-sprite.
+                        PlayerId ownerPid = curPid;
+                        const CityId tcid = tile.getTerritoryCityId();
+                        if (tcid != kNoCity) {
+                            if (const City* cc = game->getCity(tcid)) {
+                                ownerPid = static_cast<PlayerId>(cc->getOwnerId());
+                            }
+                        }
+
+                        const int bLevel = std::max(1, int(BuildingSystem::getBuildingLevel(*game, ownerPid, p)));
+                        return pickFirstExisting(buildingCandidates(btt, bLevel));                    }
 
                     // monument ma być w tribie właściciela terytorium
                     TribeType ownerTribe = tile.getTribe(); // fallback (biom)
@@ -1790,11 +1825,60 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     }
                     return pickFirstExisting(monumentCandidates(ownerTribe, btt));
                 }();
-                // Ports are tall and can disappear if drawn too low; lift them more.
-                float lift = 0.0f; // general buildings
-                if (btt == BuildingTypeEnum::Port) lift = 0.0f;
+                // Adjust size and vertical lift for economic booster buildings so they appear smaller and higher.
+                float lift = 0.0f;
+                float scaleMul = 0.95f;
 
-                const float s = tileSize * 0.95f;
+                switch (btt) {
+                    case BuildingTypeEnum::Market:
+                        // Market sits highest (tall, elevated structure)
+                        lift = 0.6f;
+                        scaleMul = 0.72f;
+                        break;
+
+                    case BuildingTypeEnum::Forge:
+                        lift = 0.32f;
+                        scaleMul = 0.60f;
+                        break;
+
+
+                    case BuildingTypeEnum::Mine:
+                        lift = 0.16f;
+                        scaleMul = 0.60f;
+                        break;
+
+
+                    case BuildingTypeEnum::Windmill:
+                        // Production boosters slightly elevated
+                        lift = 0.28f;
+                        scaleMul = 0.72f;
+                        break;
+
+                    case BuildingTypeEnum::Sawmill:
+                        // Sawmill sits lower and heavier
+                        lift = 0.16f;
+                        scaleMul = 0.72f;
+                        break;
+
+                    case BuildingTypeEnum::Port:
+                        // Ports are tall but already visually correct
+                        lift = 0.05f;
+                        scaleMul = 0.95f;
+                        break;
+
+                    case BuildingTypeEnum::LumberHut:
+                        // Lumber Hut smaller structure
+                        lift = 0.16f;
+                        scaleMul = 0.60f;
+                        break;
+
+                    default:
+                        lift = 0.08f;
+                        scaleMul = 0.90f;
+                        break;
+                }
+
+                const float s = tileSize * scaleMul;
                 aboveDraws.push_back(SpriteDrawCmd{&bt,
                     x + (tileSize - s) * 0.5f,
                     y + (tileSize - s) * 0.5f - lift * tileSize,
@@ -2376,6 +2460,22 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     addLine(ty, std::string("Water path: ") + (st.getRoadBridge() == RoadBridgeEnum::WaterConnection ? "yes" : "no"), 14);
                     addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
                     addLine(ty, std::string("Building: ") + buildingTypeName(st.getBuildingType()), 14);
+
+                    // Building level preview (Polytopia-style)
+                    if (st.getBuildingType() != BuildingTypeEnum::None) {
+                        PlayerId ownerPid = curPid;
+                        const CityId tcid = st.getTerritoryCityId();
+                        if (tcid != kNoCity) {
+                            if (const City* cc = game->getCity(tcid)) {
+                                ownerPid = static_cast<PlayerId>(cc->getOwnerId());
+                            }
+                        }
+
+                        const uint8_t blv = BuildingSystem::getBuildingLevel(*game, ownerPid, selectedPos);
+                        if (blv > 0) {
+                            addLine(ty, "Building level: " + std::to_string(int(blv)), 14);
+                        }
+                    }
 
                     // Resources list (Tile)
                     {

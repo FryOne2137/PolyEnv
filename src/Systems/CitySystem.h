@@ -41,6 +41,7 @@ public:
     static void removeUnitFromAnyCity(Game& game, UnitId unitId);
     static bool transferUnitBetweenCities(Game& game, UnitId unitId, CityId fromCityId, CityId toCityId) ;
 
+
     static bool setCityOwner(Game& game, CityId cityId, uint8_t ownerId);
     static bool setCityName(Game& game, CityId cityId, const std::string& name);
     static bool setCityCapital(Game& game, CityId cityId, bool isCapital);
@@ -69,6 +70,14 @@ public:
     static void blockCityIncomeNextOwnerTurn(Game &game, CityId cityId);
 
     static int consumeAndGetCityIncomeForOwnerTurn(Game &game, PlayerId owner, CityId cityId);
+
+    // --- City upgrade / park state ---
+    static uint8_t getCityParkCount(const Game& game, CityId cityId);
+    static bool setCityParkCount(Game& game, CityId cityId, uint8_t v);
+    static bool addCityParkCount(Game& game, CityId cityId, uint8_t delta = 1);
+
+    static bool setCityWallEnabled(Game& game, CityId cityId, bool enabled);
+    static bool setCityWorkshopEnabled(Game& game, CityId cityId, bool enabled);
 
 private:
 };

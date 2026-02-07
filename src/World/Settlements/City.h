@@ -28,6 +28,9 @@ public:
     void setCapital(bool v) { isCapital = v; }
 
     void setIsInfiltrated(bool v) { isInfiltrated=v; }
+    // Buildings / upgrades toggles
+    void setCityWallEnabled(bool v) { hasCityWall = v; }
+    void setWorkshopEnabled(bool v) { hasWorkshop = v; }
 
 
 
@@ -46,7 +49,12 @@ public:
     bool addPopulation(uint16_t v);
 
     uint8_t maxUnitCapacity() const;
-uint8_t getUnitsCount() const;
+    uint8_t getUnitsCount() const;
+
+    uint8_t getParkCount() const{return parkCount;};
+    void setParkCount(uint8_t v) { parkCount=v;};
+    void addParkCount() { parkCount++;};
+
 
 private:
     CityId cityId = kNoCity;
@@ -54,6 +62,8 @@ private:
     uint8_t level = 1;
     int16_t population = 0;
     uint8_t starsPerRound = 1;
+    uint8_t parkCount = 0;
+
     bool isCapital = false;
     bool isInfiltrated=false;
 
