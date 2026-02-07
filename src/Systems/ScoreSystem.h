@@ -26,9 +26,9 @@ private:
     static int territoryTiles(int tiles);
 
     // ===== UNITS =====
-    static bool isSuperUnit(const Unit& u);
+    static bool isSuperUnit(UnitType t);
     static int costStarsByUnitType(UnitType t);
-    static int getBaseUnitCostStars(const Unit& u);
+    static int getBaseUnitCostStars(const Game &game, UnitId uid);
 
     static int unitCostStars(int stars);
     static int superUnits(int count);

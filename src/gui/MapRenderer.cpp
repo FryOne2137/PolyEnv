@@ -1465,13 +1465,28 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         }
     }
 
-    // --- Road overlay segments (drawn above resources/buildings but below units) ---
+    // --- Road overlay segments (drawn above base tiles but BELOW settlements/buildings/units) ---
     sf::VertexArray roadLines(sf::Triangles);
     roadLines.clear();
 
-    // --- Water connection overlay segments (light blue, above water but below units) ---
+    // --- Water connection overlay segments (light blue, above base tiles but BELOW settlements/buildings/units) ---
     sf::VertexArray waterLines(sf::Triangles);
     waterLines.clear();
+
+    struct SpriteDrawCmd {
+        const sf::Texture* t = nullptr;
+        float x = 0.f;
+        float y = 0.f;
+        float s = 0.f;
+    };
+
+    // Things that should be ABOVE roads/water-lines (cities/villages/resources/buildings), but BELOW unit sprites.
+    std::vector<SpriteDrawCmd> aboveDraws;
+    aboveDraws.reserve(size_t(map.getWidth() * map.getHeight()));
+
+    // Markers that should be ABOVE cities/villages/buildings (move/attack targets, capture hints), but BELOW units.
+    std::vector<SpriteDrawCmd> markerDraws;
+    markerDraws.reserve(size_t(map.getWidth() * map.getHeight()));
 
     struct UnitDrawCmd {
         const Unit* u = nullptr;
@@ -1619,16 +1634,17 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             }
 
             // --- movement targets overlay (gameplay view only) ---
+            // Defer draw so the marker stays visible even on top of villages/cities.
             if (!showOverview && g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
                 const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
                 if (g_moveOverlaySet.find(key) != g_moveOverlaySet.end()) {
-                    // Resolves to: assets/Polytopia_game_engine_textures/misc/moveTarget.png
                     const sf::Texture& mt = pickFirstExisting(globalCandidates("moveTarget"));
                     const float s = tileSize * 0.78f;
-                    drawSprite(rt, mt,
-                               x + (tileSize - s) * 0.5f,
-                               y + (tileSize - s) * 0.5f - 0.10f * tileSize,
-                               s);
+                    markerDraws.push_back(SpriteDrawCmd{&mt,
+                        x + (tileSize - s) * 0.5f,
+                        y + (tileSize - s) * 0.5f - 0.10f * tileSize,
+                        s
+                    });
                 }
             }
 
@@ -1685,50 +1701,54 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
                 const sf::Texture& city = pickFirstExisting(cityPaths);
                 // Lift cities slightly more
-                drawSprite(rt, city, x, y - 0.58f * tileSize, tileSize);
+                aboveDraws.push_back(SpriteDrawCmd{&city, x, y - 0.58f * tileSize, tileSize});
             } else if (isVillage) {
                 const sf::Texture& t = pickFirstExisting(globalCandidates("village"));
                 const float s = tileSize * 0.85f;
                 // Slightly smaller + a bit higher
-                drawSprite(rt, t,
-                           x + (tileSize - s) * 0.5f,
-                           y + (tileSize - s) * 0.5f - 0.24f * tileSize,
-                           s);
+                aboveDraws.push_back(SpriteDrawCmd{&t,
+                    x + (tileSize - s) * 0.5f,
+                    y + (tileSize - s) * 0.5f - 0.24f * tileSize,
+                    s
+                });
             } else if (hasRes(ResourcesEnum::Fruit)) {
                 // Draw fruit slightly smaller and lifted
                 const sf::Texture& t = pickFirstExisting(tileCandidates(tribe, "fruit"));
                 const float s = tileSize * 0.8f;
-                drawSprite(rt, t,
-                           x + (tileSize - s) * 0.5f,
-                           y + (tileSize - s) * 0.5f - 0.07f * tileSize,
-                           s);
+                aboveDraws.push_back(SpriteDrawCmd{&t,
+                    x + (tileSize - s) * 0.5f,
+                    y + (tileSize - s) * 0.5f - 0.07f * tileSize,
+                    s
+                });
             } else if (hasRes(ResourcesEnum::Crops)) {
                 const sf::Texture& t = pickFirstExisting(globalCandidates("crop"));
-                drawSprite(rt, t, x, y, tileSize);
+                aboveDraws.push_back(SpriteDrawCmd{&t, x, y, tileSize});
             } else if (hasRes(ResourcesEnum::Fish)) {
                 const sf::Texture& t = pickFirstExisting(globalCandidates("fish"));
-                drawSprite(rt, t, x, y, tileSize);
+                aboveDraws.push_back(SpriteDrawCmd{&t, x, y, tileSize});
             } else if (hasRes(ResourcesEnum::Metal)) {
                 // Draw metal slightly smaller and lifted
                 const sf::Texture& t = pickFirstExisting(globalCandidates("metal"));
                 const float s = tileSize * 0.5f;
-                drawSprite(rt, t,
-                           x + (tileSize - s) * 0.5f,
-                           y + (tileSize - s) * 0.5f - 0.12f * tileSize,
-                           s);
+                aboveDraws.push_back(SpriteDrawCmd{&t,
+                    x + (tileSize - s) * 0.5f,
+                    y + (tileSize - s) * 0.5f - 0.12f * tileSize,
+                    s
+                });
             } else if (isRuin) {
                 const sf::Texture& t = pickFirstExisting(globalCandidates("ruin"));
-                drawSprite(rt, t, x, y, tileSize);
+                aboveDraws.push_back(SpriteDrawCmd{&t, x, y, tileSize});
             }
 
             // Replace whale with starfish (as you requested).
             if (tile.getSettlementType() == SettlementTypeEnum::Starfish) {                // Draw starfish slightly smaller and lifted
                 const sf::Texture& t = pickFirstExisting(globalCandidates("starfish"));
                 const float s = tileSize * 0.75f;
-                drawSprite(rt, t,
-                           x + (tileSize - s) * 0.5f,
-                           y + (tileSize - s) * 0.5f - 0.06f * tileSize,
-                           s);
+                aboveDraws.push_back(SpriteDrawCmd{&t,
+                    x + (tileSize - s) * 0.5f,
+                    y + (tileSize - s) * 0.5f - 0.06f * tileSize,
+                    s
+                });
             }
             // --- buildings ---
             if (tile.getBuildingType() != BuildingTypeEnum::None) {
@@ -1754,10 +1774,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 if (btt == BuildingTypeEnum::Port) lift = 0.0f;
 
                 const float s = tileSize * 0.95f;
-                drawSprite(rt, bt,
-                           x + (tileSize - s) * 0.5f,
-                           y + (tileSize - s) * 0.5f - lift * tileSize,
-                           s);
+                aboveDraws.push_back(SpriteDrawCmd{&bt,
+                    x + (tileSize - s) * 0.5f,
+                    y + (tileSize - s) * 0.5f - lift * tileSize,
+                    s
+                });
             }
 
             // --- roads overlay (white paths) ---
@@ -1884,10 +1905,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                             "assets/Polytopia_game_engine_textures/misc/attackTarget.PNG"
                         });
                         const float s = tileSize * 0.78f;
-                        drawSprite(rt, at,
-                                   x + (tileSize - s) * 0.5f,
-                                   y + (tileSize - s) * 0.5f - 0.10f * tileSize,
-                                   s);
+                        markerDraws.push_back(SpriteDrawCmd{&at,
+                            x + (tileSize - s) * 0.5f,
+                            y + (tileSize - s) * 0.5f - 0.10f * tileSize,
+                            s
+                        });
                     }
                 }
 
@@ -1914,10 +1936,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                         // Resolves to assets/Polytopia_game_engine_textures/misc/hint.png
                         const sf::Texture& hint = pickFirstExisting(globalCandidates("hint"));
                         const float s = tileSize * 0.70f;
-                        drawSprite(rt, hint,
-                                   x + (tileSize - s) * 0.5f,
-                                   y - 0.85f * tileSize,
-                                   s);
+                        markerDraws.push_back(SpriteDrawCmd{&hint,
+                            x + (tileSize - s) * 0.5f,
+                            y - 0.85f * tileSize,
+                            s
+                        });
                     }
                 }
 
@@ -1937,10 +1960,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     if (canCaptureVillage) {
                         const sf::Texture& hint = pickFirstExisting(globalCandidates("hint"));
                         const float s = tileSize * 0.70f;
-                        drawSprite(rt, hint,
-                                   x + (tileSize - s) * 0.5f,
-                                   y - 0.85f * tileSize,
-                                   s);
+                        markerDraws.push_back(SpriteDrawCmd{&hint,
+                            x + (tileSize - s) * 0.5f,
+                            y - 0.85f * tileSize,
+                            s
+                        });
                     }
                 }
 
@@ -1973,17 +1997,29 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             }
         }
 
-        // --- Draw water connections (above resources/buildings, below units) ---
+        // --- Draw water connections (under settlements/buildings, below units) ---
         if (waterLines.getVertexCount() > 0) {
             rt.draw(waterLines);
         }
 
-        // --- Draw roads (above resources/buildings, below units) ---
+        // --- Draw roads (UNDER villages/cities/buildings, below units) ---
         if (roadLines.getVertexCount() > 0) {
             rt.draw(roadLines);
         }
 
-        // --- Draw queued units (above roads) ---
+        // --- Draw deferred "above" sprites (cities/villages/resources/buildings) ---
+        for (const SpriteDrawCmd& cmd : aboveDraws) {
+            if (!cmd.t) continue;
+            drawSprite(rt, *cmd.t, cmd.x, cmd.y, cmd.s);
+        }
+
+        // --- Draw markers ABOVE villages/cities (move/attack targets, capture hints) ---
+        for (const SpriteDrawCmd& cmd : markerDraws) {
+            if (!cmd.t) continue;
+            drawSprite(rt, *cmd.t, cmd.x, cmd.y, cmd.s);
+        }
+
+        // --- Draw queued units (on top) ---
         for (const UnitDrawCmd& cmd : unitDraws) {
             if (!cmd.u) continue;
 

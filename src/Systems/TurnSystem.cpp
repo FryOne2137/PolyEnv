@@ -5,23 +5,24 @@
 #include "Systems/TurnSystem.h"
 
 #include "Game.h"   // Game, Player, Unit access
+#include "Systems/CitySystem.h"
+#include "Systems/PlayerSystem.h"
 
 
 #include <algorithm>
 
-#include "MonumentSystem.h"
+#include "Systems/MonumentSystem.h"
+#include "Systems/UnitSystem.h"
 
 
 int TurnSystem::calcIncomeForPlayer(const Game& game, PlayerId pid) {
-    const Player& p = game.getPlayer(pid);
 
     // Base income so stars still increase even if city ownership/lookup isn't fully wired yet.
     int income = 0;
 
-    for (CityId cid : p.getCities()) {
-        const City* c = game.getCity(cid);
-        if (!c) continue;
-        income += static_cast<int>(c->getStarsPerRound());
+    for (CityId cid : PlayerSystem::getCities(game, pid)) {
+        if (!CitySystem::cityExists(game, cid)) continue;
+        income += static_cast<int>(CitySystem::getCityStarsPerRound(game, cid));
     }
 
     return std::max(0, income);
@@ -50,22 +51,40 @@ void TurnSystem::endTurn(Game& game) {
     // TODO: end-of-turn effects:
     // - resolve "delayed" effects
     // - cleanup flags if needed
+
+    // Pacifist task (Altar of Peace): count consecutive turns with no attacks.
+    {
+        const PlayerId pid = game.getCurrentPlayerId();
+
+        if (PlayerSystem::getAttackedThisTurn(game, pid)) {
+            PlayerSystem::resetNoAttackTurns(game, pid);
+        } else {
+            PlayerSystem::incrementNoAttackTurns(game, pid);
+        }
+
+        // Clear per-turn attack flag for the next turn.
+        PlayerSystem::setAttackedThisTurn(game, pid, false);
+
+        // Notify monuments.
+        MonumentSystem::onNoAttackTurnsUpdated(
+            game,
+            pid,
+            static_cast<int>(PlayerSystem::getNoAttackTurns(game, pid))
+        );
+    }
 }
 
 void TurnSystem::refreshUnitsForCurrentPlayer(Game& game) {
     // --- adapt this if your Game exposes current player differently ---
     const PlayerId pid = game.getCurrentPlayerId();
 
-    Player& p = game.getPlayer(pid);              // <-- jeśli nie masz, użyj game.players[pid]
-
-    const auto& unitIds = p.getUnits();
+    const auto& unitIds = PlayerSystem::getUnits(game, pid);
     for (UnitId uid : unitIds) {
-        Unit* u = game.getUnit(uid);
-        if (!u) continue;
+        if (!UnitSystem::unitExists(game, uid)) continue;
 
         // reset per-turn flags
-        u->setMovedThisTurn(false);
-        u->setAttackedThisTurn(false);
+        UnitSystem::setMovedThisTurn(game, uid, false);
+        UnitSystem::setAttackedThisTurn(game, uid, false);
 
         // refresh movement points
         // Jeśli trzymasz tylko "movePoints" jako max i potem odejmujesz w ruchu:
@@ -84,20 +103,19 @@ void TurnSystem::refreshUnitsForCurrentPlayer(Game& game) {
         int refreshed = 1;
 
         // Jeżeli masz już UnitFactory/definicje, podmień:
-        // refreshed = UnitFactory::getDefaultMove(u->getType());
+        // refreshed = UnitFactory::getDefaultMove(UnitSystem::getType(game, uid));
         //
         // Na dziś: spróbuj odtworzyć do bieżącej wartości, jeśli jest >0,
         // ale po ruchu mogło być 0, więc ustaw minimum 1.
-        refreshed = std::max(1, u->getMovePoints());
-        u->setMovePoints(refreshed);
+        refreshed = std::max(1, UnitSystem::getMovePoints(game, uid));
+        UnitSystem::setMovePoints(game, uid, refreshed);
     }
 }
 
 void TurnSystem::applyIncomeForCurrentPlayer(Game& game,PlayerId pid) {
-    Player& p = game.getPlayer(pid);
 
     const int income = TurnSystem::calcIncomeForPlayer(game, pid);
     if (income > 0) {
-        p.addStars(income);
+        PlayerSystem::addStars(game, pid, income);
     }
 }

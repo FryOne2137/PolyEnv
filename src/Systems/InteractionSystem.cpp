@@ -7,17 +7,17 @@
 #include "Game.h"
 #include "World/Map.h"
 #include "World/Tile.h"
-#include "World/Settlements/City.h"
-#include "Player/Player.h"
+#include "Systems/CitySystem.h"
 #include "Systems/MonumentSystem.h"
 
 #include "terrain/ResourcesEnum.h"
 #include "terrain/SettlementTypeEnum.h"
-#include "Systems/RewardSystem.h"
 #include "Systems/VisionSystem.h"
 #include "tech/TechDB.h"
 #include "terrain/VisibilityEnum.h"
 #include "UnitFactory.h"
+#include "Systems/UnitSystem.h"
+#include "Systems/PlayerSystem.h"
 
 #include <cstdint>
 #include <iostream>
@@ -63,8 +63,7 @@ static const char* ruinRewardToString(InteractionSystem::RuinReward r) {
 }
 
 void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
-    Unit* unit = game.getUnit(unitId);
-    if (!unit) return;
+    if (!UnitSystem::unitExists(game, unitId)) return;
 
     // Bezpieczeństwo: Interaction odpalamy po udanym ruchu, ale sprawdźmy bounds
     if (!game.getMap().inBounds(pos)) return;
@@ -79,45 +78,43 @@ void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
 }
 
 void InteractionSystem::handleStarfish(Game& game, UnitId unitId, Pos pos) {
-    Unit* unit = game.getUnit(unitId);
-    if (!unit) return;
+    if (!UnitSystem::unitExists(game, unitId)) return;
 
     Tile& tile = game.getMap().at(pos);
 
     if (tile.getSettlementType() != SettlementTypeEnum::Starfish) return;
     // Nagroda
-    game.getPlayer(unit->getOwnerId()).addStars(kStarfishReward);
+    PlayerSystem::addStars(game, UnitSystem::getOwnerId(game, unitId), kStarfishReward);
 
     // Usuń starfish z mapy, żeby nie dało się zebrać drugi raz
     tile.setResource(ResourcesEnum::None);
 }
 
 void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
-    Unit* unit = game.getUnit(unitId);
-    if (!unit) return;
+    if (!UnitSystem::unitExists(game, unitId)) return;
 
     if (!game.getMap().inBounds(pos)) return;
 
     // Must be standing on the ruin tile.
-    const Pos up = unit->getPos();
+    const Pos up = UnitSystem::getPos(game, unitId);
     if (up.x != pos.x || up.y != pos.y) return;
 
     // Same action gating as village/city capture: must start the turn here.
-    if (unit->movedThisTurn() || unit->attackedThisTurn()) return;
+    if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
 
     Tile& tile = game.getMap().at(pos);
     if (tile.getSettlementType() != SettlementTypeEnum::Ruin) return;
 
-    Player& pl = game.getPlayer(unit->getOwnerId());
-    const RuinReward reward = rollRuinReward(game, pl, pos);
+    const PlayerId pid = UnitSystem::getOwnerId(game, unitId);
+    const RuinReward reward = rollRuinReward(game, pid, pos);
 
     std::cout << "[RuinReward] " << ruinRewardToString(reward) << std::endl;
 
 
     switch (reward) {
         case RuinReward::Stars:
-            pl.addStars(kRuinStarsReward);
-            MonumentSystem::onStarsUpdated(game,unit->getOwnerId());
+            PlayerSystem::addStars(game, pid, kRuinStarsReward);
+            MonumentSystem::onStarsUpdated(game, pid);
 
             break;
 
@@ -126,32 +123,39 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
             const uint32_t seed = static_cast<uint32_t>(game.getWorldSeed());
             const uint32_t tr = ruinRng(seed, pos, 0xC0FFEEu);
 
-            TechId tech = TechDB::rollRandomObtainableTechThisRound(pl.getTechs(), tr);
-            if (tech != TechId::Count && !pl.hasTech(tech)) {
-                pl.addTech(tech);
+            TechId tech = TechDB::rollRandomObtainableTechThisRound(PlayerSystem::getTechs(game, pid), tr);
+            if (tech != TechId::Count && !PlayerSystem::hasTech(game, pid, tech)) {
+                PlayerSystem::addTech(game, pid, tech);
             } else {
                 // fallback (should be rare): give stars if no tech available
-                pl.addStars(kRuinStarsReward);
-                MonumentSystem::onStarsUpdated(game,unit->getOwnerId());
+                PlayerSystem::addStars(game, pid, kRuinStarsReward);
+                MonumentSystem::onStarsUpdated(game, pid);
 
             }
             break;
         }
 
         case RuinReward::Population: {
-            if (City* cap = game.getCity(pl.getCapitalId())) {
-                cap->addPopulation(3);
-                MonumentSystem::onCityReachedLevel5(game,pos);
-            } else {
-                pl.addStars(kRuinStarsReward);
-                MonumentSystem::onStarsUpdated(game,unit->getOwnerId());
+            const CityId capId = PlayerSystem::getCapitalId(game, pid);
+            if (capId != kNoCity && CitySystem::cityExists(game, capId)) {
+                const uint8_t oldLevel = CitySystem::getCityLevel(game, capId);
 
+                (void)CitySystem::addPopulation(game, capId, 3);
+
+                const uint8_t newLevel = CitySystem::getCityLevel(game, capId);
+                if (oldLevel < 5 && newLevel >= 5) {
+                    // Call monument hook using the actual city position (not the ruin tile).
+                    MonumentSystem::onCityReachedLevel5(game, CitySystem::getCityPos(game, capId));
+                }
+            } else {
+                PlayerSystem::addStars(game, pid, kRuinStarsReward);
+                MonumentSystem::onStarsUpdated(game, pid);
             }
             break;
         }
 
         case RuinReward::Explorer:
-            VisionSystem::doExplorer(game, unit->getOwnerId(), pos);
+            VisionSystem::doExplorer(game, pid, pos);
             break;
 
         case RuinReward::VeteranUnit: {
@@ -169,7 +173,7 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
                 tile.getBaseTerrain() == BaseTerrainEnum::Water ||
                 tile.getBaseTerrain() == BaseTerrainEnum::Ocean;
 
-            const PlayerId owner = pl.getId();
+            const PlayerId owner = pid;
 
             UnitId uid;
             if (isWater) {
@@ -201,12 +205,11 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
             // Consumes the whole turn.
     tile.setResource(ResourcesEnum::None);
     tile.setSettlement(SettlementTypeEnum::None, kNoSettlement);
-    unit->setAttackedThisTurn(true);
-
-    unit->setMovedThisTurn(true);
+    UnitSystem::setAttackedThisTurn(game, unitId, true);
+    UnitSystem::setMovedThisTurn(game, unitId, true);
 }
 
-InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Player& player, Pos ruinPos) {
+InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, PlayerId pid, Pos ruinPos) {
     const uint32_t seed = static_cast<uint32_t>(game.getWorldSeed());
     const uint32_t r = ruinRng(seed, ruinPos, 0xBEEF);
 
@@ -219,9 +222,9 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
     // tech jeśli jest coś do zbadania
     for (uint8_t i = 0; i < TechDB::TECH_COUNT; ++i) {
         TechId t = static_cast<TechId>(i);
-        if (!player.hasTech(t)) {
+        if (!PlayerSystem::hasTech(game, pid, t)) {
             TechId pre = TechDB::getPrerequisite(t);
-            if (pre == TechId::Count || player.hasTech(pre)) {
+            if (pre == TechId::Count || PlayerSystem::hasTech(game, pid, pre)) {
                 pool.push_back(RuinReward::Tech);
                 break;
             }
@@ -229,7 +232,7 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
     }
 
     // population jeśli jest stolica
-    if (player.getCapitalId() != kNoCity) {
+    if (PlayerSystem::getCapitalId(game, pid) != kNoCity) {
         pool.push_back(RuinReward::Population);
     }
 
@@ -247,16 +250,15 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
 
 
 void InteractionSystem::handleVillage(Game& game, UnitId unitId, Pos pos) {
-    Unit* unit = game.getUnit(unitId);
-    if (!unit) return;
+    if (!UnitSystem::unitExists(game, unitId)) return;
 
     Tile& tile = game.getMap().at(pos);
-    if (unit->movedThisTurn() || unit->attackedThisTurn()) return;
+    if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
 
     if (tile.getSettlementType() != SettlementTypeEnum::Village) return;
 
     // Convert Village -> City on this tile
-    const PlayerId owner = unit->getOwnerId();
+    const PlayerId owner = UnitSystem::getOwnerId(game, unitId);
 
     // 1) Change tile settlement type (id is assigned in foundCityFromVillage)
     tile.setSettlement(SettlementTypeEnum::City, kNoSettlement);
@@ -265,13 +267,12 @@ void InteractionSystem::handleVillage(Game& game, UnitId unitId, Pos pos) {
     game.foundCityFromVillage(owner, pos);
 
     // 3) Consumes the whole turn: unit cannot move anymore this round
-    unit->setMovedThisTurn(true);
-    unit->setAttackedThisTurn(true);
+    UnitSystem::setMovedThisTurn(game, unitId, true);
+    UnitSystem::setAttackedThisTurn(game, unitId, true);
 }
 
 void InteractionSystem::handleCityCapture(Game& game, UnitId unitId, Pos pos) {
-    Unit* unit = game.getUnit(unitId);
-    if (!unit) return;
+    if (!UnitSystem::unitExists(game, unitId)) return;
 
     if (!game.getMap().inBounds(pos)) return;
 
@@ -279,16 +280,16 @@ void InteractionSystem::handleCityCapture(Game& game, UnitId unitId, Pos pos) {
     if (tile.getSettlementType() != SettlementTypeEnum::City) return;
 
     // Only allow capture if the unit is standing on the city tile.
-    const Pos up = unit->getPos();
+    const Pos up = UnitSystem::getPos(game, unitId);
     if (up.x != pos.x || up.y != pos.y) return;
 
     // Capturing consumes the whole turn.
-    if (unit->movedThisTurn() || unit->attackedThisTurn()) return;
+    if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
 
-    const PlayerId capturer = unit->getOwnerId();
+    const PlayerId capturer = UnitSystem::getOwnerId(game, unitId);
     if (!game.captureCityAt(capturer, pos)) return;
 
-    unit->setMovedThisTurn(true);
-    unit->setAttackedThisTurn(true);
+    UnitSystem::setMovedThisTurn(game, unitId, true);
+    UnitSystem::setAttackedThisTurn(game, unitId, true);
 
 }

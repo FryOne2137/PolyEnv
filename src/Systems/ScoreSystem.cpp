@@ -7,19 +7,21 @@
 
 #include <algorithm>
 
+#include "CitySystem.h"
 #include "Game.h"
+#include "PlayerSystem.h"
+#include "UnitSystem.h"
 #include "VisionSystem.h"
 
 int ScoreSystem::getScore(const Game& game, const PlayerId pid) {
 
-    const Player& player = game.getPlayer(pid);
     const Map& map = game.getMap();
 
 
     int score = 0;
 
     // ---- base (tribe) ----
-    score += startingScore(player.getTribeType());
+    score += startingScore(PlayerSystem::getTribeType(game,pid));
 
     // ---- MAP / EXPLORATION ----
     const int revealedTiles = VisionSystem::countRevealedTiles(game, pid);
@@ -27,12 +29,11 @@ int ScoreSystem::getScore(const Game& game, const PlayerId pid) {
 
     // ---- CITIES ----
     // ---- CITIES ----
-    for (CityId cid : player.getCities()) {
-        const City* city = game.getCity(cid);
-        if (!city) continue;
+    for (CityId cid : PlayerSystem::getCities(game,pid)) {
 
-        // city base + level ups
-        score += cityLevel(city->getLevel(), city->getPopulation());
+        CitySystem::cityExists(game,cid);
+
+        score += cityLevel(CitySystem::getCityLevel(game,cid), CitySystem::getCityPopulation(game,cid));
 
         int territoryCount = 0;
         int monumentsCount = 0;
@@ -58,17 +59,18 @@ int ScoreSystem::getScore(const Game& game, const PlayerId pid) {
     int totalUnitCostStars = 0;
     int superCount = 0;
 
-    for (UnitId uid : player.getUnits()) {
-        const Unit* u = game.getUnit(uid);
-        if (!u) continue;
+    // for (UnitId uid : player.getUnits()) {
+    for (UnitId uid : PlayerSystem::getUnits(game,pid)) {
+        if (!UnitSystem::unitExists(game, uid))
+            continue;
 
-        const int cost = u->isEmbarked()
-            ? getBaseUnitCostStars(*u)
-            : u->getCost();
+        const int cost = UnitSystem::isEmbarked(game, uid)
+            ? getBaseUnitCostStars(game, uid)
+            : UnitSystem::getCost(game, uid);
 
         totalUnitCostStars += std::max(0, cost);
 
-        if (isSuperUnit(*u)) {
+        if (isSuperUnit(UnitSystem::getType(game, uid))) {
             ++superCount;
         }
     }
@@ -79,7 +81,7 @@ int ScoreSystem::getScore(const Game& game, const PlayerId pid) {
 
 
     // ---- TECHNOLOGIES ----
-    for (TechId tech : player.getTechs()) {
+    for (TechId tech : PlayerSystem::getTechs(game,pid)) {
         const TechTier tier = TechDB::getTech(tech).tier;
         score += techTier(static_cast<int>(tier)); // tier 1->100, tier2->200, tier3->300
 
@@ -178,10 +180,10 @@ int ScoreSystem::techTier(int tier) {
 }
 
 // ---- local helpers (ScoreSystem.cpp only) ----
-bool ScoreSystem::isSuperUnit(const Unit& u) {
+bool ScoreSystem::isSuperUnit(UnitType t) {
     // Keep this conservative: count only true super units.
     // If you later tag them in UnitDB, replace this function.
-    switch (u.getType()) {
+    switch (t) {
         case UnitType::Giant:
         case UnitType::Gaami:
         case UnitType::CrabAq:
@@ -225,14 +227,14 @@ int ScoreSystem::costStarsByUnitType(UnitType t) {
     }
 }
 
-int ScoreSystem::getBaseUnitCostStars(const Unit& u) {
+int ScoreSystem::getBaseUnitCostStars(const Game& game, UnitId uid) {
     // If embarked, score should use the base land unit cost.
-    const UnitType base = u.getEmbarkedBaseType();
+    const UnitType base = UnitSystem::getEmbarkedBaseType(game, uid);
     const int mapped = costStarsByUnitType(base);
     if (mapped >= 0) return mapped;
 
     // fallback: if mapping missing, use current stored cost
-    return u.getCost();
+    return UnitSystem::getCost(game, uid);
 }
 
 bool ScoreSystem::isMonument(BuildingTypeEnum b) {

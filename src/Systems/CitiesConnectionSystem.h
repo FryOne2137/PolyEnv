@@ -17,7 +17,7 @@ class Game;
 // if the connection is later lost, that population is removed.
 class CitiesConnectionSystem {
 public:
-    void update(Game& game);
+    static void update(Game& game);
 
 private:
     // Per-player: set of CityIds connected to the capital (excluding the capital).

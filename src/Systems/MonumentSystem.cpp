@@ -7,8 +7,8 @@
 #include <cstddef>
 
 #include "Game.h"
-#include "Player/Player.h"
-#include "World/Settlements/City.h"
+#include "Systems/CitySystem.h"
+#include "Systems/PlayerSystem.h"
 #include "terrain/BuildingTypeEnum.h"
 #include "World/Map.h"
 #include "World/Pos.h"
@@ -31,10 +31,9 @@ static bool isMonument(BuildingTypeEnum t) {
 
 void MonumentSystem::onConnectedCitiesUpdated(Game& game, PlayerId pid, size_t connectedNonCapitalCities) {
     if (connectedNonCapitalCities < 5) return;
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
-    Player& pl = game.getPlayer(pid);
-    (void)pl.addMonument(BuildingTypeEnum::GrandBazaar);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::GrandBazaar);
 }
 
 void MonumentSystem::onCityReachedLevel5(Game& game, Pos pos) {
@@ -44,75 +43,63 @@ void MonumentSystem::onCityReachedLevel5(Game& game, Pos pos) {
     const CityId cid = t.getTerritoryCityId();
     if (cid == kNoCity) return;
 
-    City* c = game.getCity(cid);
-    if (!c) return;
+    if (!CitySystem::cityExists(game, cid)) return;
 
     // ✅ Safety: only award when the city is actually level 5+
-    if (c->getLevel() < 5) return;
+    if (CitySystem::getCityLevel(game, cid) < 5) return;
 
-    const PlayerId pid = static_cast<PlayerId>(c->getOwnerId());
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
+    const PlayerId pid = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
-    Player& pl = game.getPlayer(pid);
-    (void)pl.addMonument(BuildingTypeEnum::ParkOfFortune);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::ParkOfFortune);
 }
 
 
 void MonumentSystem::onLighthouseCountUpdated(Game& game, PlayerId pid, int lighthouseCount) {
     if (lighthouseCount < 4) return;
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
-    Player& pl = game.getPlayer(pid);
-    (void)pl.addMonument(BuildingTypeEnum::EyeOfGod);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::EyeOfGod);
 }
 
 void MonumentSystem::onStarsUpdated(Game& game, PlayerId pid) {
-    Player& pl = game.getPlayer(pid);
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
-    if (pl.getStars() < 100) return;
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
-
+    if (PlayerSystem::getStars(game, pid) < 100) return;
 
     // Emperor's Tomb requires Trade tech
-    if (!pl.hasTech(TechId::Trade)) return;
+    if (!PlayerSystem::hasTech(game, pid, TechId::Trade)) return;
 
-    (void)pl.addMonument(BuildingTypeEnum::EmperorsTomb);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::EmperorsTomb);
 }
 
 void MonumentSystem::onKillsUpdated(Game& game, PlayerId pid, int totalKills) {
     if (totalKills < 10) return;
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
-    Player& pl = game.getPlayer(pid);
-    (void)pl.addMonument(BuildingTypeEnum::GateOfPower);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::GateOfPower);
 }
 
 void MonumentSystem::onNoAttackTurnsUpdated(Game& game, PlayerId pid, int noAttackTurns) {
     if (noAttackTurns < 5) return;
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
-
-    Player& pl = game.getPlayer(pid);
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
     // Polytopia: Pacifist task is unlocked by Meditation tech.
-    if (!pl.hasTech(TechId::Meditation)) return;
+    if (!PlayerSystem::hasTech(game, pid, TechId::Meditation)) return;
 
-    (void)pl.addMonument(BuildingTypeEnum::AltarOfPeace);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::AltarOfPeace);
 }
 
 void MonumentSystem::onAllTechUnlockedUpdated(Game& game, PlayerId pid, bool allTechUnlocked) {
     if (!allTechUnlocked) return;
-    if (static_cast<size_t>(pid) >= game.getPlayers().size()) return;
+    if (!PlayerSystem::playerExists(game, pid)) return;
 
-    Player& pl = game.getPlayer(pid);
-    (void)pl.addMonument(BuildingTypeEnum::TowerOfWisdom);
+    (void)PlayerSystem::addMonument(game, pid, BuildingTypeEnum::TowerOfWisdom);
 }
 
 
-bool MonumentSystem::checkCityLevelForMonument(Game& game, City* c) {
-    if (!c) return false;
-
-    if (c->getLevel()>=5) return true;
-    return false;
-
+bool MonumentSystem::checkCityLevelForMonument(Game& game, CityId cid) {
+    if (cid == kNoCity) return false;
+    if (!CitySystem::cityExists(game, cid)) return false;
+    return CitySystem::getCityLevel(game, cid) >= 5;
 }
-

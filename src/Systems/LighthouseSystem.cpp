@@ -7,8 +7,9 @@
 #include "Game.h"
 #include "World/Map.h"
 #include "World/Tile.h"
-#include "World/Settlements/City.h"
+#include "Systems/CitySystem.h"
 #include "Systems/MonumentSystem.h"
+#include "Systems/PlayerSystem.h"
 
 static inline int mapMaxCoord(const Map& map) {
     return map.getWidth() - 1;
@@ -46,41 +47,53 @@ bool LighthouseSystem::onTileRevealed(Game& game, PlayerId pid, Pos p) {
 
     // ---- Reward: +1 population ----
     {
-        Player& pl = game.getPlayer(pid);
-        City* target = nullptr;
+        CityId targetCid = kNoCity;
 
         // Prefer capital
-        const CityId capId = pl.getCapitalId();
-        if (capId != kNoCity) {
-            target = game.getCity(capId);
+        const CityId capId = PlayerSystem::getCapitalId(game, pid);
+        if (capId != kNoCity && CitySystem::cityExists(game, capId)) {
+            targetCid = capId;
         }
 
         // Fallback: highest level, then highest population
-        if (!target) {
-            City* best = nullptr;
-            for (CityId cid : pl.getCities()) {
-                City* c = game.getCity(cid);
-                if (!c) continue;
+        if (targetCid == kNoCity) {
+            CityId bestCid = kNoCity;
+            for (CityId cid : PlayerSystem::getCities(game, pid)) {
+                if (cid == kNoCity) continue;
+                if (!CitySystem::cityExists(game, cid)) continue;
 
-                if (!best ||
-                    c->getLevel() > best->getLevel() ||
-                    (c->getLevel() == best->getLevel() &&
-                     c->getPopulation() > best->getPopulation())) {
-                    best = c;
+                if (bestCid == kNoCity) {
+                    bestCid = cid;
+                    continue;
+                }
+
+                const uint8_t lvl  = CitySystem::getCityLevel(game, cid);
+                const uint8_t blvl = CitySystem::getCityLevel(game, bestCid);
+                if (lvl > blvl) {
+                    bestCid = cid;
+                    continue;
+                }
+
+                if (lvl == blvl) {
+                    const int16_t pop  = CitySystem::getCityPopulation(game, cid);
+                    const int16_t bpop = CitySystem::getCityPopulation(game, bestCid);
+                    if (pop > bpop) {
+                        bestCid = cid;
+                    }
                 }
             }
-            target = best;
+            targetCid = bestCid;
         }
 
-        if (target) {
-            const uint8_t oldLevel = target->getLevel();
+        if (targetCid != kNoCity) {
+            const uint8_t oldLevel = CitySystem::getCityLevel(game, targetCid);
 
-            (void)target->addPopulation(1);
-            const uint8_t newLevel = target->getLevel();
+            (void)CitySystem::addPopulation(game, targetCid, 1);
+
+            const uint8_t newLevel = CitySystem::getCityLevel(game, targetCid);
             if (oldLevel < 5 && newLevel >= 5) {
-                MonumentSystem::onCityReachedLevel5(game, target->getPos());
+                MonumentSystem::onCityReachedLevel5(game, CitySystem::getCityPos(game, targetCid));
             }
-
         }
     }
 

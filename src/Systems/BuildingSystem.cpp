@@ -1,8 +1,10 @@
 #include "Systems/BuildingSystem.h"
 
 #include "Game.h"
+#include "CitiesConnectionSystem.h"
+#include "Systems/CitySystem.h"
+#include "Systems/PlayerSystem.h"
 #include "World/Tile.h"
-#include "Player/Player.h"
 #include "Buildings/BuildingDB.h"
 #include "terrain/BuildingTypeEnum.h"
 
@@ -44,9 +46,8 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
 
     // Monument rules: must be earned first and can only be placed once.
     if (isMonument(type)) {
-        const Player& pl = game.getPlayer(pid);
-        if (!pl.hasEarnedMonument(type)) return false;
-        if (pl.hasPlacedMonument(type)) return false;
+        if (!PlayerSystem::hasEarnedMonument(game, pid, type)) return false;
+        if (PlayerSystem::hasPlacedMonument(game, pid, type)) return false;
     }
 
     if (bi.requiresTerritory && tile.getTerritoryCityId() == kNoCity) return false;
@@ -58,11 +59,11 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
     }
 
     if (bi.requiredTech != TechId::Count) {
-        if (!game.getPlayer(pid).hasTech(bi.requiredTech)) return false;
+        if (!PlayerSystem::hasTech(game, pid, bi.requiredTech)) return false;
     }
 
     const int cost = BuildingDB::getCost(type);
-    if (cost > 0 && game.getPlayer(pid).getStars() < cost) return false;
+    if (cost > 0 && PlayerSystem::getStars(game, pid) < cost) return false;
 
     return true;
 }
@@ -71,24 +72,26 @@ bool BuildingSystem::build(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum t
     if (!canBuild(game, pid, pos, type)) return false;
 
     Tile& tile = game.getMap().at(pos);
-    Player& p = game.getPlayer(pid);
 
     const int cost = BuildingDB::getCost(type);
-    if (!p.spendStars(cost)) return false;
+    if (!PlayerSystem::spendStars(game, pid, cost)) return false;
 
     tile.setBuildingType(type);
 
+    // Ports affect city connections.
+    if (type == BuildingTypeEnum::Port) {
+        CitiesConnectionSystem::update(game);
+    }
+
     if (isMonument(type)) {
-        (void)p.placeMonument(type);
+        (void)PlayerSystem::placeMonument(game, pid, type);
     }
 
     const CityId cid = tile.getTerritoryCityId();
-    if (cid != kNoCity) {
-        if (City* c = game.getCity(cid)) {
-            const auto& bi = BuildingDB::info(type);
-            const uint8_t addPop = static_cast<uint8_t>(bi.populationGain);
-            (void)c->addPopulation(addPop);
-        }
+    if (cid != kNoCity && CitySystem::cityExists(game, cid)) {
+        const auto& bi = BuildingDB::info(type);
+        const uint16_t addPop = static_cast<uint16_t>(bi.populationGain);
+        (void)CitySystem::addPopulation(game, cid, addPop);
     }
 
     return true;

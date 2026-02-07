@@ -7,6 +7,9 @@
 #include "World/Tile.h"
 #include "units/UnitFactory.h"
 #include "Systems/VisionSystem.h"
+#include "Systems/CitySystem.h" // provides CitySystem
+#include "Systems/UnitSystem.h" // provides UnitSystem
+#include "Systems/PlayerSystem.h" // provides PlayerSystem
 
 static bool isInOwnedCityTerritory(const Game& game, PlayerId ownerId, Pos pos) {
     const Map& map = game.getMap();
@@ -20,32 +23,25 @@ static bool isInOwnedCityTerritory(const Game& game, PlayerId ownerId, Pos pos) 
         return false;
     }
 
-    const City* c = game.getCity(cid);
-    if (!c) {
-        return false;
-    }
-
-    return static_cast<PlayerId>(c->getOwnerId()) == ownerId;
+    const uint8_t cityOwner = CitySystem::getCityOwner(game, cid);
+    return static_cast<PlayerId>(cityOwner) == ownerId;
 }
-#include "Unit.h"
-#include "units/UnitFactory.h"
 
 // Promote unit to veteran (Polytopia-like rules)
 bool UnitUpgradeSystem::becomeVeteran(Game& game, UnitId unitId) {
-    Unit* u = game.getUnit(unitId);
-    if (!u) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    if (u->isVeteran() || u->hasSkill(UnitSkill::StaticSkill)) {
+    if (UnitSystem::isVeteran(game, unitId) || UnitSystem::hasSkill(game, unitId, UnitSkill::StaticSkill)) {
         return false;
     }
 
-    u->setVeteran(true);
+    (void)UnitSystem::setVeteran(game, unitId, true);
 
-    const int newMaxHp = u->getMaxHealth() + 5;
-    u->setMaxHealth(newMaxHp);
-    u->setHealth(newMaxHp);
+    const int newMaxHp = UnitSystem::getMaxHealth(game, unitId) + 5;
+    (void)UnitSystem::setMaxHealth(game, unitId, newMaxHp);
+    (void)UnitSystem::setHealth(game, unitId, newMaxHp);
 
     // No-op for fog if vision doesn't change, but safe if you later tie vision to veterancy.
     VisionSystem::revealFromUnit(game, unitId);
@@ -55,37 +51,37 @@ bool UnitUpgradeSystem::becomeVeteran(Game& game, UnitId unitId) {
 
 
 bool UnitUpgradeSystem::canUnitBecomeVeteran(const Game& game, UnitId unitId) {
-    const Unit *u = game.getUnit(unitId);
-    if (!u) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
-    return (!u->isVeteran() && !u->hasSkill(UnitSkill::StaticSkill) && u->getKillCounter() >= 3);
+
+    return (!UnitSystem::isVeteran(game, unitId) &&
+            !UnitSystem::hasSkill(game, unitId, UnitSkill::StaticSkill) &&
+            UnitSystem::getKillCounter(game, unitId) >= 3);
 }
 
 bool UnitUpgradeSystem::canUpgradeRaftToScout(const Game& game, UnitId unitId) {
-    const Unit* u = game.getUnit(unitId);
-    if (!u) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    if (u->getType() != UnitType::Raft) {
+    if (UnitSystem::getType(game, unitId) != UnitType::Raft) {
         return false;
     }
 
-    const PlayerId ownerId = u->getOwnerId();
+    const PlayerId ownerId = UnitSystem::getOwnerId(game, unitId);
     // Upgrades only allowed on tiles that belong to the player's city territory
-    if (!isInOwnedCityTerritory(game, ownerId, u->getPos())) {
+    if (!isInOwnedCityTerritory(game, ownerId, UnitSystem::getPos(game, unitId))) {
         return false;
     }
-    const Player& owner = game.getPlayer(ownerId);
 
     const int kScoutUpgradeCost = std::max(0, UnitFactory::getUnitCost(UnitType::Scout));
 
-    if (!owner.hasTech(TechId::Sailing)) {
+    if (!PlayerSystem::hasTech(game, ownerId, TechId::Sailing)) {
         return false;
     }
 
-    if (owner.getStars() < kScoutUpgradeCost) {
+    if (PlayerSystem::getStars(game, ownerId) < kScoutUpgradeCost) {
         return false;
     }
 
@@ -93,31 +89,29 @@ bool UnitUpgradeSystem::canUpgradeRaftToScout(const Game& game, UnitId unitId) {
 }
 
 bool UnitUpgradeSystem::canUpgradeRaftToRammer(const Game& game, UnitId unitId) {
-    const Unit* u = game.getUnit(unitId);
-    if (!u) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    if (u->getType() != UnitType::Raft) {
+    if (UnitSystem::getType(game, unitId) != UnitType::Raft) {
         return false;
     }
 
-    const PlayerId ownerId = u->getOwnerId();
+    const PlayerId ownerId = UnitSystem::getOwnerId(game, unitId);
     // Upgrades only allowed on tiles that belong to the player's city territory
-    if (!isInOwnedCityTerritory(game, ownerId, u->getPos())) {
+    if (!isInOwnedCityTerritory(game, ownerId, UnitSystem::getPos(game, unitId))) {
         return false;
     }
-    const Player& owner = game.getPlayer(ownerId);
 
     const int kRammerUpgradeCost = std::max(0, UnitFactory::getUnitCost(UnitType::Rammer));
 
     // Tech requirement (keep consistent with existing style)
-    if (!owner.hasTech(TechId::Ramming)) {
+    if (!PlayerSystem::hasTech(game, ownerId, TechId::Ramming)) {
         return false;
     }
 
     // Only check affordability, do NOT modify player state
-    if (owner.getStars() < kRammerUpgradeCost) {
+    if (PlayerSystem::getStars(game, ownerId) < kRammerUpgradeCost) {
         return false;
     }
 
@@ -125,31 +119,29 @@ bool UnitUpgradeSystem::canUpgradeRaftToRammer(const Game& game, UnitId unitId) 
 }
 
 bool UnitUpgradeSystem::canUpgradeRaftToBomber(const Game& game, UnitId unitId) {
-    const Unit* u = game.getUnit(unitId);
-    if (!u) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    if (u->getType() != UnitType::Raft) {
+    if (UnitSystem::getType(game, unitId) != UnitType::Raft) {
         return false;
     }
 
-    const PlayerId ownerId = u->getOwnerId();
+    const PlayerId ownerId = UnitSystem::getOwnerId(game, unitId);
     // Upgrades only allowed on tiles that belong to the player's city territory
-    if (!isInOwnedCityTerritory(game, ownerId, u->getPos())) {
+    if (!isInOwnedCityTerritory(game, ownerId, UnitSystem::getPos(game, unitId))) {
         return false;
     }
-    const Player& owner = game.getPlayer(ownerId);
 
     const int kBomberUpgradeCost = std::max(0, UnitFactory::getUnitCost(UnitType::Bomber));
 
     // Tech requirement (keep consistent with existing style)
-    if (!owner.hasTech(TechId::Navigation)) {
+    if (!PlayerSystem::hasTech(game, ownerId, TechId::Navigation)) {
         return false;
     }
 
     // Only check affordability, do NOT modify player state
-    if (owner.getStars() < kBomberUpgradeCost) {
+    if (PlayerSystem::getStars(game, ownerId) < kBomberUpgradeCost) {
         return false;
     }
 
@@ -161,33 +153,31 @@ bool UnitUpgradeSystem::upgradeRaftToScout(Game& game, UnitId unitId) {
         return false;
     }
 
-    Unit* oldUnit = game.getUnit(unitId);
-    if (!oldUnit) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    Player& owner = game.getPlayer(oldUnit->getOwnerId());
+    const PlayerId ownerId = UnitSystem::getOwnerId(game, unitId);
     const int cost = std::max(0, UnitFactory::getUnitCost(UnitType::Scout));
-    if (!owner.spendStars(cost)) {
+    if (!PlayerSystem::spendStars(game, ownerId, cost)) {
         return false;
     }
 
     // Preserve Raft HP and Max HP
-    const int oldHp = oldUnit->getHealth();
-    const int oldMaxHp = oldUnit->getMaxHealth();
-    const bool poisoned = oldUnit->poisoned();
-    const bool veteran = oldUnit->isVeteran();
-    const int kills = oldUnit->getKillCounter();
-    const bool wasEmbarked = oldUnit->isEmbarked();
-    const UnitType baseType = oldUnit->getEmbarkedBaseType();
-    const bool hasMoved= oldUnit->movedThisTurn();
-    bool hasAttackedThisTurn= oldUnit->attackedThisTurn();
+    const int oldHp = UnitSystem::getHealth(game, unitId);
+    const int oldMaxHp = UnitSystem::getMaxHealth(game, unitId);
+    const bool poisoned = UnitSystem::isPoisoned(game, unitId);
+    const bool veteran = UnitSystem::isVeteran(game, unitId);
+    const int kills = UnitSystem::getKillCounter(game, unitId);
+    const bool wasEmbarked = UnitSystem::isEmbarked(game, unitId);
+    const UnitType baseType = UnitSystem::getEmbarkedBaseType(game, unitId);
+    const bool hasMoved = UnitSystem::movedThisTurn(game, unitId);
+    bool hasAttackedThisTurn = UnitSystem::attackedThisTurn(game, unitId);
 
-    const PlayerId ownerId = oldUnit->getOwnerId();
-    const Pos pos = oldUnit->getPos();
+    const Pos pos = UnitSystem::getPos(game, unitId);
 
     if (hasMoved) {
-        hasAttackedThisTurn=true;
+        hasAttackedThisTurn = true;
     }
 
 
@@ -210,7 +200,9 @@ bool UnitUpgradeSystem::upgradeRaftToScout(Game& game, UnitId unitId) {
         upgraded.setEmbarkedBaseType(baseType);
     }
 
-    *oldUnit = upgraded;
+    if (!UnitSystem::replaceUnit(game, unitId, upgraded)) {
+        return false;
+    }
 
     // Upgraded unit may have different vision range – reveal accordingly.
     VisionSystem::revealFromUnit(game, unitId);
@@ -223,28 +215,26 @@ bool UnitUpgradeSystem::upgradeRaftToRammer(Game& game, UnitId unitId) {
         return false;
     }
 
-    Unit* oldUnit = game.getUnit(unitId);
-    if (!oldUnit) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    Player& owner = game.getPlayer(oldUnit->getOwnerId());
+    const PlayerId ownerId = UnitSystem::getOwnerId(game, unitId);
     const int cost = std::max(0, UnitFactory::getUnitCost(UnitType::Rammer));
-    if (!owner.spendStars(cost)) {
+    if (!PlayerSystem::spendStars(game, ownerId, cost)) {
         return false;
     }
 
     // Preserve Raft HP and Max HP
-    const int oldHp = oldUnit->getHealth();
-    const int oldMaxHp = oldUnit->getMaxHealth();
-    const bool poisoned = oldUnit->poisoned();
-    const bool veteran = oldUnit->isVeteran();
-    const int kills = oldUnit->getKillCounter();
-    const bool wasEmbarked = oldUnit->isEmbarked();
-    const UnitType baseType = oldUnit->getEmbarkedBaseType();
+    const int oldHp = UnitSystem::getHealth(game, unitId);
+    const int oldMaxHp = UnitSystem::getMaxHealth(game, unitId);
+    const bool poisoned = UnitSystem::isPoisoned(game, unitId);
+    const bool veteran = UnitSystem::isVeteran(game, unitId);
+    const int kills = UnitSystem::getKillCounter(game, unitId);
+    const bool wasEmbarked = UnitSystem::isEmbarked(game, unitId);
+    const UnitType baseType = UnitSystem::getEmbarkedBaseType(game, unitId);
 
-    const PlayerId ownerId = oldUnit->getOwnerId();
-    const Pos pos = oldUnit->getPos();
+    const Pos pos = UnitSystem::getPos(game, unitId);
 
     Unit upgraded = UnitFactory::create(UnitType::Rammer, ownerId, pos);
     upgraded.setId(unitId);
@@ -263,7 +253,9 @@ bool UnitUpgradeSystem::upgradeRaftToRammer(Game& game, UnitId unitId) {
         upgraded.setEmbarkedBaseType(baseType);
     }
 
-    *oldUnit = upgraded;
+    if (!UnitSystem::replaceUnit(game, unitId, upgraded)) {
+        return false;
+    }
 
     // Upgraded unit may have different vision range – reveal accordingly.
     VisionSystem::revealFromUnit(game, unitId);
@@ -276,28 +268,26 @@ bool UnitUpgradeSystem::upgradeRaftToBomber(Game& game, UnitId unitId) {
         return false;
     }
 
-    Unit* oldUnit = game.getUnit(unitId);
-    if (!oldUnit) {
+    if (!UnitSystem::unitExists(game, unitId)) {
         return false;
     }
 
-    Player& owner = game.getPlayer(oldUnit->getOwnerId());
+    const PlayerId ownerId = UnitSystem::getOwnerId(game, unitId);
     const int cost = std::max(0, UnitFactory::getUnitCost(UnitType::Bomber));
-    if (!owner.spendStars(cost)) {
+    if (!PlayerSystem::spendStars(game, ownerId, cost)) {
         return false;
     }
 
     // Preserve Raft HP and Max HP
-    const int oldHp = oldUnit->getHealth();
-    const int oldMaxHp = oldUnit->getMaxHealth();
-    const bool poisoned = oldUnit->poisoned();
-    const bool veteran = oldUnit->isVeteran();
-    const int kills = oldUnit->getKillCounter();
-    const bool wasEmbarked = oldUnit->isEmbarked();
-    const UnitType baseType = oldUnit->getEmbarkedBaseType();
+    const int oldHp = UnitSystem::getHealth(game, unitId);
+    const int oldMaxHp = UnitSystem::getMaxHealth(game, unitId);
+    const bool poisoned = UnitSystem::isPoisoned(game, unitId);
+    const bool veteran = UnitSystem::isVeteran(game, unitId);
+    const int kills = UnitSystem::getKillCounter(game, unitId);
+    const bool wasEmbarked = UnitSystem::isEmbarked(game, unitId);
+    const UnitType baseType = UnitSystem::getEmbarkedBaseType(game, unitId);
 
-    const PlayerId ownerId = oldUnit->getOwnerId();
-    const Pos pos = oldUnit->getPos();
+    const Pos pos = UnitSystem::getPos(game, unitId);
 
     Unit upgraded = UnitFactory::create(UnitType::Bomber, ownerId, pos);
     upgraded.setId(unitId);
@@ -316,7 +306,9 @@ bool UnitUpgradeSystem::upgradeRaftToBomber(Game& game, UnitId unitId) {
         upgraded.setEmbarkedBaseType(baseType);
     }
 
-    *oldUnit = upgraded;
+    if (!UnitSystem::replaceUnit(game, unitId, upgraded)) {
+        return false;
+    }
 
     // Upgraded unit may have different vision range – reveal accordingly.
     VisionSystem::revealFromUnit(game, unitId);

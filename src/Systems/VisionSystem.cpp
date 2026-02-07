@@ -1,63 +1,59 @@
 //
 // Created by Fryderyk Niedzwiecki on 15/01/2026.
-#include <queue>
-#include <random>
-#include <limits>
+//
 
-#include "Systems/LighthouseSystem.h"
-#include "World/Tile.h"
 #include "VisionSystem.h"
 
-#include "ScoreSystem.h"
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <queue>
+#include <random>
+#include <vector>
 
+#include "Game.h"
+#include "ScoreSystem.h"
+#include "Systems/LighthouseSystem.h"
+#include "Systems/CitySystem.h" // provides CitySystem
+#include "Systems/UnitSystem.h" // provides UnitSystem
+#include "Systems/PlayerSystem.h" // provides PlayerSystem
+#include "World/Map.h"
+#include "World/Tile.h"
+#include "terrain/BaseTerrainEnum.h"
+#include "terrain/VisibilityEnum.h"
 
 // Local helper for explorer fog checks
 bool VisionSystem::isFogForPlayer(const Tile& t, PlayerIndex idx) {
     return !isRevealed(t.getVisibility(), idx);
 }
 
-
 // Local helper for explorer lighthouse detection
 bool VisionSystem::tileHasLighthouse(const Tile& t) {
     return t.getBuildingType() == BuildingTypeEnum::Lighthouse;
 }
-//
-
-#include "VisionSystem.h"
-
-#include "Game.h"
-#include "World/Map.h"
-#include "World/Tile.h"
-#include "terrain/BaseTerrainEnum.h"
-#include "terrain/VisibilityEnum.h"
-
-#include <algorithm>
-#include <cstdint>
-#include <vector>
 
 void VisionSystem::revealFromUnit(Game& game, UnitId uid) {
-    Unit* u = game.getUnit(uid);
-    if (!u) return;
+    if (!UnitSystem::unitExists(game, uid)) return;
 
-    const PlayerId pid = u->getOwnerId();
-    Pos p = u->getPos();
+    const PlayerId pid = UnitSystem::getOwnerId(game, uid);
+    const Pos p = UnitSystem::getPos(game, uid);
 
-    int r = u->getVisionRange();
-    // int r = 2;
+    int r = UnitSystem::getVisionRange(game, uid);
     const Tile& t = game.getMap().at(p);
     if (t.getBaseTerrain() == BaseTerrainEnum::Mountain) {
         r = std::max(r, 2);
     }
-revealArea(game, pid, p, r, RevealSource::Unit);
+
+    revealArea(game, pid, p, r, RevealSource::Unit);
 }
 
 
 void VisionSystem::revealForPlayerFromUnits(Game& game, PlayerId playerId) {
     // Dodajemy widoczność na bazie wszystkich jednostek gracza.
     // UWAGA: To nie "czyści" fog-of-war (czyli nie usuwa widoczności).
-    const Player& p = game.getPlayer(playerId);
+    const auto& units = PlayerSystem::getUnits(game, playerId);
 
-    for (UnitId uid : p.getUnits()) {
+    for (UnitId uid : units) {
         // Use revealFromUnit so mountain bonus (range 2) is applied consistently.
         revealFromUnit(game, uid);
     }
@@ -99,16 +95,16 @@ void VisionSystem::revealArea(
             // ✅ UNIT + EXPLORER
             LighthouseSystem::onTileRevealed(game, pid, p);
 
-            Player& me = game.getPlayer(pid);
+            //Player& me = game.getPlayer(pid);
 
             // ---- WROGA JEDNOSTKA ----
             const UnitId uid = map.unitOn(p);
-            if (uid != Map::kNoUnit) {
-                const Unit* u = game.getUnit(uid);
-                if (u && u->getOwnerId() != pid) {
-                    if (me.markMet(u->getOwnerId())) {
-                        const int enemyScore = ScoreSystem::getScore(game, u->getOwnerId());
-                        me.addStars(meetingReward(enemyScore));
+            if (uid != Map::kNoUnit && UnitSystem::unitExists(game, uid)) {
+                const PlayerId enemyOwner = UnitSystem::getOwnerId(game, uid);
+                if (enemyOwner != pid) {
+                    if (PlayerSystem::markMet(game, pid, enemyOwner)) {
+                        const int enemyScore = ScoreSystem::getScore(game, enemyOwner);
+                        PlayerSystem::addStars(game, pid, meetingReward(enemyScore));
                     }
                 }
             }
@@ -116,10 +112,13 @@ void VisionSystem::revealArea(
             // ---- WROGIE MIASTO ----
             if (t.getSettlementType() == SettlementTypeEnum::City) {
                 City* c = game.getCityBySettlementId(t.getSettlementId());
-                if (c && c->getOwnerId() != pid) {
-                    if (me.markMet(c->getOwnerId())) {
-                        const int enemyScore = ScoreSystem::getScore(game, c->getOwnerId());
-                        me.addStars(meetingReward(enemyScore));
+                const CityId cid = c ? c->getCityId() : kNoCity;
+                const uint8_t owner = (cid == kNoCity) ? 0 : CitySystem::getCityOwner(game, cid);
+
+                if (cid != kNoCity && owner != pid) {
+                    if (PlayerSystem::markMet(game, pid, owner)) {
+                        const int enemyScore = ScoreSystem::getScore(game, owner);
+                        PlayerSystem::addStars(game, pid, meetingReward(enemyScore));
                     }
                 }
             }
@@ -144,7 +143,7 @@ void VisionSystem::doExplorer(Game& game, PlayerId pid, Pos start) // <-- adapt 
     auto& map = game.getMap();
 
     // Tech gating for terrain
-    const Player& pl = game.getPlayer(pid);
+    //const Player& pl = game.getPlayer(pid);
 
     auto canEnter = [&](Pos p) -> bool {
         if (!map.inBounds(p)) return false;
@@ -155,15 +154,15 @@ void VisionSystem::doExplorer(Game& game, PlayerId pid, Pos start) // <-- adapt 
         if (bt == BaseTerrainEnum::Mountain) {
             // Requires Climbing
             // If TechId naming differs, adapt to the project enum.
-            return pl.hasTech(TechId::Climbing);
+            return PlayerSystem::hasTech(game, pid, TechId::Climbing);
         }
         if (bt == BaseTerrainEnum::Water) {
             // Requires Sailing
-            return pl.hasTech(TechId::Sailing);
+            return PlayerSystem::hasTech(game, pid, TechId::Sailing);
         }
         if (bt == BaseTerrainEnum::Ocean) {
             // Requires Navigation
-            return pl.hasTech(TechId::Navigation);
+            return PlayerSystem::hasTech(game, pid, TechId::Navigation);
         }
         return true;
     };

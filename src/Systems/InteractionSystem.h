@@ -27,7 +27,7 @@ public:
     };
 
 private:
-    static RuinReward rollRuinReward(Game& game, Player& player, Pos ruinPos);
+    static RuinReward rollRuinReward(Game& game, PlayerId pid, Pos ruinPos);
 };
 
 #endif //GAME_ENGINE_INTERACTIONSYSTEM_H

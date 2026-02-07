@@ -40,7 +40,7 @@ public:
     static void onAllTechUnlockedUpdated(Game& game, PlayerId pid, bool allTechUnlocked);
 
 private:
-    static bool checkCityLevelForMonument(Game& game, City* c);
+    static bool checkCityLevelForMonument(Game& game, CityId cid);
 };
 
 #endif // GAME_ENGINE_MONUMENTSYSTEM_H

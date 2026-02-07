@@ -2,7 +2,11 @@
 // Created by Fryderyk Niedzwiecki on 28/01/2026.
 //
 
+
 #include "UnitSpawnSystem.h"
+#include "Systems/CitySystem.h"
+#include "Systems/UnitSystem.h"
+#include "Systems/PlayerSystem.h"
 
 
 #include <algorithm>
@@ -21,16 +25,19 @@ UnitId UnitSpawnSystem::spawnUnit(Game& game, Map& map, UnitType type, PlayerId 
 
     // The city tile defines which city the unit belongs to.
     const CityId cityForUnit = static_cast<CityId>(t.getSettlementId());
-    City* c = game.getCity(cityForUnit);
-    if (!c) return kNoUnit;
+
+    // City must exist.
+    if (!CitySystem::cityExists(game, cityForUnit)) {
+        return kNoUnit;
+    }
 
     // The city must belong to the spawning player.
-    if (static_cast<PlayerId>(c->getOwnerId()) != owner) {
+    if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cityForUnit)) != owner) {
         return kNoUnit;
     }
 
     // Capacity check (prevents training/spawning when the city is full).
-    if (c->getUnitsCount() >= c->maxUnitCapacity()) {
+    if (CitySystem::getCityUnitsCount(game, cityForUnit) >= CitySystem::getCityMaxUnitCapacity(game, cityForUnit)) {
         return kNoUnit;
     }
 
@@ -44,7 +51,7 @@ UnitId UnitSpawnSystem::spawnUnit(Game& game, Map& map, UnitType type, PlayerId 
     {
         const TechId req = u.getRequiredTechToSpawn();
         if (req != TechId::Count) {
-            if (!game.getPlayer(owner).hasTech(req)) {
+            if (!PlayerSystem::hasTech(game, owner, req)) {
                 return kNoUnit;
             }
         }
@@ -53,25 +60,25 @@ UnitId UnitSpawnSystem::spawnUnit(Game& game, Map& map, UnitType type, PlayerId 
     // Spend stars for trained units (start-of-game spawns are free).
     if (!canActImmediately) {
         const int cost = std::max(0, u.getCost());
-        if (!game.getPlayer(owner).spendStars(cost)) {
+        if (!PlayerSystem::spendStars(game, owner, cost)) {
             return kNoUnit;
         }
     }
 
-    // Freshly spawned unit turn flags.
-    u.setMovedThisTurn(!canActImmediately);
-    u.setAttackedThisTurn(!canActImmediately);
-    u.setVeteran(false);
-    u.setPoisoned(false);
-    u.setKillCounter(0);
-
     // --- Commit to game state ---
     game.units.push_back(u);
     map.setUnitOn(pos, id);
-    game.getPlayer(owner).addUnit(id);
+    PlayerSystem::addUnit(game, owner, id);
+
+    // Freshly spawned unit turn flags (via UnitSystem).
+    (void)UnitSystem::setMovedThisTurn(game, id, !canActImmediately);
+    (void)UnitSystem::setAttackedThisTurn(game, id, !canActImmediately);
+    (void)UnitSystem::setVeteran(game, id, false);
+    (void)UnitSystem::setPoisoned(game, id, false);
+    (void)UnitSystem::setKillCounter(game, id, 0);
 
     // Register the unit in its city (for capacity / city bookkeeping).
-    c->addUnit(id);
+    CitySystem::addUnitToCity(game, id, cityForUnit);
 
     VisionSystem::revealFromUnit(game, id);
     return id;
@@ -92,20 +99,19 @@ UnitId UnitSpawnSystem::spawnUnitForced(Game& game, Map& map, UnitType type, Pla
     Unit u = UnitFactory::create(type, owner, pos);
     u.setId(id);
 
-
-
     // Forced spawns are free; canActImmediately controls readiness.
-    u.setMovedThisTurn(!canActImmediately);
-    u.setAttackedThisTurn(!canActImmediately);
-    u.setVeteran(makeVeteran);
-    u.setPoisoned(false);
-    u.setKillCounter(0);
-
 
     // --- Commit to game state ---
     game.units.push_back(u);
     map.setUnitOn(pos, id);
-    game.getPlayer(owner).addUnit(id);
+    PlayerSystem::addUnit(game, owner, id);
+
+    // Forced spawns are free; canActImmediately controls readiness (via UnitSystem).
+    (void)UnitSystem::setMovedThisTurn(game, id, !canActImmediately);
+    (void)UnitSystem::setAttackedThisTurn(game, id, !canActImmediately);
+    (void)UnitSystem::setVeteran(game, id, makeVeteran);
+    (void)UnitSystem::setPoisoned(game, id, false);
+    (void)UnitSystem::setKillCounter(game, id, 0);
 
     VisionSystem::revealFromUnit(game, id);
     return id;

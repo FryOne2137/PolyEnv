@@ -5,16 +5,16 @@
 #include "Systems/TileActionSystem.h"
 
 #include "Game.h"
+#include "Systems/PlayerSystem.h"
 #include "World/Map.h"
 #include "World/Tile.h"
-#include "Player/Player.h"
 #include "tech/TechDB.h"
-#include "World/Settlements/City.h"
-
 #include <algorithm>
 #include <cstdint>
 
+#include "CitySystem.h"
 #include "MonumentSystem.h"
+#include "CitiesConnectionSystem.h"
 
 namespace {
 
@@ -40,13 +40,13 @@ inline bool requireTech(const Game& game, PlayerId pid, TechId tech) {
     // Defensive: if an invalid/unknown tech id is passed, do NOT allow the action.
     if (idx >= cnt) return false;
 
-    return game.getPlayer(pid).hasTech(tech);
+    return PlayerSystem::hasTech(game, pid, tech);
 }
 
 inline bool spendStars(Game& game, PlayerId pid, int cost) {
     cost = std::max(0, cost);
     if (cost == 0) return true;
-    return game.getPlayer(pid).spendStars(cost);
+    return PlayerSystem::spendStars(game, pid, cost);
 }
 
 // Enforce: action can be done only on current player's territory (city owned by pid)
@@ -57,10 +57,9 @@ inline bool ensureOwnTerritory(Game& game, PlayerId pid, Pos pos, CityId& outCid
     const CityId cid = t.getTerritoryCityId();
     if (cid == kNoCity) return false;
 
-    const City* c = game.getCity(cid);
-    if (!c) return false;
+    if (!CitySystem::cityExists(game, cid)) return false;
+    if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
 
-    if (static_cast<PlayerId>(c->getOwnerId()) != pid) return false;
 
     outCid = cid;
     return true;
@@ -98,13 +97,12 @@ bool TileActionSystem::hunt(Game& game, PlayerId pid, Pos pos) {
     nr = addFlag(nr, ResourcesEnum::Crops);
     t.setResource(nr);
 
-    if (City* c = game.getCity(cid)) {
-        (void)c->addPopulation(static_cast<uint8_t>(kPopGain));
-    }
+    (void)CitySystem::addPopulation(game, cid, kPopGain);
+
     return true;
 }
 
-bool TileActionSystem::oraganization(Game& game, PlayerId pid, Pos pos) {
+bool TileActionSystem::organization(Game& game, PlayerId pid, Pos pos) {
     // Polytopia-style (adjust if you want):
     // Hunting tech, costs stars, Animals -> Crops, +1 pop.
     static constexpr TechId kTech = TechId::Organization;
@@ -127,9 +125,7 @@ bool TileActionSystem::oraganization(Game& game, PlayerId pid, Pos pos) {
     ResourcesEnum nr = removeFlag(r, ResourcesEnum::Fruit);
     t.setResource(nr);
 
-    if (City* c = game.getCity(cid)) {
-        (void)c->addPopulation(static_cast<uint8_t>(kPopGain));
-    }
+    (void)CitySystem::addPopulation(game, cid, static_cast<uint16_t>(kPopGain));
     return true;
 }
 
@@ -158,9 +154,7 @@ bool TileActionSystem::fishing(Game& game, PlayerId pid, Pos pos) {
     if (hasFlag(r, ResourcesEnum::Fish)) {
         if (!spendStars(game, pid, kFishCost)) return false;
         t.setResource(removeFlag(r, ResourcesEnum::Fish));
-        if (City* c = game.getCity(cid)) {
-            (void)c->addPopulation(static_cast<uint8_t>(kFishPop));
-        }
+        (void)CitySystem::addPopulation(game, cid, static_cast<uint16_t>(kFishPop));
         return true;
     }
 
@@ -190,8 +184,8 @@ bool TileActionSystem::clearForest(Game& game, PlayerId pid, Pos pos) {
     t.setResource(removeFlag(r, ResourcesEnum::Forest));
 
     // Reward stars
-    game.getPlayer(pid).addStars(kReward);
-    MonumentSystem::onStarsUpdated(game,pid);
+    PlayerSystem::addStars(game, pid, kReward);
+
 
     return true;
 }
@@ -273,6 +267,9 @@ bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
     if (hasBuilding) t.setBuildingType(BuildingTypeEnum::None);
     if (hasRoadBridge) t.setRoadBridge(RoadBridgeEnum::None);
 
+    // Destroy may affect connections.
+    CitiesConnectionSystem::update(game);
+
     return true;
 }
 
@@ -292,9 +289,8 @@ bool TileActionSystem::buildRoad(Game& game, PlayerId pid, Pos pos) {
     // Must be own territory OR unclaimed territory
     const CityId cid = t.getTerritoryCityId();
     if (cid != kNoCity) {
-        const City* c = game.getCity(cid);
-        if (!c) return false;
-        if (static_cast<PlayerId>(c->getOwnerId()) != pid) return false;
+        if (!CitySystem::cityExists(game, cid)) return false;
+        if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
     }
 
     // Already has road/bridge
@@ -303,6 +299,10 @@ bool TileActionSystem::buildRoad(Game& game, PlayerId pid, Pos pos) {
     if (!spendStars(game, pid, kCost)) return false;
 
     t.setRoadBridge(RoadBridgeEnum::Road);
+
+    // Road affects city connections.
+    CitiesConnectionSystem::update(game);
+
     return true;
 }
 
@@ -321,9 +321,8 @@ bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
     // Must be own territory OR unclaimed territory
     const CityId cid = t.getTerritoryCityId();
     if (cid != kNoCity) {
-        const City* c = game.getCity(cid);
-        if (!c) return false;
-        if (static_cast<PlayerId>(c->getOwnerId()) != pid) return false;
+        if (!CitySystem::cityExists(game, cid)) return false;
+        if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
     }
 
     // Must not already have a road/bridge
@@ -344,5 +343,9 @@ bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
     if (!spendStars(game, pid, kCost)) return false;
 
     t.setRoadBridge(RoadBridgeEnum::Bridge);
+
+    // Bridge affects city connections.
+    CitiesConnectionSystem::update(game);
+
     return true;
 }

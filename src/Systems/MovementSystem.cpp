@@ -8,13 +8,16 @@
 
 #include "Systems/MovementSystem.h"
 
-#include "Game.h" // needs Game::getUnit and Game::getMap()
+#include "Game.h" // needs Game::getMap()
+#include "UnitSystem.h"
+#include "Systems/PlayerSystem.h"
 #include "terrain/BaseTerrainEnum.h"
 #include "terrain/BuildingTypeEnum.h"
 #include "terrain/RoadBridgeEnum.h"
 #include "terrain/ResourcesEnum.h"
 #include "tech/TechDB.h" // TechId
 #include "Systems/VisionSystem.h"
+#include "Systems/CitySystem.h"
 #include "units/UnitFactory.h"
 
 #include <queue>
@@ -45,23 +48,25 @@ static inline bool isNavalType(UnitType t) {
 // Water movement is allowed for:
 // 1) true naval types, OR
 // 2) units that have WaterOnly AND are currently embarked / already on water (prevents accidental WaterOnly on land units).
-static inline bool isWaterMover(const Game& game, const Unit* u) {
-    if (!u) return false;
+static inline bool isWaterMover(const Game& game, UnitId uid) {
+    if (uid == Map::kNoUnit) return false;
+    if (!UnitSystem::unitExists(game, uid)) return false;
 
-    if (isNavalType(u->getType())) return true;
+    const UnitType t = UnitSystem::getType(game, uid);
+    if (isNavalType(t)) return true;
 
-    if (!u->hasSkill(UnitSkill::WaterOnly)) return false;
+    if (!UnitSystem::hasSkill(game, uid, UnitSkill::WaterOnly)) return false;
 
     // If your Unit supports embark state, use it as the primary guard.
-    if (u->isEmbarked()) return true;
+    if (UnitSystem::isEmbarked(game, uid)) return true;
 
     // Fallback safety: allow WaterOnly only when already standing on water/ocean/port.
-    const Pos p = u->getPos();
+    const Pos p = UnitSystem::getPos(game, uid);
     if (!game.getMap().inBounds(p)) return false;
-    const Tile& t = game.getMap().at(p);
-    if (t.getBaseTerrain() == BaseTerrainEnum::Water) return true;
-    if (t.getBaseTerrain() == BaseTerrainEnum::Ocean) return true;
-    if (t.getBuildingType() == BuildingTypeEnum::Port) return true;
+    const Tile& tile = game.getMap().at(p);
+    if (tile.getBaseTerrain() == BaseTerrainEnum::Water) return true;
+    if (tile.getBaseTerrain() == BaseTerrainEnum::Ocean) return true;
+    if (tile.getBuildingType() == BuildingTypeEnum::Port) return true;
 
     return false;
 }
@@ -95,29 +100,31 @@ static inline std::array<Pos, 8> neighbors8(Pos cur) {
 }
 
 // Helper: does this unit have Hide?
-static inline bool unitHasHide(const Unit* u) {
-    return u && u->hasSkill(UnitSkill::Hide);
+static inline bool unitHasHide(const Game& game, UnitId uid) {
+    return (uid != Map::kNoUnit) && UnitSystem::unitExists(game, uid) && UnitSystem::hasSkill(game, uid, UnitSkill::Hide);
 }
 
-// Returns true if tile `p` is inside enemy ZoC for `mover`.
+// Returns true if tile `p` is inside enemy ZoC for `moverUid`.
 // ZoC is projected by enemy units that do NOT have Hide onto their 8-neighborhood.
 // Movers with Hide ignore ZoC completely.
-static inline bool inEnemyZoC(const Game& game, Pos p, const Unit* mover) {
-    if (!mover) return false;
-    if (unitHasHide(mover)) return false; // Hide units are not blocked
+static inline bool inEnemyZoC(const Game& game, Pos p, UnitId moverUid) {
+    if (moverUid == Map::kNoUnit) return false;
+    if (!UnitSystem::unitExists(game, moverUid)) return false;
 
-    const PlayerId moverOwner = mover->getOwnerId();
+    // Hide movers ignore ZoC completely.
+    if (unitHasHide(game, moverUid)) return false;
+
+    const PlayerId moverOwner = UnitSystem::getOwnerId(game, moverUid);
 
     for (int i = 0; i < 8; ++i) {
         const Pos nb{ p.x + kNbDx8[i], p.y + kNbDy8[i] };
         if (!game.getMap().inBounds(nb)) continue;
         const UnitId occ = game.getMap().unitOn(nb);
         if (occ == Map::kNoUnit) continue;
+        if (!UnitSystem::unitExists(game, occ)) continue;
 
-        const Unit* other = game.getUnit(occ);
-        if (!other) continue;
-        if (other->getOwnerId() == moverOwner) continue; // friendly units don't block
-        if (unitHasHide(other)) continue;                // Hide units don't project ZoC
+        if (UnitSystem::getOwnerId(game, occ) == moverOwner) continue; // friendly units don't block
+        if (unitHasHide(game, occ)) continue;                          // Hide units don't project ZoC
 
         return true;
     }
@@ -178,11 +185,10 @@ static inline bool isRoadLikeTile(const Game& game, Pos p, UnitId movingUnit) {
     // Some skills (e.g., Fly/Creep) may not use roads. If you add them later,
     // gate them here.
     if (movingUnit != Map::kNoUnit) {
-        const Unit* u = game.getUnit(movingUnit);
-        if (!u) return false;
+        if (!UnitSystem::unitExists(game, movingUnit)) return false;
         // Example hooks (uncomment if you have these skills):
-        // if (u->hasSkill(UnitSkill::Fly)) return false;
-        // if (u->hasSkill(UnitSkill::Creep)) return false;
+        // if (UnitSystem::hasSkill(game, movingUnit, UnitSkill::Fly)) return false;
+        // if (UnitSystem::hasSkill(game, movingUnit, UnitSkill::Creep)) return false;
     }
 
     const Tile& t = game.getMap().at(p);
@@ -203,8 +209,7 @@ static inline bool isRoadLikeTile(const Game& game, Pos p, UnitId movingUnit) {
 
 static inline bool isEnemyTerritoryForRoadBonus(const Game& game, Pos p, UnitId movingUnit) {
     if (movingUnit == Map::kNoUnit) return false; // generic queries
-    const Unit* u = game.getUnit(movingUnit);
-    if (!u) return true; // be conservative
+    if (!UnitSystem::unitExists(game, movingUnit)) return true; // be conservative
 
     if (!game.getMap().inBounds(p)) return true;
 
@@ -214,20 +219,18 @@ static inline bool isEnemyTerritoryForRoadBonus(const Game& game, Pos p, UnitId 
     // Neutral (no city) => treat as allowed for road bonus.
     if (cid == kNoCity) return false;
 
-    const City* c = game.getCity(cid);
-    if (!c) return true;
+    if (!CitySystem::cityExists(game, cid)) return true;
 
-    return static_cast<PlayerId>(c->getOwnerId()) != u->getOwnerId();
+    return static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != UnitSystem::getOwnerId(game, movingUnit);
 }
 
-static inline bool isTerminalAfterEntering(const Game& game, Pos p, const Unit* mover, UnitId movingUnit, bool unitWaterCapable) {
+static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId moverUid, UnitId movingUnit, bool unitWaterCapable) {
+    if (moverUid == Map::kNoUnit) return false;
+    if (!UnitSystem::unitExists(game, moverUid)) return false;
+
     // WaterOnly / naval movement rule:
     // - Water-capable units may enter land ONLY to disembark, and must STOP immediately.
     //   This prevents walking multiple tiles inland in a single move.
-    const Unit* u = mover;
-    if (!u) return false;
-
-    // Only apply to water-capable units (WaterOnly or naval types).
     if (unitWaterCapable) {
         if (!game.getMap().inBounds(p)) return false;
         const Tile& t = game.getMap().at(p);
@@ -261,7 +264,7 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, const Unit* 
     // Enemy ZoC rule:
     // If you enter a tile that is within 1 of an enemy unit (that doesn't have Hide), you must STOP.
     // Hide units are not blocked and do not stop.
-    if (inEnemyZoC(game, p, u)) {
+    if (inEnemyZoC(game, p, moverUid)) {
         return true;
     }
 
@@ -380,16 +383,15 @@ static Pos rotateCW(Pos d)  { return Pos{ d.y, -d.x}; }
 
 
 bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
-    Unit* u = game.getUnit(pushedUnit);
-    if (!u) return false;
+    if (!UnitSystem::unitExists(game, pushedUnit)) return false;
 
     const Pos from = spawnPos;
 
     // Precompute tech flags once (owner of the pushed unit).
-    const PlayerId moverOwner = u->getOwnerId();
-    const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
-    const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
-    const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
+    const PlayerId moverOwner = UnitSystem::getOwnerId(game, pushedUnit);
+    const bool hasClimbing = PlayerSystem::hasTech(game, moverOwner, TechId::Climbing);
+    const bool hasFishing  = PlayerSystem::hasTech(game, moverOwner, TechId::Fishing);
+    const bool hasSailing  = PlayerSystem::hasTech(game, moverOwner, TechId::Sailing);
 
     // Direction preference rules:
     // - If the unit moved this turn: prefer its last move direction (friendly) / opposite (enemy).
@@ -398,16 +400,14 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
     // - If we still have no direction, fall back to pushing toward the map center.
     Pos dir{0,0};
 
-    const Pos storedMove = u->getLastMoveDir();
-    const Pos storedAtk  = u->getLastAttackDir();
+    const Pos storedMove = UnitSystem::getLastMoveDir(game, pushedUnit);
+    const Pos storedAtk  = UnitSystem::getLastAttackDir(game, pushedUnit);
 
-    if (u->movedThisTurn()) {
-        // Friendly/enemy relative to the current player (spawner owner should be passed in if you need exact parity).
-        dir = (u->getOwnerId() == game.getCurrentPlayerId()) ? storedMove : Pos{-storedMove.x, -storedMove.y};
-    } else if (u->attackedThisTurn()) {
+    if (UnitSystem::movedThisTurn(game, pushedUnit)) {
+        dir = (UnitSystem::getOwnerId(game, pushedUnit) == game.getCurrentPlayerId()) ? storedMove : Pos{-storedMove.x, -storedMove.y};
+    } else if (UnitSystem::attackedThisTurn(game, pushedUnit)) {
         dir = storedAtk;
     } else if (!(storedMove.x == 0 && storedMove.y == 0)) {
-        // Use last movement as a *preference* even when the unit didn't move this turn.
         dir = storedMove;
     } else {
         const int cx = game.getMap().getWidth() / 2;
@@ -417,7 +417,7 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
 
     if (dir.x == 0 && dir.y == 0) dir = Pos{0,1}; // south fallback
 
-    const bool unitWaterCapable = isWaterMover(game, u);
+    const bool unitWaterCapable = isWaterMover(game, pushedUnit);
 
     auto passableForPush = [&](Pos to) -> bool {
         if (!game.getMap().inBounds(to)) return false;
@@ -456,9 +456,8 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
 
             const CityId tid = tt.getTerritoryCityId();
             if (tid == kNoCity) return false;
-            const City* tc = game.getCity(tid);
-            if (!tc) return false;
-            if (static_cast<PlayerId>(tc->getOwnerId()) != moverOwner) return false;
+            if (!CitySystem::cityExists(game, tid)) return false;
+            if (static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) != moverOwner) return false;
 
             if (toIsOcean && !hasSailing) return false;
         }
@@ -468,92 +467,88 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
 
     // Try tiles: forward, then CCW/CW spiral.
     // Try ALL neighboring tiles; `dir` is only a preference.
-// Rank candidates by dot(dir, delta): best aligned with preferred direction first.
-std::array<Pos, 8> cand = {
-    Pos{ 1, 0}, Pos{-1, 0}, Pos{0, 1}, Pos{0,-1},
-    Pos{ 1, 1}, Pos{ 1,-1}, Pos{-1, 1}, Pos{-1,-1}
-};
+    // Rank candidates by dot(dir, delta): best aligned with preferred direction first.
+    std::array<Pos, 8> cand = {
+        Pos{ 1, 0}, Pos{-1, 0}, Pos{0, 1}, Pos{0,-1},
+        Pos{ 1, 1}, Pos{ 1,-1}, Pos{-1, 1}, Pos{-1,-1}
+    };
 
-auto dot = [&](Pos a, Pos b) -> int { return a.x * b.x + a.y * b.y; };
+    auto dot = [&](Pos a, Pos b) -> int { return a.x * b.x + a.y * b.y; };
 
-std::sort(cand.begin(), cand.end(), [&](const Pos& a, const Pos& b) {
-    const int da = dot(dir, a);
-    const int db = dot(dir, b);
-    if (da != db) return da > db; // większy dot = bliżej preferencji
+    std::sort(cand.begin(), cand.end(), [&](const Pos& a, const Pos& b) {
+        const int da = dot(dir, a);
+        const int db = dot(dir, b);
+        if (da != db) return da > db;
+        const int ma = std::abs(a.x) + std::abs(a.y);
+        const int mb = std::abs(b.x) + std::abs(b.y);
+        if (ma != mb) return ma < mb;
+        if (a.x != b.x) return a.x < b.x;
+        return a.y < b.y;
+    });
 
-    // tie-breaker: preferuj kardynalne nad diagonalnymi (stabilniejsze pchanie)
-    const int ma = std::abs(a.x) + std::abs(a.y);
-    const int mb = std::abs(b.x) + std::abs(b.y);
-    if (ma != mb) return ma < mb;
+    for (const Pos d : cand) {
+        const Pos to = Pos{from.x + d.x, from.y + d.y};
+        if (!passableForPush(to)) continue;
 
-    // stabilny finalny porządek
-    if (a.x != b.x) return a.x < b.x;
-    return a.y < b.y;
-});
+        game.getMap().setUnitOn(from, Map::kNoUnit);
+        game.getMap().setUnitOn(to, pushedUnit);
+        UnitSystem::setPos(game, pushedUnit, to);
 
-for (const Pos d : cand) {
-    const Pos to = Pos{from.x + d.x, from.y + d.y};
-    if (!passableForPush(to)) continue;
+        // Fog-of-war: reveal around the forced-moved unit's new position.
+        {
+            const PlayerId pid = UnitSystem::getOwnerId(game, pushedUnit);
+            const int baseVision = UnitSystem::getVisionRange(game, pushedUnit);
+            const Pos pp = to;
+            VisionSystem::revealArea(game, pid, pp, baseVision, RevealSource::Unit);
 
-    game.getMap().setUnitOn(from, Map::kNoUnit);
-    game.getMap().setUnitOn(to, pushedUnit);
-    u->setPos(to);
-
-    // Fog-of-war: reveal around the forced-moved unit's new position.
-    {
-        const PlayerId pid = u->getOwnerId();
-        const int baseVision = u->getVisionRange();
-        const Pos pp = to;
-        VisionSystem::revealArea(game, pid, pp, baseVision,RevealSource::Unit);
-
-        const Tile& endTile = game.getMap().at(to);
-        if (endTile.getBaseTerrain() == BaseTerrainEnum::Mountain) {
-            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision),RevealSource::Unit);
-        }
-        if (baseVision == 2) {
-            VisionSystem::revealArea(game, pid, to, std::max(2, baseVision),RevealSource::Unit);
-        }
-    }
-
-    // Disembark if an embarked carrier ends up on land.
-    {
-        const Tile& dst = game.getMap().at(to);
-        const bool dstIsLandish = (dst.getBaseTerrain() == BaseTerrainEnum::Land ||
-                                  dst.getBaseTerrain() == BaseTerrainEnum::Mountain);
-
-        if (dstIsLandish && u->isEmbarked()) {
-            const UnitType original = u->getEmbarkedBaseType();
-            if (original != UnitType::Unknown) {
-                Unit nu = UnitFactory::create(original, u->getOwnerId(), to);
-                nu.setId(u->getId());
-
-                // Keep HP / status.
-                nu.setHealth(u->getHealth());
-                nu.setVeteran(u->isVeteran());
-                nu.setPoisoned(u->poisoned());
-                nu.setAttackedThisTurn(u->attackedThisTurn());
-
-                nu.clearEmbarkedBaseType();
-                nu.removeSkill(UnitSkill::WaterOnly);
-
-                // Disembarking ends movement/action for this turn.
-                nu.setMovedThisTurn(true);
-                nu.setAttackedThisTurn(true);
-
-                *u = nu;
+            const Tile& endTile = game.getMap().at(to);
+            if (endTile.getBaseTerrain() == BaseTerrainEnum::Mountain) {
+                VisionSystem::revealArea(game, pid, to, std::max(2, baseVision), RevealSource::Unit);
+            }
+            if (baseVision == 2) {
+                VisionSystem::revealArea(game, pid, to, std::max(2, baseVision), RevealSource::Unit);
             }
         }
-    }
 
-    return true;
-}
+        // Disembark if an embarked carrier ends up on land.
+        {
+            const Tile& dst = game.getMap().at(to);
+            const bool dstIsLandish = (dst.getBaseTerrain() == BaseTerrainEnum::Land ||
+                                      dst.getBaseTerrain() == BaseTerrainEnum::Mountain);
+
+            if (dstIsLandish && UnitSystem::isEmbarked(game, pushedUnit)) {
+                const UnitType original = UnitSystem::getEmbarkedBaseType(game, pushedUnit);
+                if (original != UnitType::Unknown) {
+                    Unit nu = UnitFactory::create(original, UnitSystem::getOwnerId(game, pushedUnit), to);
+                    nu.setId(pushedUnit);
+
+                    // Keep HP / status.
+                    nu.setHealth(UnitSystem::getHealth(game, pushedUnit));
+                    nu.setVeteran(UnitSystem::isVeteran(game, pushedUnit));
+                    nu.setPoisoned(UnitSystem::isPoisoned(game, pushedUnit));
+                    nu.setAttackedThisTurn(UnitSystem::attackedThisTurn(game, pushedUnit));
+
+                    nu.clearEmbarkedBaseType();
+                    nu.removeSkill(UnitSkill::WaterOnly);
+
+                    // Disembarking ends movement/action for this turn.
+                    nu.setMovedThisTurn(true);
+                    nu.setAttackedThisTurn(true);
+
+                    UnitSystem::replaceUnit(game, pushedUnit, nu);
+                }
+            }
+        }
+
+        return true;
+    }
 
     // No space -> remove unit entirely (no kill credit).
     game.getMap().setUnitOn(from, Map::kNoUnit);
-    u->setHealth(0);
-    u->setPos(Pos{-9999, -9999});
-    u->setMovedThisTurn(true);
-    u->setAttackedThisTurn(true);
+    UnitSystem::setHealth(game, pushedUnit, 0);
+    UnitSystem::setPos(game, pushedUnit, Pos{-9999, -9999});
+    UnitSystem::setMovedThisTurn(game, pushedUnit, true);
+    UnitSystem::setAttackedThisTurn(game, pushedUnit, true);
 
     return false;
 }
@@ -630,22 +625,19 @@ int MovementSystem::shortestPathDistance(const Game& game, Pos from, Pos to) {
 }
 
 bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
-    Unit* u = game.getUnit(unitId);
-    if (!u) return false;
+    if (!UnitSystem::unitExists(game, unitId)) return false;
 
-    const int visionBeforeTransform = u->getVisionRange();
+    const int visionBeforeTransform = UnitSystem::getVisionRange(game, unitId);
 
-    const Pos from = u->getPos();
+    const Pos from = UnitSystem::getPos(game, unitId);
     if (from == to) return false;
 
     if (!game.getMap().inBounds(from) || !game.getMap().inBounds(to)) return false;
 
     // Default rule: you cannot move after you already moved.
     // Escape rule: units with Escape may move after attacking.
-    if (u->movedThisTurn()) return false;
-    if (u->attackedThisTurn() && !u->hasSkill(UnitSkill::Escape)) return false;
-
-    // Remove: only one move per turn. Now, allow multiple moves per turn until move points are exhausted.
+    if (UnitSystem::movedThisTurn(game, unitId)) return false;
+    if (UnitSystem::attackedThisTurn(game, unitId) && !UnitSystem::hasSkill(game, unitId, UnitSkill::Escape)) return false;
 
     if (game.getMap().unitOn(to) != Map::kNoUnit) return false;
 
@@ -653,14 +645,14 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     {
         const Tile& tt = game.getMap().at(to);
         const Tile& tf = game.getMap().at(from);
-        const PlayerId mover = u->getOwnerId();
+        const PlayerId mover = UnitSystem::getOwnerId(game, unitId);
 
         // Fog-of-war: you may only END movement on a tile that is visible/revealed for you.
         if (!tileVisibleToPlayer(tt, mover)) return false;
 
-        const bool hasClimbing = game.getPlayer(mover).hasTech(TechId::Climbing);
-        const bool hasFishing  = game.getPlayer(mover).hasTech(TechId::Fishing);
-        const bool hasSailing  = game.getPlayer(mover).hasTech(TechId::Sailing);
+        const bool hasClimbing = PlayerSystem::hasTech(game, mover, TechId::Climbing);
+        const bool hasFishing  = PlayerSystem::hasTech(game, mover, TechId::Fishing);
+        const bool hasSailing  = PlayerSystem::hasTech(game, mover, TechId::Sailing);
 
         // Mountains require Climbing
         if (tt.getBaseTerrain() == BaseTerrainEnum::Mountain && !hasClimbing) return false;
@@ -673,7 +665,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         const bool fromIsLandish = (tf.getBaseTerrain() == BaseTerrainEnum::Land ||
                                    tf.getBaseTerrain() == BaseTerrainEnum::Mountain);
 
-        const bool unitWaterCapable = isWaterMover(game, u);
+        const bool unitWaterCapable = isWaterMover(game, unitId);
 
         // --- Rules for LAND units (not water capable) ---
         // From land -> Water/Ocean:
@@ -688,9 +680,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
                 const CityId tid = tt.getTerritoryCityId();
                 if (tid == kNoCity) return false;
-                const City* tc = game.getCity(tid);
-                if (!tc) return false;
-                if (static_cast<PlayerId>(tc->getOwnerId()) != mover) return false;
+                if (!CitySystem::cityExists(game, tid)) return false;
+                if (static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) != mover) return false;
 
                 // Ocean travel requires Sailing (even when entering via an ocean port).
                 if (toIsOcean && !hasSailing) return false;
@@ -720,9 +711,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
             const CityId tid = tt.getTerritoryCityId();
             if (tid == kNoCity) return false;
-            const City* tc = game.getCity(tid);
-            if (!tc) return false;
-            if (static_cast<PlayerId>(tc->getOwnerId()) != mover) return false;
+            if (!CitySystem::cityExists(game, tid)) return false;
+            if (static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) != mover) return false;
 
             if (toIsOcean && !hasSailing) return false;
         }
@@ -736,18 +726,18 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     const int n = w * h;
     const int INF = std::numeric_limits<int>::max() / 4;
 
-    const int mp = u->getMovePoints();
+    const int mp = UnitSystem::getMovePoints(game, unitId);
     if (mp <= 0) return false;
     const int budgetHalf = mp * 2;
 
-    const PlayerId moverOwner = u->getOwnerId();
+    const PlayerId moverOwner = UnitSystem::getOwnerId(game, unitId);
 
     // Precompute tech flags once.
-    const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
-    const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
-    const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
+    const bool hasClimbing = PlayerSystem::hasTech(game, moverOwner, TechId::Climbing);
+    const bool hasFishing  = PlayerSystem::hasTech(game, moverOwner, TechId::Fishing);
+    const bool hasSailing  = PlayerSystem::hasTech(game, moverOwner, TechId::Sailing);
 
-    const bool unitWaterCapable = isWaterMover(game, u);
+    const bool unitWaterCapable = isWaterMover(game, unitId);
 
     auto canStepOn = [&](Pos p) -> bool {
         if (!map.inBounds(p)) return false;
@@ -759,9 +749,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             if (p == from) {
                 // ok
             } else {
-                const Unit* occU = game.getUnit(occ);
-                if (!occU) return false; // be conservative
-                if (occU->getOwnerId() != moverOwner) {
+                if (!UnitSystem::unitExists(game, occ)) return false; // be conservative
+                if (UnitSystem::getOwnerId(game, occ) != moverOwner) {
                     return false; // enemy blocks
                 }
                 // friendly -> passable (destination is still required to be empty)
@@ -797,9 +786,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
             const CityId tid = t.getTerritoryCityId();
             if (tid == kNoCity) return false;
-            const City* tc = game.getCity(tid);
-            if (!tc) return false;
-            if (static_cast<PlayerId>(tc->getOwnerId()) != moverOwner) return false;
+            if (!CitySystem::cityExists(game, tid)) return false;
+            if (static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) != moverOwner) return false;
 
             if (pIsOcean && !hasSailing) return false;
         }
@@ -836,7 +824,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             const Pos curP = fromIdx(ci, w);
 
             // If current tile forces a stop, don't expand further.
-            if (curP != from && isTerminalAfterEntering(game, curP, u, unitId, unitWaterCapable)) {
+            if (curP != from && isTerminalAfterEntering(game, curP, unitId, unitId, unitWaterCapable)) {
                 continue;
             }
 
@@ -910,10 +898,9 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
     // Update unit
     const Pos moveDir{to.x - from.x, to.y - from.y};
-    u->setLastMoveDir(moveDir);
-    u->setPos(to);
-    // One move per turn: movement budget is based on base movePoints, but we don't carry leftover MP.
-    u->setMovedThisTurn(true);
+    UnitSystem::setLastMoveDir(game, unitId, moveDir);
+    UnitSystem::setPos(game, unitId, to);
+    UnitSystem::setMovedThisTurn(game, unitId, true);
 
     // ---- Port embark / disembark ----
     // Rule:
@@ -930,44 +917,39 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
                                   dst.getBaseTerrain() == BaseTerrainEnum::Mountain);
 
         // Defensive: only the owning player with Fishing can embark via a Port.
-        const PlayerId mover = u->getOwnerId();
-        const bool hasFishing = game.getPlayer(mover).hasTech(TechId::Fishing);
+        const PlayerId mover = UnitSystem::getOwnerId(game, unitId);
+        const bool hasFishing = PlayerSystem::hasTech(game, mover, TechId::Fishing);
         bool portOwnedByMover = false;
         if (dstIsPort) {
             const CityId tid = dst.getTerritoryCityId();
-            if (tid != kNoCity) {
-                if (const City* tc = game.getCity(tid)) {
-                    portOwnedByMover = (static_cast<PlayerId>(tc->getOwnerId()) == mover);
-                }
+            if (tid != kNoCity && CitySystem::cityExists(game, tid)) {
+                portOwnedByMover = (static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) == mover);
             }
         }
-
-        // (Debug log removed)
 
         // Embark: land unit -> Raft/Juggernaut when stepping onto a Port from land.
         // Do NOT use isWaterCapable() here as the only gate, because some future unit types
         // may be water-capable without being an actual embarked carrier.
-        const bool isAlreadyNavalType = isNavalType(u->getType());
+        const bool isAlreadyNavalType = isNavalType(UnitSystem::getType(game, unitId));
 
-        if (dstIsPort && srcIsLandish && !isAlreadyNavalType && !u->isEmbarked()) {
-            // If you somehow arrived on a port without satisfying the rules, do not convert.
+        if (dstIsPort && srcIsLandish && !isAlreadyNavalType && !UnitSystem::isEmbarked(game, unitId)) {
             if (hasFishing && portOwnedByMover) {
-                const UnitType original = u->getType();
+                const UnitType original = UnitSystem::getType(game, unitId);
                 const UnitType naval = (original == UnitType::Giant) ? UnitType::Juggernaut : UnitType::Raft;
 
-                Unit nu = UnitFactory::create(naval, u->getOwnerId(), to);
-                nu.setId(u->getId());
+                Unit nu = UnitFactory::create(naval, UnitSystem::getOwnerId(game, unitId), to);
+                nu.setId(unitId);
 
                 // Preserve HP and MaxHP from the land unit (Raft must inherit HP pool).
-                const int oldMaxHp = u->getMaxHealth();
-                const int oldHp    = u->getHealth();
+                const int oldMaxHp = UnitSystem::getMaxHealth(game, unitId);
+                const int oldHp    = UnitSystem::getHealth(game, unitId);
                 nu.setMaxHealth(oldMaxHp);
                 nu.setHealth(std::min(oldHp, oldMaxHp));
 
                 // Keep important runtime state.
-                nu.setVeteran(u->isVeteran());
-                nu.setPoisoned(u->poisoned());
-                nu.setAttackedThisTurn(u->attackedThisTurn());
+                nu.setVeteran(UnitSystem::isVeteran(game, unitId));
+                nu.setPoisoned(UnitSystem::isPoisoned(game, unitId));
+                nu.setAttackedThisTurn(UnitSystem::attackedThisTurn(game, unitId));
 
                 // Remember original unit type, mark as embarked carrier.
                 nu.setEmbarkedBaseType(original);
@@ -977,24 +959,22 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
                 nu.setMovedThisTurn(true);
                 nu.setAttackedThisTurn(true);
 
-                *u = nu;
-
-                // (Debug log removed)
+                UnitSystem::replaceUnit(game, unitId, nu);
             }
         }
 
         // Disembark: embarked carrier stepping onto land -> revert to original land unit type.
-        if (dstIsLandish && u->isEmbarked()) {
-            const UnitType original = u->getEmbarkedBaseType();
+        if (dstIsLandish && UnitSystem::isEmbarked(game, unitId)) {
+            const UnitType original = UnitSystem::getEmbarkedBaseType(game, unitId);
             if (original != UnitType::Unknown) {
-                Unit nu = UnitFactory::create(original, u->getOwnerId(), to);
-                nu.setId(u->getId());
+                Unit nu = UnitFactory::create(original, UnitSystem::getOwnerId(game, unitId), to);
+                nu.setId(unitId);
 
                 // Keep HP / status.
-                nu.setHealth(u->getHealth());
-                nu.setVeteran(u->isVeteran());
-                nu.setPoisoned(u->poisoned());
-                nu.setAttackedThisTurn(u->attackedThisTurn());
+                nu.setHealth(UnitSystem::getHealth(game, unitId));
+                nu.setVeteran(UnitSystem::isVeteran(game, unitId));
+                nu.setPoisoned(UnitSystem::isPoisoned(game, unitId));
+                nu.setAttackedThisTurn(UnitSystem::attackedThisTurn(game, unitId));
 
                 nu.clearEmbarkedBaseType();
                 nu.removeSkill(UnitSkill::WaterOnly);
@@ -1003,19 +983,17 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
                 nu.setMovedThisTurn(true);
                 nu.setAttackedThisTurn(true);
 
-                *u = nu;
-
-                // (Debug log removed)
+                UnitSystem::replaceUnit(game, unitId, nu);
             }
         }
     }
 
-    const int visionAfterTransform = u->getVisionRange();
+    const int visionAfterTransform = UnitSystem::getVisionRange(game, unitId);
     const int revealVision = std::max(visionBeforeTransform, visionAfterTransform);
 
     // Fog-of-war: reveal tiles the unit passed through (whole path) using the unit's vision range.
     // If the unit ends on a Mountain tile, ensure at least radius 2 from the destination.
-    const PlayerId pid = u->getOwnerId();
+    const PlayerId pid = UnitSystem::getOwnerId(game, unitId);
 
     // Reveal along the whole traversed path with "best" vision (e.g. sailor->land keeps 2 for this move).
     for (const Pos& pp : path) {
@@ -1031,23 +1009,21 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         VisionSystem::revealArea(game, pid, to, std::max(2, revealVision), RevealSource::Unit);
     }
 
-
     return true;
 }
 
 std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
-    const Unit* u = game.getUnit(unitId);
-    if (!u) return {};
+    if (!UnitSystem::unitExists(game, unitId)) return {};
 
     // Default rule: no movement after the unit has moved.
     // Escape rule: units with Escape may move after attacking.
-    if (u->movedThisTurn()) return {};
-    if (u->attackedThisTurn() && !u->hasSkill(UnitSkill::Escape)) return {};
+    if (UnitSystem::movedThisTurn(game, unitId)) return {};
+    if (UnitSystem::attackedThisTurn(game, unitId) && !UnitSystem::hasSkill(game, unitId, UnitSkill::Escape)) return {};
 
-    const Pos start = u->getPos();
+    const Pos start = UnitSystem::getPos(game, unitId);
     if (!game.getMap().inBounds(start)) return {};
 
-    const int mp = u->getMovePoints();
+    const int mp = UnitSystem::getMovePoints(game, unitId);
     if (mp <= 0) return {};
 
     const int w = game.getMap().getWidth();
@@ -1057,16 +1033,14 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
     const int budgetHalf = mp * 2;
     const int INF = std::numeric_limits<int>::max() / 4;
 
-    // Removed unused distHalf and pq from previous implementation.
-
     std::vector<Pos> out;
     out.reserve(128);
 
-    const PlayerId moverOwner = u->getOwnerId();
+    const PlayerId moverOwner = UnitSystem::getOwnerId(game, unitId);
     const bool hasClimbing = game.getPlayer(moverOwner).hasTech(TechId::Climbing);
     const bool hasFishing  = game.getPlayer(moverOwner).hasTech(TechId::Fishing);
     const bool hasSailing  = game.getPlayer(moverOwner).hasTech(TechId::Sailing);
-    const bool unitWaterCapable = isWaterMover(game, u);
+    const bool unitWaterCapable = isWaterMover(game, unitId);
 
     auto canStep = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
@@ -1078,9 +1052,8 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             if (p == start) {
                 // ok
             } else {
-                const Unit* occU = game.getUnit(occ);
-                if (!occU) return false; // be conservative
-                if (occU->getOwnerId() != moverOwner) {
+                if (!UnitSystem::unitExists(game, occ)) return false; // be conservative
+                if (UnitSystem::getOwnerId(game, occ) != moverOwner) {
                     return false; // enemy blocks
                 }
                 // friendly -> passable
@@ -1117,9 +1090,8 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
 
             const CityId tid = t.getTerritoryCityId();
             if (tid == kNoCity) return false;
-            const City* tc = game.getCity(tid);
-            if (!tc) return false;
-            if (static_cast<PlayerId>(tc->getOwnerId()) != moverOwner) return false;
+            if (!CitySystem::cityExists(game, tid)) return false;
+            if (static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) != moverOwner) return false;
 
             if (toIsOcean && !hasSailing) return false;
         }
@@ -1160,7 +1132,7 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             }
 
             // Terminal tile: you can END here, but you can't move further this turn.
-            if (curP != start && isTerminalAfterEntering(game, curP, u, unitId, unitWaterCapable)) {
+            if (curP != start && isTerminalAfterEntering(game, curP, unitId, unitId, unitWaterCapable)) {
                 continue;
             }
 

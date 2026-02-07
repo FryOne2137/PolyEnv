@@ -11,11 +11,11 @@
 
 
 #include "Game.h"
-#include "World/Settlements/City.h"
+#include "Systems/CitySystem.h"
+#include "Systems/PlayerSystem.h"
 #include "World/Tile.h"
 #include "World/Map.h"
-#include "Player/Player.h"
-#include "systems/MonumentSystem.h"
+#include "Systems/MonumentSystem.h"
 
 
 namespace {
@@ -36,9 +36,8 @@ inline void forEachNb8(Pos p, F&& f) {
 inline bool isEnemyTerritory(const Game& game, const Tile& t, PlayerId pid) {
     const CityId tid = t.getTerritoryCityId();
     if (tid == kNoCity) return false;
-    const City* tc = game.getCity(tid);
-    if (!tc) return false;
-    return static_cast<PlayerId>(tc->getOwnerId()) != pid;
+    if (!CitySystem::cityExists(game, tid)) return false;
+    return static_cast<PlayerId>(CitySystem::getCityOwner(game, tid)) != pid;
 }
 
 inline bool isVisibleForConn(const Tile&, PlayerId) {
@@ -173,20 +172,21 @@ static bool cityIsConnected(
     return ok;
 }
 
-static inline void applyPopDelta(City* c, int delta) {
-    if (!c || delta == 0) return;
+static inline void applyPopDelta(Game& game, CityId cid, int delta) {
+    if (cid == kNoCity || delta == 0) return;
+    if (!CitySystem::cityExists(game, cid)) return;
 
     if (delta > 0) {
         const int inc = std::min(delta, 255);
-        (void)c->addPopulation(static_cast<uint8_t>(inc));
+        (void)CitySystem::addPopulation(game, cid, static_cast<uint16_t>(inc));
         return;
     }
 
     // Negative: signed-safe.
-    const int cur = static_cast<int>(c->getPopulation());
+    const int cur = static_cast<int>(CitySystem::getCityPopulation(game, cid));
     const int next = cur + delta;
     const int clamped = std::clamp(next, -32768, 32767);
-    c->setPopulation(static_cast<int16_t>(clamped));
+    (void)CitySystem::setCityPopulation(game, cid, static_cast<int16_t>(clamped));
 }
 
 } // namespace
@@ -242,13 +242,13 @@ void CitiesConnectionSystem::update(Game& game) {
 
             if (cid == kNoCity && t.getSettlementType() == SettlementTypeEnum::City) {
                 const CityId guess = static_cast<CityId>(t.getSettlementId());
-                if (guess != kNoCity && game.getCity(guess) != nullptr) {
+                if (guess != kNoCity && CitySystem::cityExists(game, guess)) {
                     cid = guess;
                 }
             }
 
             if (cid == kNoCity) continue;
-            if (game.getCity(cid) == nullptr) continue;
+            if (!CitySystem::cityExists(game, cid)) continue;
             allCityIds.insert(cid);
         }
     }
@@ -261,24 +261,28 @@ void CitiesConnectionSystem::update(Game& game) {
 
     std::unordered_map<PlayerId, OwnerInfo> owners;
 
+    // Collect city lists by owner via CitySystem.
     for (const CityId cid : allCityIds) {
-        City* c = game.getCity(cid);
-        if (!c) continue;
-        const PlayerId pid = static_cast<PlayerId>(c->getOwnerId());
-
+        if (!CitySystem::cityExists(game, cid)) continue;
+        const PlayerId pid = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
         owners[pid].cities.push_back(cid);
-        if (c->isCapitalCity()) {
-            owners[pid].capital = cid;
-            owners[pid].capitalPos = c->getPos();
+    }
+
+    // Determine capitals from Player state (single source of truth).
+    for (auto& [pid, info] : owners) {
+        const CityId capId = PlayerSystem::getCapitalId(game, pid);
+        if (capId != kNoCity && CitySystem::cityExists(game, capId)) {
+            info.capital = capId;
+            info.capitalPos = CitySystem::getCityPos(game, capId);
         }
     }
 
     // If any player has no capital flagged, skip them (your Game should set capitals).
     for (auto& [pid, info] : owners) {
         if (info.capital == kNoCity) continue;
-
-        City* capital = game.getCity(info.capital);
-        if (!capital) continue;
+        const CityId capitalCid = info.capital;
+        if (capitalCid == kNoCity) continue;
+        if (!CitySystem::cityExists(game, capitalCid)) continue;
 
         // 1) Clear old water connections for this player.
         {
@@ -317,9 +321,8 @@ void CitiesConnectionSystem::update(Game& game) {
             if (!isPort(t)) return false;
             const CityId tcid = t.getTerritoryCityId();
             if (tcid == kNoCity) return false;
-            const City* c = game.getCity(tcid);
-            if (!c) return false;
-            return static_cast<PlayerId>(c->getOwnerId()) == pid;
+            if (!CitySystem::cityExists(game, tcid)) return false;
+            return static_cast<PlayerId>(CitySystem::getCityOwner(game, tcid)) == pid;
         };
 
         // 3) Collect ALL owned ports (even if the port network is not connected to the capital).
@@ -478,10 +481,9 @@ void CitiesConnectionSystem::update(Game& game) {
         std::unordered_set<CityId> now;
         for (const CityId cid : info.cities) {
             if (cid == info.capital) continue;
-            City* c = game.getCity(cid);
-            if (!c) continue;
+            if (!CitySystem::cityExists(game, cid)) continue;
 
-            if (cityIsConnected(game, pid, s_waterOwner, s_stamp, s_epoch, c->getPos())) {
+            if (cityIsConnected(game, pid, s_waterOwner, s_stamp, s_epoch, CitySystem::getCityPos(game, cid))) {
                 now.insert(cid);
             }
         }
@@ -506,21 +508,16 @@ void CitiesConnectionSystem::update(Game& game) {
         // New connections.
         for (const CityId cid : now) {
             if (prev.find(static_cast<int>(cid)) != prev.end()) continue;
-            City* c = game.getCity(cid);
-            if (!c) continue;
-
-            applyPopDelta(c, +1);
-            applyPopDelta(capital, +1);
+            applyPopDelta(game, cid, +1);
+            applyPopDelta(game, capitalCid, +1);
         }
 
         // Lost connections.
         for (const int prevCid : prev) {
             if (now.find(static_cast<CityId>(prevCid)) != now.end()) continue;
-            City* c = game.getCity(static_cast<CityId>(prevCid));
-            if (!c) continue;
-
-            applyPopDelta(c, -1);
-            applyPopDelta(capital, -1);
+            const CityId lostCid = static_cast<CityId>(prevCid);
+            applyPopDelta(game, lostCid, -1);
+            applyPopDelta(game, capitalCid, -1);
         }
 
         prev.clear();

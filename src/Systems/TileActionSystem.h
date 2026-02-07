@@ -17,7 +17,7 @@ public:
     // --- Resource / terrain actions (Polytopia-style) ---
     static bool hunt(Game& game, PlayerId pid, Pos pos);
 
-    static bool oraganization(Game &game, PlayerId pid, Pos pos);
+    static bool organization(Game &game, PlayerId pid, Pos pos);
 
     static bool fishing(Game& game, PlayerId pid, Pos pos);
 
