@@ -119,6 +119,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
             u.addSkill(UnitSkill::Dash);
             break;
 
+
         case UnitType::Catapult:
             u.setRequiredTechToSpawn(TechId::Mathematics);
             u.setCost(8); u.setMaxHealth(10); u.setHealth(10);
@@ -135,6 +136,17 @@ void UnitFactory::applyBaseStats(Unit& u) {
             u.addSkill(UnitSkill::Dash);
             u.addSkill(UnitSkill::Persist);
             u.addSkill(UnitSkill::Fortify);
+            break;
+
+        case UnitType::Dagger:
+            // Spawned by Cloak infiltration (Independent unit)
+            u.setCost(0); u.setMaxHealth(10); u.setHealth(10);
+            u.setAttack(2.0f); u.setDefense(2.0f);
+            u.setMovePoints(1); u.setRange(1);
+            u.addSkill(UnitSkill::Dash);
+            u.addSkill(UnitSkill::Surprise);
+            u.addSkill(UnitSkill::Independent);
+            u.addSkill(UnitSkill::StaticSkill);
             break;
 
         case UnitType::Giant:
@@ -631,6 +643,7 @@ void UnitFactory::applyBaseStats(Unit& u) {
         case UnitType::Juggernaut:
         case UnitType::Dinghy:
         case UnitType::Pirate:
+        case UnitType::Dagger:
             canVeteran = false;
             break;
 

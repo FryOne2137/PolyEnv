@@ -38,6 +38,7 @@ public:
 
     static bool addUnitToCity(Game &game, UnitId unitId, CityId cityId, bool checkCapacity=true) ;
     static bool removeUnitFromCity(Game& game, UnitId unitId, CityId cityId) ;
+    static void removeUnitFromAnyCity(Game& game, UnitId unitId);
     static bool transferUnitBetweenCities(Game& game, UnitId unitId, CityId fromCityId, CityId toCityId) ;
 
     static bool setCityOwner(Game& game, CityId cityId, uint8_t ownerId);
@@ -54,11 +55,22 @@ public:
     static bool foundCityFromVillage(Game& game, PlayerId owner, Pos pos);
     static bool captureCityAt(Game& game, PlayerId newOwner, Pos pos);
 
+    static bool isCityUnderSiege(const Game &game, CityId cityId);
+
     // ---- Helpers ----
     static void reassignUnitToCity(Game &game, UnitId uid, CityId newCityId, bool checkCapacity=true);
     static void claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId citySid, Pos center);
 
     static bool initCapital(Game &game, PlayerId owner, CityId cid, Pos capPos);
+
+    static bool getCityIsInfiltrated(const Game& game, CityId cityId);
+    static bool setCityIsInfiltrated(Game& game, CityId cityId, bool v);
+
+    static void blockCityIncomeNextOwnerTurn(Game &game, CityId cityId);
+
+    static int consumeAndGetCityIncomeForOwnerTurn(Game &game, PlayerId owner, CityId cityId);
+
+private:
 };
 
 

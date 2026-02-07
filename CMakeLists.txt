@@ -159,6 +159,8 @@ set(ENGINE_SOURCES
         src/Systems/UnitSystem.h
         src/Systems/PlayerSystem.cpp
         src/Systems/PlayerSystem.h
+        src/Systems/InfiltrationSystem.cpp
+        src/Systems/InfiltrationSystem.h
 )
 
 # ---- Engine library (no mains, no SFML) ----

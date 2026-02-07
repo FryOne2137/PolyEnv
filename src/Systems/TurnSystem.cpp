@@ -114,7 +114,25 @@ void TurnSystem::refreshUnitsForCurrentPlayer(Game& game) {
 
 void TurnSystem::applyIncomeForCurrentPlayer(Game& game,PlayerId pid) {
 
-    const int income = TurnSystem::calcIncomeForPlayer(game, pid);
+    int income = 0;
+
+    for (CityId cid : PlayerSystem::getCities(game, pid)) {
+        if (!CitySystem::cityExists(game, cid)) continue;
+
+        // No income if city is under siege (enemy unit inside the city)
+        if (CitySystem::isCityUnderSiege(game, cid)) {
+            continue;
+        }
+
+        // No income if city was infiltrated; clear infiltration after income collection attempt.
+        if (CitySystem::getCityIsInfiltrated(game, cid)) {
+            (void)CitySystem::setCityIsInfiltrated(game, cid, false);
+            continue;
+        }
+
+        income += static_cast<int>(CitySystem::getCityStarsPerRound(game, cid));
+    }
+
     if (income > 0) {
         PlayerSystem::addStars(game, pid, income);
     }

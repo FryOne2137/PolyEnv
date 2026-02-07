@@ -17,11 +17,17 @@ public:
     uint8_t getStarsPerRound() const;
     uint8_t getOwnerId() const { return ownerId; }
     uint8_t populationNeededToLevelUp() const ;
+
+    bool getIsCapital() const { return isCapital; }
+    bool getIsInfiltrated() const { return isInfiltrated; }
+
     const std::string& getName() const { return name; }
     bool hasCityWallEnabled() const { return hasCityWall; }
     bool hasWorkshopEnabled() const { return hasWorkshop; }
     bool isCapitalCity() const { return isCapital; }
     void setCapital(bool v) { isCapital = v; }
+
+    void setIsInfiltrated(bool v) { isInfiltrated=v; }
 
 
 
@@ -49,6 +55,7 @@ private:
     int16_t population = 0;
     uint8_t starsPerRound = 1;
     bool isCapital = false;
+    bool isInfiltrated=false;
 
     bool hasCityWall = false;
     bool hasWorkshop = false;

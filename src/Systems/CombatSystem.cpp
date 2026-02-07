@@ -8,7 +8,9 @@
 #include "Systems/PlayerSystem.h"
 
 #include "Systems/MovementSystem.h"
+#include "Systems/UnitSpawnSystem.h"
 #include "Systems/MonumentSystem.h"
+#include "Systems/InfiltrationSystem.h"
 #include "Game.h"
 #include "terrain/SettlementTypeEnum.h"
 #include "City.h"
@@ -17,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <iostream>
 
 static inline int iround(double v) {
     return static_cast<int>(std::llround(v));
@@ -108,6 +111,7 @@ static inline void awardKillToPlayer(Game& game, PlayerId pid, UnitId killerId, 
     MonumentSystem::onKillsUpdated(game, owner, static_cast<int>(PlayerSystem::getKillerCount(game, owner)));
 }
 
+
 // Kill helper lives in a SYSTEM (not in Game public API).
 static void killUnit(Game& game, UnitId uid) {
     if (!UnitSystem::unitExists(game, uid)) return;
@@ -124,6 +128,9 @@ static void killUnit(Game& game, UnitId uid) {
         PlayerSystem::removeUnit(game, owner, uid);
     }
 
+    // NEW: always free city capacity slot for this unit, even if it died outside a city tile
+    CitySystem::removeUnitFromAnyCity(game, uid);
+
     // 2) If the unit is on a city tile, remove it from that City's unit list via CitiesSystem.
     if (game.getMap().inBounds(p)) {
         const Tile& t = game.getMap().at(p);
@@ -139,6 +146,7 @@ static void killUnit(Game& game, UnitId uid) {
     UnitSystem::setMovedThisTurn(game, uid, true);
     UnitSystem::setAttackedThisTurn(game, uid, true);
 }
+
 
 std::vector<Pos> CombatSystem::attackable(const Game& game, UnitId attackerId) {
     std::vector<Pos> out;
@@ -181,7 +189,31 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     if (!UnitSystem::unitExists(game, attackerId)) return false;
 
     if (!game.getMap().inBounds(targetPos)) return false;
+    const Pos attackerPos = UnitSystem::getPos(game, attackerId);
 
+    // --- Infiltrate (Cloak / Dinghy / Scuba etc.) ---
+    // Infiltrate targets an adjacent ENEMY CITY tile (may be empty). It consumes the infiltrator.
+    if (UnitSystem::hasSkill(game, attackerId, UnitSkill::Infiltrate)) {
+        const PlayerId infiltrator = UnitSystem::getOwnerId(game, attackerId);
+        if (infiltrator == kNoPlayer) return false;
+
+        const int dist2 = chebyshevDistance(attackerPos, targetPos);
+        if (dist2 != 1) return false;
+
+        const Tile& tt = game.getMap().at(targetPos);
+        if (tt.getSettlementType() != SettlementTypeEnum::City) return false;
+
+        const CityId cityId = static_cast<CityId>(tt.getSettlementId());
+        if (!CitySystem::cityExists(game, cityId)) return false;
+
+        const PlayerId cityOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));
+        if (cityOwner == kNoPlayer) return false;
+        if (cityOwner == infiltrator) return false;
+
+        return InfiltrationSystem::infiltrateCity(game, attackerId, cityId);
+    }
+
+    // From here on, we are attacking a UNIT on the target tile.
     const UnitId defenderId = game.getMap().unitOn(targetPos);
     if (defenderId == Map::kNoUnit) return false;
 
@@ -189,59 +221,6 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
 
     // Can only attack other players
     if (UnitSystem::getOwnerId(game, defenderId) == UnitSystem::getOwnerId(game, attackerId)) return false;
-
-    const Pos attackerPos = UnitSystem::getPos(game, attackerId);
-    const int dist = chebyshevDistance(attackerPos, targetPos);
-
-    // Range check
-    const int attackerRange = UnitSystem::getRange(game, attackerId);
-    if (dist > attackerRange) return false;
-
-    // If attacker already attacked this turn
-    if (UnitSystem::attackedThisTurn(game, attackerId)) return false;
-
-    // After moving, attacking is only allowed for units with Dash
-    if (UnitSystem::movedThisTurn(game, attackerId) && !UnitSystem::hasSkill(game, attackerId, UnitSkill::Dash)) return false;
-
-    // --- Convert (Mind Bender / Shaman) ---
-    // If attacker has Convert, it converts the enemy unit instead of dealing damage.
-    // Polytopia rule: converted units belong to the converter's capital (unless other game rules apply).
-    if (UnitSystem::hasSkill(game, attackerId, UnitSkill::Convert)) {
-        const PlayerId newOwner = UnitSystem::getOwnerId(game, attackerId);
-        const PlayerId oldOwner = UnitSystem::getOwnerId(game, defenderId);
-
-        if (newOwner == kNoPlayer || oldOwner == kNoPlayer) return false;
-        if (newOwner == oldOwner) return false;
-
-        // 1) Re-assign ownership on the unit itself.
-        (void)UnitSystem::setOwnerId(game, defenderId, newOwner);
-
-        // 2) Update player unit lists.
-        PlayerSystem::removeUnit(game, oldOwner, defenderId);
-        PlayerSystem::addUnit(game, newOwner, defenderId);
-
-        // 3) Re-assign the converted unit to the converter's city.
-        // Rule: capital if it has capacity, otherwise owned cities from SOUTH to NORTH with capacity,
-        // otherwise do not assign to any city (but still remove from old city lists).
-        const CityId targetCity = CitySystem::pickCityForConvertedUnit(game, newOwner);
-        CitySystem::reassignUnitToCity(game, defenderId, targetCity, false);
-
-        // Converted unit should not act immediately this turn.
-        UnitSystem::setMovedThisTurn(game, defenderId, true);
-        UnitSystem::setAttackedThisTurn(game, defenderId, true);
-
-        // Consume the attack action for the converter.
-        UnitSystem::setAttackedThisTurn(game, attackerId, true);
-
-        // Remember last attack direction (for forced spawn push logic)
-        {
-            const Pos from = attackerPos;
-            const Pos to   = targetPos;
-            UnitSystem::setLastAttackDir(game, attackerId, Pos{to.x - from.x, to.y - from.y});
-        }
-
-        return true;
-    }
     // --- Polytopia damage formula ---
     const double aAtk = static_cast<double>(UnitSystem::getAttack(game, attackerId));
     const double dDef = static_cast<double>(UnitSystem::getDefense(game, defenderId));

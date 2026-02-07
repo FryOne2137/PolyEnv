@@ -1002,6 +1002,7 @@ static const char* unitTypeToFile(UnitType t) {
         case UnitType::Catapult:   return "catapult";
         case UnitType::Cloak:      return "cloak";
         case UnitType::Knight:     return "knight";
+        case UnitType::Dagger:     return "dagger";
         case UnitType::Giant:      return "giant";
         case UnitType::Bunny:      return "bunny";
 
@@ -1010,7 +1011,7 @@ static const char* unitTypeToFile(UnitType t) {
         case UnitType::Scout:      return "scoutship";    // scoutship.png
         case UnitType::Rammer:     return "rammership";   // rammership.png
         case UnitType::Bomber:     return "bombership";   // bombership.png
-        case UnitType::Dinghy:     return "transportship"; // transportship.png
+        case UnitType::Dinghy:     return "dinghy";       // dinghy.png
         case UnitType::Pirate:     return "pirate";       // pirate.png
         case UnitType::Juggernaut: return "juggernaut";   // juggernaut.png
 
@@ -1070,6 +1071,7 @@ static const char* unitTypeName(UnitType t) {
         case UnitType::Catapult:   return "Catapult";
         case UnitType::Cloak:      return "Cloak";
         case UnitType::Knight:     return "Knight";
+        case UnitType::Dagger:     return "Dagger";
         case UnitType::Giant:      return "Giant";
         case UnitType::Bunny:      return "Bunny";
 
@@ -1532,11 +1534,21 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.png");
                 out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.PNG");
             }
+            if (ut == UnitType::Dinghy) {
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/cloak_boat.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/cloak_boat.PNG");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dinghy_boat.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dinghy_boat.PNG");
+            }
 
             // A few common alias fallbacks (optional)
             if (ut == UnitType::MindBender) {
                 out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.png");
                 out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.PNG");
+            }
+            if (ut == UnitType::Dagger) {
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dagger.png");
+                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dagger.PNG");
             }
         }
         return pickFirstExisting(out);

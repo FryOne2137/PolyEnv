@@ -32,9 +32,10 @@ enum class UnitType : uint8_t {
     Catapult   = 7,
     Cloak      = 8,
     Knight     = 9,
-    Giant      = 10,
-    Bunny      = 11,
-    Bunta      = 12,
+    Dagger     = 10,
+    Giant      = 11,
+    Bunny      = 12,
+    Bunta      = 13,
 
     // Naval Units
     Raft       = 20,

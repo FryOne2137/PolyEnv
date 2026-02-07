@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 
+
 bool CitySystem::cityExists(const Game& game, CityId cityId) {
     if (cityId == kNoCity) return false;
     return game.getCity(cityId) != nullptr;
@@ -454,4 +455,73 @@ bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
 
     CitiesConnectionSystem::update(game);
     return true;
+}
+
+bool CitySystem::isCityUnderSiege(const Game& game, CityId cityId) {
+    if (cityId == kNoCity) return false;
+    const City* c = game.getCity(cityId);
+    if (!c) return false;
+
+    const Pos p = c->getPos();
+    const Map& map = game.getMap();
+    if (!map.inBounds(p)) return false;
+
+    const UnitId u = map.unitOn(p);
+    if (u == Map::kNoUnit) return false;
+    if (!UnitSystem::unitExists(game, u)) return false;
+
+    const PlayerId cityOwner = static_cast<PlayerId>(c->getOwnerId());
+    const PlayerId unitOwner = UnitSystem::getOwnerId(game, u);
+    return (unitOwner != kNoPlayer && cityOwner != kNoPlayer && unitOwner != cityOwner);
+}
+
+
+bool CitySystem::getCityIsInfiltrated(const Game& game, CityId cityId) {
+    if (cityId == kNoCity) return false;
+    const City* c = game.getCity(cityId);
+    if (!c) return false;
+    return c->getIsInfiltrated();
+}
+
+bool CitySystem::setCityIsInfiltrated(Game& game, CityId cityId, bool v) {
+    if (cityId == kNoCity) return false;
+    City* c = game.getCity(cityId);
+    if (!c) return false;
+    c->setIsInfiltrated(v);
+    return true;
+}
+
+void CitySystem::blockCityIncomeNextOwnerTurn(Game& game, CityId cityId) {
+    if (!CitySystem::cityExists(game, cityId)) return;
+
+    // ustaw flagę infiltracji → income zostanie zablokowany przy następnym owner turn
+    CitySystem::setCityIsInfiltrated(game, cityId, true);
+}
+
+int CitySystem::consumeAndGetCityIncomeForOwnerTurn(Game& game, PlayerId owner, CityId cityId) {
+    if (!CitySystem::cityExists(game, cityId)) return 0;
+    if (owner == kNoPlayer) return 0;
+
+    const PlayerId realOwner =
+        static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));
+
+    // tylko owner może pobrać income
+    if (realOwner != owner) return 0;
+
+    // jeżeli miasto było infiltrowane → blokuj income tylko raz
+    if (CitySystem::getCityIsInfiltrated(game, cityId)) {
+        CitySystem::setCityIsInfiltrated(game, cityId, false); // consume flag
+        return 0;
+    }
+
+    return static_cast<int>(
+        CitySystem::getCityStarsPerRound(game, cityId)
+    );
+}
+
+void CitySystem::removeUnitFromAnyCity(Game& game, UnitId unitId) {
+    // removeUnitFromCity powinno być bezpieczne jako no-op, jeśli unit nie należy do danego miasta.
+    for (auto& city : game.getCities()) {
+        CitySystem::removeUnitFromCity(game, unitId, city.getCityId());
+    }
 }

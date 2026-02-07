@@ -18,6 +18,7 @@
 #include "tech/TechDB.h" // TechId
 #include "Systems/VisionSystem.h"
 #include "Systems/CitySystem.h"
+#include "Systems/InfiltrationSystem.h"
 #include "units/UnitFactory.h"
 
 #include <queue>
@@ -902,6 +903,26 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     UnitSystem::setPos(game, unitId, to);
     UnitSystem::setMovedThisTurn(game, unitId, true);
 
+    // --- Infiltrate-on-enter ---
+    // Entering an empty ENEMY city tile with an infiltrator triggers infiltration.
+    // This must run AFTER we updated map occupancy and unit position.
+    if (UnitSystem::unitExists(game, unitId) && UnitSystem::hasSkill(game, unitId, UnitSkill::Infiltrate)) {
+        const Tile& tt = game.getMap().at(to);
+        if (tt.getSettlementType() == SettlementTypeEnum::City) {
+            const CityId cityId = static_cast<CityId>(tt.getSettlementId());
+            if (CitySystem::cityExists(game, cityId)) {
+                const PlayerId infiltrator = UnitSystem::getOwnerId(game, unitId);
+                const PlayerId cityOwner   = static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));
+                if (infiltrator != kNoPlayer && cityOwner != kNoPlayer && cityOwner != infiltrator) {
+                    // Infiltration system enforces siege/cooldown and consumes the infiltrator when successful.
+                    if (InfiltrationSystem::infiltrateCity(game, unitId, cityId)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
     // ---- Port embark / disembark ----
     // Rule:
     // - When a LAND unit steps onto a PORT tile from a LAND tile, it becomes a Raft (or Juggernaut if Giant).
@@ -935,7 +956,15 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         if (dstIsPort && srcIsLandish && !isAlreadyNavalType && !UnitSystem::isEmbarked(game, unitId)) {
             if (hasFishing && portOwnedByMover) {
                 const UnitType original = UnitSystem::getType(game, unitId);
-                const UnitType naval = (original == UnitType::Giant) ? UnitType::Juggernaut : UnitType::Raft;
+
+                UnitType naval;
+                if (original == UnitType::Giant) {
+                    naval = UnitType::Juggernaut;
+                } else if (original == UnitType::Cloak) {
+                    naval = UnitType::Dinghy;
+                } else {
+                    naval = UnitType::Raft;
+                }
 
                 Unit nu = UnitFactory::create(naval, UnitSystem::getOwnerId(game, unitId), to);
                 nu.setId(unitId);
