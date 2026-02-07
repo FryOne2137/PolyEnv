@@ -77,6 +77,8 @@ public:
 
     bool attack(UnitId attackerId, Pos target);
 
+    bool heal(UnitId healerId);
+
     // Fabryka jednostek w świecie (na razie minimalnie)
     UnitId spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately=false);
 

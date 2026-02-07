@@ -172,7 +172,7 @@ bool CitySystem::setCityId(Game& game, CityId cityId, CityId newId) {
     return true;
 }
 
-bool CitySystem::addUnitToCity(Game& game, UnitId unitId, CityId cityId) {
+bool CitySystem::addUnitToCity(Game& game, UnitId unitId, CityId cityId,bool checkCapacity) {
     if (unitId == Map::kNoUnit) return false;
     if (cityId == kNoCity) return false;
 
@@ -181,7 +181,9 @@ bool CitySystem::addUnitToCity(Game& game, UnitId unitId, CityId cityId) {
     City* city = game.getCity(cityId);
     if (!city) return false;
 
-    if (city->getUnitsCount() >= city->maxUnitCapacity()) return false;
+    if (checkCapacity) {
+        if (city->getUnitsCount() >= city->maxUnitCapacity()) return false;
+    }
 
     city->addUnit(unitId);
     return true;
@@ -220,15 +222,65 @@ bool CitySystem::transferUnitBetweenCities(Game& game, UnitId unitId, CityId fro
 
 // ===== Internal helpers (moved from Game.cpp) =====
 
-void CitySystem::reassignUnitToCity(Game& game, UnitId uid, CityId newCityId) {
-    if (uid == kNoUnit || newCityId == kNoCity) return;
+void CitySystem::reassignUnitToCity(Game& game, UnitId uid, CityId newCityId, bool checkCapacity) {
+    if (uid == kNoUnit) return;
 
     const size_t cityCount = game.getCities().size();
+
+    // Always remove from any previous city lists.
     for (CityId cid = 0; cid < static_cast<CityId>(cityCount); ++cid) {
         (void)CitySystem::removeUnitFromCity(game, uid, cid);
     }
-    (void)CitySystem::addUnitToCity(game, uid, newCityId);
+
+    // If no target city, stop here (unit remains unassigned to any city).
+    if (newCityId == kNoCity) return;
+
+    (void)CitySystem::addUnitToCity(game, uid, newCityId, checkCapacity);
 }
+
+
+CityId CitySystem::pickCityForConvertedUnit(const Game& game, PlayerId owner) {
+    if (owner == kNoPlayer) return kNoCity;
+    if (!PlayerSystem::playerExists(game, owner)) return kNoCity;
+
+    const CityId capital = PlayerSystem::getCapitalId(game, owner);
+
+    // Rule: if we have a capital, assign ONLY to the capital (ignore capacity).
+    if (capital != kNoCity) {
+        return capital;
+    }
+
+    auto hasCapacity = [&](CityId cid) -> bool {
+        if (cid == kNoCity) return false;
+        if (!CitySystem::cityExists(game, cid)) return false;
+        if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != owner) return false;
+        return CitySystem::getCityUnitsCount(game, cid) < CitySystem::getCityMaxUnitCapacity(game, cid);
+    };
+
+    // Exception: if there is NO capital, pick any owned city with capacity from SOUTH to NORTH.
+    const auto& owned = PlayerSystem::getCities(game, owner);
+    if (owned.empty()) return kNoCity;
+
+    std::vector<CityId> candidates;
+    candidates.reserve(owned.size());
+    for (CityId cid : owned) {
+        if (!hasCapacity(cid)) continue;
+        candidates.push_back(cid);
+    }
+
+    if (candidates.empty()) return kNoCity;
+
+    // SOUTH first: larger y, tie-break x ascending.
+    std::sort(candidates.begin(), candidates.end(), [&](CityId a, CityId b) {
+        const Pos pa = CitySystem::getCityPos(game, a);
+        const Pos pb = CitySystem::getCityPos(game, b);
+        if (pa.y != pb.y) return pa.y > pb.y;
+        return pa.x < pb.x;
+    });
+
+    return candidates.front();
+}
+
 
 void CitySystem::claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId citySid, Pos center) {
     if (cid == kNoCity) return;
@@ -391,7 +443,8 @@ bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
     {
         const UnitId uOn = map.unitOn(pos);
         if (uOn != Map::kNoUnit) {
-            CitySystem::reassignUnitToCity(game, uOn, cid);
+            // Keep default behavior: respect capacity when capturing.
+            CitySystem::reassignUnitToCity(game, uOn, cid, true);
         }
     }
 

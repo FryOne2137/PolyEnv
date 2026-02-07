@@ -6,8 +6,6 @@
 void City::addUnit(UnitId id) {
     if (id == kNoUnit) return;
 
-    // Do not exceed city capacity.
-    if (units.size() >= static_cast<size_t>(maxUnitCapacity())) return;
 
     // Avoid duplicates.
     if (std::find(units.begin(), units.end(), id) != units.end()) return;

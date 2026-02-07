@@ -203,6 +203,45 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     // After moving, attacking is only allowed for units with Dash
     if (UnitSystem::movedThisTurn(game, attackerId) && !UnitSystem::hasSkill(game, attackerId, UnitSkill::Dash)) return false;
 
+    // --- Convert (Mind Bender / Shaman) ---
+    // If attacker has Convert, it converts the enemy unit instead of dealing damage.
+    // Polytopia rule: converted units belong to the converter's capital (unless other game rules apply).
+    if (UnitSystem::hasSkill(game, attackerId, UnitSkill::Convert)) {
+        const PlayerId newOwner = UnitSystem::getOwnerId(game, attackerId);
+        const PlayerId oldOwner = UnitSystem::getOwnerId(game, defenderId);
+
+        if (newOwner == kNoPlayer || oldOwner == kNoPlayer) return false;
+        if (newOwner == oldOwner) return false;
+
+        // 1) Re-assign ownership on the unit itself.
+        (void)UnitSystem::setOwnerId(game, defenderId, newOwner);
+
+        // 2) Update player unit lists.
+        PlayerSystem::removeUnit(game, oldOwner, defenderId);
+        PlayerSystem::addUnit(game, newOwner, defenderId);
+
+        // 3) Re-assign the converted unit to the converter's city.
+        // Rule: capital if it has capacity, otherwise owned cities from SOUTH to NORTH with capacity,
+        // otherwise do not assign to any city (but still remove from old city lists).
+        const CityId targetCity = CitySystem::pickCityForConvertedUnit(game, newOwner);
+        CitySystem::reassignUnitToCity(game, defenderId, targetCity, false);
+
+        // Converted unit should not act immediately this turn.
+        UnitSystem::setMovedThisTurn(game, defenderId, true);
+        UnitSystem::setAttackedThisTurn(game, defenderId, true);
+
+        // Consume the attack action for the converter.
+        UnitSystem::setAttackedThisTurn(game, attackerId, true);
+
+        // Remember last attack direction (for forced spawn push logic)
+        {
+            const Pos from = attackerPos;
+            const Pos to   = targetPos;
+            UnitSystem::setLastAttackDir(game, attackerId, Pos{to.x - from.x, to.y - from.y});
+        }
+
+        return true;
+    }
     // --- Polytopia damage formula ---
     const double aAtk = static_cast<double>(UnitSystem::getAttack(game, attackerId));
     const double dDef = static_cast<double>(UnitSystem::getDefense(game, defenderId));
@@ -346,6 +385,66 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
             );
         }
     }
+
+    return true;
+}
+
+
+bool CombatSystem::heal(Game& game, UnitId healerId) {
+    if (!UnitSystem::unitExists(game, healerId)) return false;
+
+    // Only units with the Heal skill can use Heal Others.
+    if (!UnitSystem::hasSkill(game, healerId, UnitSkill::Heal)) return false;
+
+    // Cannot heal if already used attack/action this turn.
+    if (UnitSystem::attackedThisTurn(game, healerId)) return false;
+
+    // Same rule as attack: after moving, action is only allowed for units with Dash.
+    if (UnitSystem::movedThisTurn(game, healerId) && !UnitSystem::hasSkill(game, healerId, UnitSkill::Dash)) {
+        return false;
+    }
+
+    const PlayerId owner = UnitSystem::getOwnerId(game, healerId);
+    if (owner == kNoPlayer) return false;
+
+    const Pos center = UnitSystem::getPos(game, healerId);
+    if (!game.getMap().inBounds(center)) return false;
+
+    bool didHeal = false;
+
+    // Heal all adjacent (8-neighborhood) friendly units by up to 4 HP.
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+
+            const Pos p{center.x + dx, center.y + dy};
+            if (!game.getMap().inBounds(p)) continue;
+
+            const UnitId uid = game.getMap().unitOn(p);
+            if (uid == Map::kNoUnit) continue;
+            if (!UnitSystem::unitExists(game, uid)) continue;
+
+            if (UnitSystem::getOwnerId(game, uid) != owner) continue;
+
+            const int before = UnitSystem::getHealth(game, uid);
+            if (before <= 0) continue;
+
+            // Wiki: Heal Others heals by up to 4 HP (not above max HP).
+            (void)UnitSystem::heal(game, uid, 4);
+
+            const int after = UnitSystem::getHealth(game, uid);
+            if (after > before) {
+                didHeal = true;
+            }
+        }
+    }
+
+    // If nothing was healed, do not consume the action.
+    if (!didHeal) return false;
+
+    // Consume the unit's action for this turn: block both moving and attacking.
+    UnitSystem::setAttackedThisTurn(game, healerId, true);
+    UnitSystem::setMovedThisTurn(game, healerId, true);
 
     return true;
 }

@@ -29,7 +29,9 @@
 #include <iostream>
 
 
+
 #include "World/Tile.h"
+#include "terrain/SettlementId.h"
 
 
 namespace {
@@ -146,13 +148,18 @@ void Game::newGame(const NewGameConfig& cfg) {
 
         // ✅ STARTOWY SCORE WG PLEMienia (Tribe Starting Scores)
 
-        // Ensure player's city list contains the starting capital (needed for tech price scaling).
-        PlayerSystem::addCity(*this, pid, static_cast<CityId>(capitalId));
-
         // Grant starting technology (new TechId-based tech system)
         const TechId startTech = tribe.getStartTech();
         if (startTech != TechId::Count) {
         PlayerSystem::addTech(*this, pid, startTech);
+        }
+    }
+
+    // 3b) Initialize capitals (tile settlement + territory) via CitySystem.
+    // Must happen after players are created, because initCapital also ensures player city list + capital id.
+    if (capitals.size() == cfg.tribes.size()) {
+        for (size_t i = 0; i < cfg.tribes.size(); ++i) {
+            (void)CitySystem::initCapital(*this, static_cast<PlayerId>(i), static_cast<CityId>(i), capitals[i]);
         }
     }
 
@@ -169,16 +176,12 @@ void Game::newGame(const NewGameConfig& cfg) {
             const Tribe tribe = Tribe::makeDefault(cfg.tribes[i]);
             const UnitType startType = tribe.getStartUnit().getType();
 
-            // Initialize capital tile + territory via CitySystem.
-            (void)CitySystem::initCapital(*this, static_cast<PlayerId>(i), static_cast<CityId>(i), cap);
-
             const UnitId uid = spawnUnit(startType, static_cast<PlayerId>(i), cap, true);
             if (uid != kNoUnit) {
                 (void)CitySystem::addUnitToCity(*this, uid, static_cast<CityId>(i));
             }
         }
     }
-
     // 4c) initial fog-of-war: each player sees radius 2 around their capital.
     if (capitals.size() == players.size()) {
         for (size_t i = 0; i < players.size(); ++i) {
@@ -313,6 +316,15 @@ bool Game::attack(PlayerId pid, UnitId attackerId, Pos target) {
 bool Game::attack(UnitId attackerId, Pos target) {
     if (!UnitSystem::unitExists(*this, attackerId)) return false;
     return attack(UnitSystem::getOwnerId(*this, attackerId), attackerId, target);
+}
+
+bool Game::heal(UnitId healerId) {
+    if (!UnitSystem::unitExists(*this, healerId)) return false;
+
+    const PlayerId owner = UnitSystem::getOwnerId(*this, healerId);
+    if (!isPlayersTurn(owner)) return false;
+
+    return CombatSystem::heal(*this, healerId);
 }
 
 std::vector<Pos> Game::attackable(UnitId attackerId) const {

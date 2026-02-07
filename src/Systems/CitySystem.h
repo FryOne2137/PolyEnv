@@ -30,12 +30,13 @@ public:
     static const std::string getCityName(const Game &game, CityId cityId);
 
     static CityId getCityId(const Game &game, CityId cityId);
+    static CityId pickCityForConvertedUnit(const Game& game, PlayerId owner);
 
     static bool setCityPos(Game &game, CityId cityId, Pos pos);
 
     static bool setCityId(Game &game, CityId cityId, CityId newId);
 
-    static bool addUnitToCity(Game& game, UnitId unitId, CityId cityId) ;
+    static bool addUnitToCity(Game &game, UnitId unitId, CityId cityId, bool checkCapacity=true) ;
     static bool removeUnitFromCity(Game& game, UnitId unitId, CityId cityId) ;
     static bool transferUnitBetweenCities(Game& game, UnitId unitId, CityId fromCityId, CityId toCityId) ;
 
@@ -54,7 +55,7 @@ public:
     static bool captureCityAt(Game& game, PlayerId newOwner, Pos pos);
 
     // ---- Helpers ----
-    static void reassignUnitToCity(Game& game, UnitId uid, CityId newCityId);
+    static void reassignUnitToCity(Game &game, UnitId uid, CityId newCityId, bool checkCapacity=true);
     static void claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId citySid, Pos center);
 
     static bool initCapital(Game &game, PlayerId owner, CityId cid, Pos capPos);

@@ -202,6 +202,7 @@ enum class ActionKind {
     Explorer,
     ExploreRuin,
     CollectStarfish,
+    Heal,
 };
 struct ActionButton {
     sf::FloatRect rect;
@@ -625,6 +626,14 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
                                     const bool ok = game->handleStarfish(uid, g_actionPos);
+                                    (void)ok;
+                                }
+                            });
+                        } else if (ab.kind == ActionKind::Heal) {
+                            perfLog("Heal", [&] {
+                                const UnitId uid = game->getMap().unitOn(g_actionPos);
+                                if (uid != Map::kNoUnit) {
+                                    const bool ok = game->heal(uid);
                                     (void)ok;
                                 }
                             });
@@ -2130,6 +2139,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     }
                     // Tile actions
                     pushBtn(ActionKind::Organization, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
+                    pushBtn(ActionKind::Heal,         "Heal",         UnitType::Unknown, BuildingTypeEnum::None);
                     pushBtn(ActionKind::Hunt,         "Hunt",         UnitType::Unknown, BuildingTypeEnum::None);
                     pushBtn(ActionKind::Fishing,      "Fishing",      UnitType::Unknown, BuildingTypeEnum::None);
                     pushBtn(ActionKind::ClearForest,  "Clear Forest", UnitType::Unknown, BuildingTypeEnum::None);
@@ -2186,6 +2196,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                                 pushBtn(sbtn.kind, "Build Road", UnitType::Unknown, BuildingTypeEnum::None);
                             } else if (sbtn.kind == ActionKind::Organization) {
                                 pushBtn(sbtn.kind, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
+                            } else if (sbtn.kind == ActionKind::Heal) {
+                                pushBtn(sbtn.kind, "Heal", UnitType::Unknown, BuildingTypeEnum::None);
                             } else if (sbtn.kind == ActionKind::UpgradeRaftToScout) {
                                 pushBtn(sbtn.kind, "Upgrade -> Scout", UnitType::Raft, BuildingTypeEnum::None);
                             } else if (sbtn.kind == ActionKind::UpgradeRaftToRammer) {
