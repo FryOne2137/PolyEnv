@@ -210,8 +210,10 @@ bool TileActionSystem::burnForest(Game& game, PlayerId pid, Pos pos) {
 
     if (!spendStars(game, pid, kCost)) return false;
 
-    // Burn = remove forest resource (you can additionally set a “burned” resource later if you add one)
-    t.setResource(removeFlag(r, ResourcesEnum::Forest));
+    // Burn = convert Forest into Crops
+    ResourcesEnum nr = removeFlag(r, ResourcesEnum::Forest);
+    nr = addFlag(nr, ResourcesEnum::Crops);
+    t.setResource(nr);
     return true;
 }
 

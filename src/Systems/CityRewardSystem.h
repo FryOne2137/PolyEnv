@@ -36,7 +36,7 @@ struct CityUpgradeOptions {
     CityUpgradeChoice b = CityUpgradeChoice::None;
 };
 
-class CityUpgradeSystem {
+class CityRewardSystem {
 public:
 
     // Returns true if city has enough population to upgrade.

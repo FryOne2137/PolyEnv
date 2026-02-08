@@ -23,7 +23,7 @@
 #include "Systems/CitySystem.h"
 
 #include "Systems/UnitUpgradeSystem.h"
-#include "Systems/CityUpgradeSystem.h"
+#include "Systems/CityRewardSystem.h"
 
 #include <algorithm>
 #include <iostream>
@@ -192,11 +192,13 @@ void Game::newGame(const NewGameConfig& cfg) {
 
 bool Game::buyTech(PlayerId pid, TechId tech) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     return TechSystem::buyTech(*this, pid, tech);
 }
 
 bool Game::endTurn(PlayerId pid) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     TurnSystem::endTurn(*this);
 
@@ -238,6 +240,7 @@ bool Game::moveUnit(PlayerId pid, UnitId unitId, Pos to) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return MovementSystem::move(*this, unitId, to);
 }
@@ -248,6 +251,7 @@ bool Game::handleRuin(PlayerId pid, UnitId unitId, Pos pos) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     if (!map.inBounds(pos)) return false;
 
@@ -265,6 +269,7 @@ bool Game::handleStarfish(PlayerId pid, UnitId unitId, Pos pos) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     if (!map.inBounds(pos)) return false;
 
@@ -287,6 +292,7 @@ bool Game::attack(PlayerId pid, UnitId attackerId, Pos target) {
 
     if (pid != UnitSystem::getOwnerId(*this, attackerId)) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return CombatSystem::attack(*this, attackerId, target);
 }
@@ -298,6 +304,7 @@ bool Game::heal(PlayerId pid, UnitId healerId) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, healerId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return CombatSystem::heal(*this, healerId);
 }
@@ -314,6 +321,7 @@ std::vector<Pos> Game::attackable(PlayerId pid, UnitId attackerId) const {
 
 bool Game::buildBuilding(PlayerId builder, Pos pos, BuildingTypeEnum type) {
     if (!isPlayersTurn(builder)) return false;
+    if (hasPendingCityUpgrade(builder)) return false;
     if (!map.inBounds(pos)) return false;
 
     const Tile& t = map.at(pos);
@@ -329,48 +337,56 @@ bool Game::buildBuilding(PlayerId builder, Pos pos, BuildingTypeEnum type) {
 
 bool Game::hunt(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::hunt(*this, pid, pos);
 }
 
 bool Game::organization(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::organization(*this, pid, pos);
 }
 
 bool Game::fishing(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::fishing(*this, pid, pos);
 }
 
 bool Game::clearForest(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::clearForest(*this, pid, pos);
 }
 
 bool Game::burnForest(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::burnForest(*this, pid, pos);
 }
 
 bool Game::growForest(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::growForest(*this, pid, pos);
 }
 
 bool Game::destroyTile(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::destroy(*this, pid, pos);
 }
 
 bool Game::buildRoad(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::buildRoad(*this, pid, pos);
 }
@@ -393,6 +409,7 @@ std::vector<BuildingTypeEnum> Game::getPlayerOwnedMonuments(PlayerId pid) const 
 bool Game::explorer(PlayerId pid, Pos start) {
     std::cout << "[explorer] pid=" << int(pid) << " start=(" << start.x << "," << start.y << ")\n";
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(start)) return false;
     VisionSystem::doExplorer(*this, pid, start);
     return true;
@@ -400,6 +417,7 @@ bool Game::explorer(PlayerId pid, Pos start) {
 
 bool Game::buildBridge(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     if (!map.inBounds(pos)) return false;
     return TileActionSystem::buildBridge(*this, pid, pos);
 }
@@ -408,6 +426,7 @@ bool Game::buildBridge(PlayerId pid, Pos pos) {
 
 bool Game::foundCityFromVillage(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     return CitySystem::foundCityFromVillage(*this, pid, pos);
 }
 
@@ -418,7 +437,8 @@ bool Game::canUpgradeCity(PlayerId pid, CityId cityId) const {
     const PlayerId owner = static_cast<PlayerId>(CitySystem::getCityOwner(*this, cityId));
     if (owner != pid) return false;
 
-    return CityUpgradeSystem::canUpgrade(*this, cityId);
+    const PendingCityUpgrade* p = peekPendingCityUpgrade(pid);
+    return p && p->cityId == cityId;
 }
 
 CityUpgradeOptions Game::getCityUpgradeOptions(PlayerId pid, CityId cityId) const {
@@ -430,7 +450,9 @@ CityUpgradeOptions Game::getCityUpgradeOptions(PlayerId pid, CityId cityId) cons
     const PlayerId owner = static_cast<PlayerId>(CitySystem::getCityOwner(*this, cityId));
     if (owner != pid) return out;
 
-    return CityUpgradeSystem::getUpgradeOptions(*this, cityId);
+    const PendingCityUpgrade* p = peekPendingCityUpgrade(pid);
+    if (!p || p->cityId != cityId) return out;
+    return p->opts;
 }
 
 bool Game::upgradeCity(PlayerId pid, CityId cityId, CityUpgradeChoice choice) {
@@ -440,12 +462,23 @@ bool Game::upgradeCity(PlayerId pid, CityId cityId, CityUpgradeChoice choice) {
     const PlayerId owner = static_cast<PlayerId>(CitySystem::getCityOwner(*this, cityId));
     if (owner != pid) return false;
 
-    return CityUpgradeSystem::tryUpgrade(*this, cityId, choice);
+    if (pendingCityUpgrades.empty()) return false;
+    const PendingCityUpgrade& front = pendingCityUpgrades.front();
+    if (front.pid != pid) return false;
+    if (front.cityId != cityId) return false;
+
+    if (choice != front.opts.a && choice != front.opts.b) return false;
+
+    if (!CityRewardSystem::tryUpgrade(*this, cityId, choice)) return false;
+
+    pendingCityUpgrades.pop_front();
+    return true;
 }
 
 
 bool Game::captureCityAt(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
     return CitySystem::captureCityAt(*this, pid, pos);
 }
 
@@ -490,6 +523,7 @@ bool Game::upgradeRaftToScout(PlayerId pid, UnitId unitId) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return UnitUpgradeSystem::upgradeRaftToScout(*this, unitId);
 }
@@ -501,6 +535,7 @@ bool Game::upgradeRaftToRammer(PlayerId pid, UnitId unitId) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return UnitUpgradeSystem::upgradeRaftToRammer(*this, unitId);
 }
@@ -512,6 +547,7 @@ bool Game::upgradeRaftToBomber(PlayerId pid, UnitId unitId) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return UnitUpgradeSystem::upgradeRaftToBomber(*this, unitId);
 }
@@ -536,6 +572,7 @@ bool Game::becomeVeteran(PlayerId pid, UnitId unitId) {
     const PlayerId owner = UnitSystem::getOwnerId(*this, unitId);
     if (pid != owner) return false;
     if (!isPlayersTurn(pid)) return false;
+    if (hasPendingCityUpgrade(pid)) return false;
 
     return UnitUpgradeSystem::becomeVeteran(*this, unitId);
 }
@@ -561,5 +598,49 @@ bool Game::markLighthouseDiscovered(uint8_t lighthouseIdx, PlayerId pid) {
 
     if (mask & bit) return false; // już odkrył wcześniej
     mask |= bit;
+    return true;
+}
+
+bool Game::hasPendingCityUpgrade(PlayerId pid) const {
+    for (const auto& p : pendingCityUpgrades) {
+        if (p.pid == pid) return true;
+    }
+    return false;
+}
+
+const Game::PendingCityUpgrade* Game::peekPendingCityUpgrade(PlayerId pid) const {
+    for (const auto& p : pendingCityUpgrades) {
+        if (p.pid == pid) return &p;
+    }
+    return nullptr;
+}
+
+bool Game::enqueuePendingCityUpgrade(PlayerId pid, CityId cityId) {
+    // Prevent duplicates for the same (pid, cityId)
+    for (const auto& p : pendingCityUpgrades) {
+        if (p.pid == pid && p.cityId == cityId) return false;
+    }
+
+    // Level-up is performed in CitySystem/City; we only enqueue the reward choice.
+    pendingCityUpgrades.push_back(PendingCityUpgrade{
+        pid,
+        cityId,
+        CityRewardSystem::getUpgradeOptions(*this, cityId),
+        turnNumber
+    });
+    return true;
+}
+
+bool Game::resolvePendingCityUpgrade(PlayerId pid, CityUpgradeChoice choice) {
+    if (pendingCityUpgrades.empty()) return false;
+
+    const PendingCityUpgrade& front = pendingCityUpgrades.front();
+    if (front.pid != pid) return false;
+
+    if (choice != front.opts.a && choice != front.opts.b) return false;
+
+    if (!CityRewardSystem::tryUpgrade(*this, front.cityId, choice)) return false;
+
+    pendingCityUpgrades.pop_front();
     return true;
 }

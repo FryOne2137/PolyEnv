@@ -369,6 +369,63 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
 }
 
 
+void CombatSystem::stompAt(Game& game, UnitId stomperId, Pos center) {
+    if (!UnitSystem::unitExists(game, stomperId)) return;
+    if (!UnitSystem::hasSkill(game, stomperId, UnitSkill::Stomp)) return;
+    if (!game.getMap().inBounds(center)) return;
+
+    const PlayerId stomperOwner = UnitSystem::getOwnerId(game, stomperId);
+    if (stomperOwner == kNoPlayer) return;
+
+    // Stomp uses the same damage formula as a normal melee attack, scaled by current HP,
+    // but it does NOT trigger retaliation.
+    const double aAtk = static_cast<double>(UnitSystem::getAttack(game, stomperId));
+    const double aHp = static_cast<double>(UnitSystem::getHealth(game, stomperId));
+    const double aMaxHp = static_cast<double>(UnitSystem::getMaxHealth(game, stomperId));
+    if (aMaxHp <= 0.0) return;
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+
+            const Pos p{center.x + dx, center.y + dy};
+            if (!game.getMap().inBounds(p)) continue;
+
+            const UnitId defenderId = game.getMap().unitOn(p);
+            if (defenderId == Map::kNoUnit) continue;
+            if (!UnitSystem::unitExists(game, defenderId)) continue;
+
+            // Only damage enemy units.
+            if (UnitSystem::getOwnerId(game, defenderId) == stomperOwner) continue;
+
+            const double dDef = static_cast<double>(UnitSystem::getDefense(game, defenderId));
+            const double dHp = static_cast<double>(UnitSystem::getHealth(game, defenderId));
+            const double dMaxHp = static_cast<double>(UnitSystem::getMaxHealth(game, defenderId));
+            if (dMaxHp <= 0.0) continue;
+
+            const double attackForce = aAtk * (aHp / aMaxHp);
+            const double defenceBonus = computeDefenceBonus(game, defenderId);
+            const double defenceForce = dDef * (dHp / dMaxHp) * defenceBonus;
+
+            const double total = std::max(1e-9, attackForce + defenceForce);
+
+            // Compute the normal "main hit" damage like in CombatSystem::attack(...)
+            const int mainHit = std::max(0, iround((attackForce / total) * aAtk * 4.5));
+
+            // Stomp damage should match Splash damage amount: half of main hit (rounded down).
+            const int stompDamage = std::max(0, mainHit / 2);
+            if (stompDamage <= 0) continue;
+
+            UnitSystem::setHealth(game, defenderId, std::max(0, UnitSystem::getHealth(game, defenderId) - stompDamage));
+            if (UnitSystem::getHealth(game, defenderId) <= 0) {
+                UnitSystem::addKill(game, stomperId);
+                awardKillToPlayer(game, stomperOwner, stomperId);
+                killUnit(game, defenderId);
+            }
+        }
+    }
+}
+
 bool CombatSystem::heal(Game& game, UnitId healerId) {
     if (!UnitSystem::unitExists(game, healerId)) return false;
 

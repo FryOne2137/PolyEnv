@@ -19,6 +19,7 @@
 #include "Systems/VisionSystem.h"
 #include "Systems/CitySystem.h"
 #include "Systems/InfiltrationSystem.h"
+#include "Systems/CombatSystem.h"
 #include "units/UnitFactory.h"
 
 #include <queue>
@@ -541,6 +542,10 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
             }
         }
 
+        // --- Stomp ---
+        // Apply stomp at the landing tile (no retaliation, handled inside CombatSystem).
+        CombatSystem::stompAt(game, pushedUnit, to);
+
         return true;
     }
 
@@ -1014,6 +1019,15 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
                 UnitSystem::replaceUnit(game, unitId, nu);
             }
+        }
+    }
+
+    // --- Stomp ---
+    // Deal stomp damage around the unit for every step along the movement path (excluding the starting tile).
+    // IMPORTANT: stomp does NOT cause retaliation.
+    if (UnitSystem::unitExists(game, unitId) && UnitSystem::hasSkill(game, unitId, UnitSkill::Stomp)) {
+        for (size_t i = 1; i < path.size(); ++i) {
+            CombatSystem::stompAt(game, unitId, path[i]);
         }
     }
 

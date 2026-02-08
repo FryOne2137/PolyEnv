@@ -12,6 +12,7 @@
 #include "Systems/UnitSystem.h"
 #include "Systems/PlayerSystem.h"
 #include "Systems/CitiesConnectionSystem.h"
+#include "Systems/VisionSystem.h"
 
 #include "World/Tile.h"
 #include "terrain/SettlementTypeEnum.h"
@@ -88,6 +89,12 @@ bool CitySystem::addPopulation(Game& game, CityId cityId, uint16_t amount) {
     // Monument unlock tylko przy przejściu na 5+
     if (oldLevel < 5 && newLevel >= 5) {
         MonumentSystem::onCityReachedLevel5(game, c->getPos());
+    }
+
+    // If the city reached a new level threshold, force reward selection via the pending queue.
+    if (newLevel > oldLevel) {
+        const PlayerId owner = static_cast<PlayerId>(c->getOwnerId());
+        game.enqueuePendingCityUpgrade(owner, cityId);
     }
 
     return true;
@@ -283,7 +290,7 @@ CityId CitySystem::pickCityForConvertedUnit(const Game& game, PlayerId owner) {
 }
 
 
-void CitySystem::claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId citySid, Pos center) {
+void CitySystem::claimFreeTerritoryRadius(Game& game, CityId cid, SettlementId citySid, Pos center, int radius) {
     if (cid == kNoCity) return;
 
     Map& map = game.getMap();
@@ -295,14 +302,20 @@ void CitySystem::claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId 
 
         if (tt.getTerritoryCityId() != kNoCity) return;
 
+        // Safety: don't claim another city's center tile if its settlement id differs.
         if (tt.getSettlementType() == SettlementTypeEnum::City) {
             const SettlementId otherSid = tt.getSettlementId();
             if (otherSid != kNoSettlement && otherSid != citySid) return;
         }
 
         tt.setTerritoryCityId(cid);
+        const PlayerId owner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
+        if (owner != kNoPlayer) {
+            VisionSystem::revealTile(game, owner, p, RevealSource::Initial);
+        }
     };
 
+    // Ensure center itself is assigned (same safety rule as before)
     if (map.inBounds(center)) {
         Tile& ct = map.at(center);
 
@@ -314,17 +327,30 @@ void CitySystem::claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId 
         }
 
         ct.setTerritoryCityId(cid);
+        const PlayerId owner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
+        if (owner != kNoPlayer) {
+            VisionSystem::revealTile(game, owner, center, RevealSource::Initial);
+        }
     }
 
-    static const std::array<Pos, 8> kNb = {
-        Pos{ 1, 0}, Pos{-1, 0}, Pos{0, 1}, Pos{0,-1},
-        Pos{ 1, 1}, Pos{ 1,-1}, Pos{-1, 1}, Pos{-1,-1}
-    };
+    // Clamp radius and claim a square around center (including diagonals)
+    if (radius < 0) radius = 0;
 
-    for (const Pos d : kNb) {
-        tryClaim(Pos{center.x + d.x, center.y + d.y});
+    for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            tryClaim(Pos{
+                static_cast<int16_t>(center.x + dx),
+                static_cast<int16_t>(center.y + dy)
+            });
+        }
     }
 }
+
+void CitySystem::claimFreeTerritoryRadius1(Game& game, CityId cid, SettlementId citySid, Pos center) {
+    claimFreeTerritoryRadius(game, cid, citySid, center, 1);
+}
+
 
 // ===== NEW: initCapital =====
 

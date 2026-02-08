@@ -163,8 +163,8 @@ set(ENGINE_SOURCES
         src/Systems/InfiltrationSystem.h
         src/Systems/StarsSystem.cpp
         src/Systems/StarsSystem.h
-        src/Systems/CityUpgradeSystem.cpp
-        src/Systems/CityUpgradeSystem.h
+        src/Systems/CityRewardSystem.cpp
+        src/Systems/CityRewardSystem.h
 )
 
 # ---- Engine library (no mains, no SFML) ----

@@ -8,13 +8,14 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <deque>
 
 #include "World/Map.h"
 #include "World/Pos.h"
 #include "World/MapGenerator.h"
 
 #include "Player/Player.h"
-#include "Systems/CityUpgradeSystem.h"
+#include "Systems/CityRewardSystem.h"
 #include "units/Unit.h"
 #include "tribes/Tribe.h"
 #include "World/Settlements/City.h"
@@ -41,6 +42,24 @@ public:
     };
 
     Game() = default;
+
+    // ---- Pending City Upgrades (modal reward selection) ----
+    struct PendingCityUpgrade {
+        PlayerId pid;
+        CityId cityId;
+        CityUpgradeOptions opts;
+        uint32_t createdOnTurn;
+    };
+
+    // Returns true if this player must resolve a city upgrade reward before doing anything else
+    bool hasPendingCityUpgrade(PlayerId pid) const;
+
+    // Returns the next pending upgrade for this player (nullptr if none)
+    const PendingCityUpgrade* peekPendingCityUpgrade(PlayerId pid) const;
+
+    // Resolves the next pending upgrade for this player (must match front of queue)
+    bool resolvePendingCityUpgrade(PlayerId pid, CityUpgradeChoice choice);
+    bool enqueuePendingCityUpgrade(PlayerId pid, CityId cityId);
 
     // Tworzy nową grę: generuje mapę + tworzy graczy + ustawia turę 0
     void newGame(const NewGameConfig &cfg);
@@ -159,6 +178,8 @@ private:
     uint32_t turnNumber = 0;
 
     std::array<uint16_t, 4> lighthouseDiscoveredBy = {0, 0, 0, 0};
+
+    std::deque<PendingCityUpgrade> pendingCityUpgrades;
 };
 
 #endif // GAME_ENGINE_GAME_H

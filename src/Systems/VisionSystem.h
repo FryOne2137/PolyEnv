@@ -27,6 +27,7 @@ class VisionSystem {
 public:
     // Reveal tiles around a single unit using Unit::getVisionRange().
     static void revealFromUnit(Game& game, UnitId unitId);
+    static void revealTile(Game& game, PlayerId pid, Pos p, RevealSource source);
 
     // Recompute (union) visibility for a player from all their units.
     // NOTE: This function only ADDS visibility (like Polytopia fog). It does not hide tiles again.

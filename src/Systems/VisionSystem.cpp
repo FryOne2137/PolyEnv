@@ -380,3 +380,7 @@ int VisionSystem::meetingReward(int enemyScore) {
            (p.x == w - 1 && p.y == 0) ||
            (p.x == w - 1 && p.y == h - 1);
 }
+
+void VisionSystem::revealTile(Game& game, PlayerId pid, Pos p, RevealSource source) {
+    VisionSystem::revealArea(game, pid, p, 0, source);
+}

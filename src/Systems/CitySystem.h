@@ -32,6 +32,8 @@ public:
     static CityId getCityId(const Game &game, CityId cityId);
     static CityId pickCityForConvertedUnit(const Game& game, PlayerId owner);
 
+    static void claimFreeTerritoryRadius(Game &game, CityId cid, SettlementId citySid, Pos center, int radius);
+
     static bool setCityPos(Game &game, CityId cityId, Pos pos);
 
     static bool setCityId(Game &game, CityId cityId, CityId newId);

@@ -160,6 +160,15 @@ static sf::FloatRect g_techHitArea;
 static float g_techHitRadius = 0.f;
 static std::unordered_map<TechId, sf::Vector2f> g_techHitPos;
 
+// --- City reward panel hitboxes (always visible in right panel) ---
+struct RewardHit {
+    sf::FloatRect rect;
+    CityUpgradeChoice choice;
+    uint8_t level; // UI grouping only
+};
+static bool g_rewardHitValid = false;
+static std::vector<RewardHit> g_rewardHits;
+
 // --- Movement click/overlay state (gameplay view only) ---
 static UnitId g_moveSelectedUnit = kNoUnit;
 static bool g_moveOverlayValid = false;
@@ -639,6 +648,34 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                         g_moveSelectedUnit = kNoUnit;
                         clearUnitOverlays();
                         selectedValid = false;
+                        g_actionBtnsValid = false;
+                        g_actionBtnCount = 0;
+                        return; // consume click
+                    }
+                }
+                // --- City reward panel click (always visible in right panel) ---
+                if (game && g_rewardHitValid) {
+                    for (const RewardHit& rh : g_rewardHits) {
+                        if (!rh.rect.contains(up)) continue;
+
+                        // Resolve "current city" from selected tile.
+                        if (!selectedValid || !game->getMap().inBounds(selectedPos)) return; // consume (no city selected)
+
+                        const Tile& st = game->getMap().at(selectedPos);
+                        const City* cObj = resolveCityForTile(game, st);
+                        if (!cObj) return; // consume
+
+                        const CityId cityId = cObj->getCityId();
+                        const PlayerId pid = game->getCurrentPlayerId();
+
+                        perfLog("ChooseCityReward", [&] {
+                            const bool ok = game->upgradeCity(pid, cityId, rh.choice);
+                            (void)ok;
+                        });
+
+                        // After choosing reward, clear overlays like other actions.
+                        g_moveSelectedUnit = kNoUnit;
+                        clearUnitOverlays();
                         g_actionBtnsValid = false;
                         g_actionBtnCount = 0;
                         return; // consume click
@@ -1484,6 +1521,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     const sf::FloatRect panelRect(float(rtSzPanel.x) - panelW, 0.f, panelW, float(rtSzPanel.y));
 
 
+
     // --- Units lookup (by tile pos) ---
     std::unordered_map<uint32_t, std::vector<const Unit*>> unitsByPos;
     {
@@ -2126,6 +2164,116 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             const sf::Texture& utex = unitTexture(cmd.tribeSource, cmd.u->getType());
             drawSprite(rt, utex, cmd.ux, cmd.uy, cmd.s);
         }
+
+        // --- City Rewards panel (always visible, top-right) ---
+        g_rewardHitValid = false;
+        g_rewardHits.clear();
+
+        // Ensure we can draw text
+        ensureUIFontLoaded();
+
+        // Dock the rewards panel immediately to the LEFT of the right info panel,
+        // aligned to the top (same vertical origin as the right panel).
+        // This makes it part of the right-side UI column, before the map area.
+        const float rewardsX = panelRect.left - 150 - panelPad;
+        const float rewardsY = panelRect.top;
+
+        // Keep the rewards panel within the map viewport width (exclude the right panel).
+        const float maxRewardsW = std::max(160.f, float(mapRt.x) - rewardsX - panelPad);
+        const float rewardsW = std::min(320.f, maxRewardsW);
+
+        // Layout
+        const float titleH = 22.f;
+        const float rowH = 22.f;
+        const float btnH = 22.f;
+        const float gapY = 6.f;
+        const float gapRow = 10.f;
+
+        const int rows = 4; // lvl2, lvl3, lvl4, lvl5+
+        const float rewardsH = titleH + rows * (rowH + btnH + gapY) + gapRow;
+
+        // Panel background
+        sf::RectangleShape rewardsBg(sf::Vector2f(rewardsW, rewardsH));
+        rewardsBg.setPosition(rewardsX, rewardsY);
+        rewardsBg.setFillColor(sf::Color(20, 20, 20, 210));
+        rewardsBg.setOutlineThickness(1.f);
+        rewardsBg.setOutlineColor(sf::Color(255, 255, 255, 50));
+        rt.draw(rewardsBg);
+
+        // Title
+        if (uiFontLoaded) {
+            sf::Text title;
+            title.setFont(uiFont);
+            title.setCharacterSize(14);
+            title.setString("City rewards");
+            title.setPosition(rewardsX + 8.f, rewardsY + 2.f);
+            title.setFillColor(sf::Color(240, 240, 240));
+            rt.draw(title);
+        }
+
+        auto drawLevelRow = [&](float y0, const std::string& lvlLabel,
+                                const std::string& leftLabel, CityUpgradeChoice leftChoice,
+                                const std::string& rightLabel, CityUpgradeChoice rightChoice,
+                                uint8_t lvlTag)
+        {
+            // Level label
+            if (uiFontLoaded) {
+                sf::Text t;
+                t.setFont(uiFont);
+                t.setCharacterSize(13);
+                t.setString(lvlLabel);
+                t.setPosition(rewardsX + 8.f, y0);
+                t.setFillColor(sf::Color(220, 220, 220));
+                rt.draw(t);
+            }
+
+            const float btnY = y0 + rowH;
+            const float btnW = (rewardsW - 8.f*2.f - 8.f) * 0.5f; // left+right, with inner gap
+            const float leftX  = rewardsX + 8.f;
+            const float rightX = leftX + btnW + 8.f;
+
+            auto drawBtn = [&](float bx, const std::string& label, CityUpgradeChoice choice) {
+                sf::RectangleShape r(sf::Vector2f(btnW, btnH));
+                r.setPosition(bx, btnY);
+                r.setFillColor(sf::Color(35, 35, 35, 230));
+                r.setOutlineThickness(1.f);
+                r.setOutlineColor(sf::Color(255, 255, 255, 40));
+                rt.draw(r);
+
+                if (uiFontLoaded) {
+                    sf::Text bt;
+                    bt.setFont(uiFont);
+                    bt.setCharacterSize(12);
+                    bt.setString(label);
+                    bt.setPosition(bx + 6.f, btnY + 2.f);
+                    bt.setFillColor(sf::Color(240, 240, 240));
+                    rt.draw(bt);
+                }
+
+                g_rewardHits.push_back(RewardHit{sf::FloatRect(bx, btnY, btnW, btnH), choice, lvlTag});
+            };
+
+            drawBtn(leftX, leftLabel, leftChoice);
+            drawBtn(rightX, rightLabel, rightChoice);
+        };
+
+        float y = rewardsY + titleH;
+        drawLevelRow(y, "Level 2", "Workshop", CityUpgradeChoice::Workshop,
+                       "Explorer", CityUpgradeChoice::Explorer, 2);
+        y += rowH + btnH + gapY;
+
+        drawLevelRow(y, "Level 3", "5 stars", CityUpgradeChoice::Resources,
+                       "Wall", CityUpgradeChoice::CityWall, 3);
+        y += rowH + btnH + gapY;
+
+        drawLevelRow(y, "Level 4", "Pop growth", CityUpgradeChoice::PopulationGrowth,
+                       "Border", CityUpgradeChoice::BorderGrowth, 4);
+        y += rowH + btnH + gapY;
+
+        drawLevelRow(y, "Level 5+", "Park", CityUpgradeChoice::Park,
+                       "Super unit", CityUpgradeChoice::SuperUnit, 5);
+
+        g_rewardHitValid = true;
 
         // --- Bottom context actions (gameplay view only) ---
         g_actionBtnsValid = false;

@@ -11,6 +11,9 @@ class CombatSystem {
 public:
 
     static bool attack(Game& game, UnitId attackerId, Pos targetPos);
+
+    static void stompAt(Game &game, UnitId stomperId, Pos center);
+
     static bool heal(Game& game, UnitId healerId);
     static std::vector<Pos> attackable(const Game& game, UnitId attackerId);
 

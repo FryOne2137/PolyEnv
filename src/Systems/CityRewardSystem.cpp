@@ -2,7 +2,7 @@
 // Created by Fryderyk Niedzwiecki on 07/02/2026.
 //
 
-#include "CityUpgradeSystem.h"
+#include "CityRewardSystem.h"
 
 #include "CitySystem.h"
 #include "PlayerSystem.h"
@@ -12,6 +12,13 @@
 // #include "TerritorySystem.h"
 
 #include <cstdint>
+
+
+#include "MovementSystem.h"
+#include "UnitFactory.h"
+#include "UnitSpawnSystem.h"
+#include "VisionSystem.h"
+#include "World/Map.h"
 
 namespace {
 
@@ -31,7 +38,7 @@ static inline bool isValidChoiceForLevel(CityUpgradeChoice c, uint8_t newLevel) 
 
 } // namespace
 
-bool CityUpgradeSystem::canUpgrade(const Game& game, CityId cityId) {
+bool CityRewardSystem::canUpgrade(const Game& game, CityId cityId) {
     if (!CitySystem::cityExists(game, cityId)) return false;
 
     const uint8_t level = CitySystem::getCityLevel(game, cityId);
@@ -44,17 +51,17 @@ bool CityUpgradeSystem::canUpgrade(const Game& game, CityId cityId) {
     return pop >= need;
 }
 
-uint8_t CityUpgradeSystem::getNextLevel(const Game& game, CityId cityId) {
+uint8_t CityRewardSystem::getNextLevel(const Game& game, CityId cityId) {
     if (!CitySystem::cityExists(game, cityId)) return 0;
     return static_cast<uint8_t>(CitySystem::getCityLevel(game, cityId) + 1);
 }
 
-CityUpgradeOptions CityUpgradeSystem::getUpgradeOptions(const Game& game, CityId cityId) {
+CityUpgradeOptions CityRewardSystem::getUpgradeOptions(const Game& game, CityId cityId) {
     CityUpgradeOptions out{};
 
     if (!CitySystem::cityExists(game, cityId)) return out;
 
-    const uint8_t newLevel = static_cast<uint8_t>(CitySystem::getCityLevel(game, cityId) + 1);
+    const uint8_t newLevel = static_cast<uint8_t>(CitySystem::getCityLevel(game, cityId));
 
     // Zwracaj zawsze "dwie opcje" dla danego levelu.
     if (newLevel == 2) { out.a = CityUpgradeChoice::Workshop; out.b = CityUpgradeChoice::Explorer; return out; }
@@ -65,45 +72,29 @@ CityUpgradeOptions CityUpgradeSystem::getUpgradeOptions(const Game& game, CityId
     return out;
 }
 
-bool CityUpgradeSystem::tryUpgrade(Game& game, CityId cityId, CityUpgradeChoice choice) {
+bool CityRewardSystem::tryUpgrade(Game& game, CityId cityId, CityUpgradeChoice choice) {
     if (!CitySystem::cityExists(game, cityId)) return false;
 
-    const uint8_t oldLevel = CitySystem::getCityLevel(game, cityId);
-    const uint8_t newLevel = static_cast<uint8_t>(oldLevel + 1);
+    const uint8_t level = CitySystem::getCityLevel(game, cityId);
+    const PlayerId pid = CitySystem::getCityOwner(game, cityId);
+    const Pos pos=CitySystem::getCityPos(game, cityId);
 
-    if (!isValidChoiceForLevel(choice, newLevel)) return false;
-    if (!canUpgrade(game, cityId)) return false;
+    if (!isValidChoiceForLevel(choice, level)) return false;
 
-    // 1) "Zapłać" populacją za upgrade (incremental).
-    const uint8_t need = requiredPopForNextLevel(newLevel);
-    const int16_t pop = CitySystem::getCityPopulation(game, cityId);
-    CitySystem::setCityPopulation(game, cityId, static_cast<int16_t>(pop - need));
-
-    // 2) Podbij level.
-    CitySystem::setCityLevel(game, cityId, newLevel);
-
-    // 3) Bazowy efekt upgrade: +1 income / turn (wg wiki).
-    // (jeśli u Ciebie income jest liczony dynamicznie, to zamiast set/get trzymaj to w kalkulacji)
-    const uint8_t oldIncome = CitySystem::getCityStarsPerRound(game, cityId);
-    CitySystem::setCityStarsPerRound(game, cityId, static_cast<uint8_t>(oldIncome + 1));
-
-    // 4) Nagroda zależna od levelu i wyboru.
+    // Apply reward for the already-performed level-up.
     const PlayerId owner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));
 
     switch (choice) {
+        case CityUpgradeChoice::None:
+            return false;
         case CityUpgradeChoice::Workshop: {
             // Workshop: +1 star/turn w tym mieście.
             CitySystem::setCityWorkshopEnabled(game, cityId, true);
             // Jeśli workshop nie jest liczony automatycznie gdzie indziej:
-            CitySystem::setCityStarsPerRound(game, cityId, static_cast<uint8_t>(CitySystem::getCityStarsPerRound(game, cityId) + 1));
         } break;
 
         case CityUpgradeChoice::Explorer: {
-            // Explorer: u Ciebie to powinno odpalić mechanikę "zwiadowca/odkrywanie".
-            // Najczyściej: UnitSystem::spawnExplorer(game, owner, CitySystem::getCityPos(game, cityId));
-            // albo Game::triggerExplorerFromCity(cityId).
-            // TODO: podepnij do Twojego UnitSystem/VisibilitySystem.
-            return false; // dopóki nie podepniesz hooka, lepiej fail niż "puste kliknięcie"
+            VisionSystem::doExplorer(game, pid, pos);
         } break;
 
         case CityUpgradeChoice::CityWall: {
@@ -121,25 +112,32 @@ bool CityUpgradeSystem::tryUpgrade(Game& game, CityId cityId, CityUpgradeChoice 
         } break;
 
         case CityUpgradeChoice::BorderGrowth: {
-            // Border Growth: rozszerz granice miasta.
-            // Najlepiej: dedykowany TerritorySystem, np. expandCityBorder(game, cityId).
-            // Jeśli masz tylko claimFreeTerritoryRadius1, to NIE emuluj na siłę – zrób hook.
-            // TODO: TerritorySystem::expandBorder(game, cityId);
-            return false;
+            const SettlementId sid = static_cast<SettlementId>(cityId);
+
+            CitySystem::claimFreeTerritoryRadius(game,cityId,sid,pos,2);
         } break;
 
         case CityUpgradeChoice::Park: {
             // Park: +1 star/turn i punkty. Punkty jeśli liczysz osobno → ScoreSystem.
-            CitySystem::addCityParkCount(game, cityId, 1);
-            // Jeśli park nie jest liczony automatycznie gdzie indziej:
-            CitySystem::setCityStarsPerRound(game, cityId, static_cast<uint8_t>(CitySystem::getCityStarsPerRound(game, cityId) + 1));
+            CitySystem::addCityParkCount(game, cityId);
         } break;
 
         case CityUpgradeChoice::SuperUnit: {
-            // Super Unit: spawn "gianta"/super jednostki.
-            // TODO: UnitSystem::spawnSuperUnitForCity(game, owner, cityId);
-            return false;
+            // Super Unit: can only spawn if the city tile is free.
+            Map& map = game.getMap();
+
+            UnitId uid=map.unitOn(pos);
+
+            if (uid != Map::kNoUnit) {
+                MovementSystem::forceMove(game,uid,pos);
+            }
+
+            UnitSpawnSystem::spawnUnit(game,map,UnitType::Giant,owner,pos,false);
+
+
         } break;
+        default:
+            return false;
     }
 
     return true;
