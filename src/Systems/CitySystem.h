@@ -79,6 +79,9 @@ public:
     static bool setCityWallEnabled(Game& game, CityId cityId, bool enabled);
     static bool setCityWorkshopEnabled(Game& game, CityId cityId, bool enabled);
 
+    static City* getCityBySettlementId(Game& game, SettlementId sid);
+    static const City* getCityBySettlementId(const Game& game, SettlementId sid);
+
 private:
 };
 

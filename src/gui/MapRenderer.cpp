@@ -9,6 +9,7 @@
 #include "Systems/VisionSystem.h"
 #include "terrain/VisibilityEnum.h"
 #include "Systems/BuildingSystem.h"
+#include "Systems/CitySystem.h"
 #include "Game.h"
 #include "tech/TechDB.h"
 #include <SFML/Window/Mouse.hpp>
@@ -121,7 +122,7 @@ static const City* resolveCityForTribe(const Game* game, TribeType tribe) {
 static const City* resolveCityForTile(const Game* game, const Tile& tile) {
     if (!game) return nullptr;
     if (tile.getSettlementType() != SettlementTypeEnum::City) return nullptr;
-    return game->getCityBySettlementId(tile.getSettlementId());
+    return CitySystem::getCityBySettlementId(*game, tile.getSettlementId());
 }
 
 static void logMissingOnce(const std::vector<std::string>& paths) {
@@ -249,7 +250,7 @@ static void rebuildMoveOverlay(const Game* game, UnitId uid) {
     std::vector<Pos> tiles;
     {
         const auto t0 = std::chrono::high_resolution_clock::now();
-        tiles = game->reachable(uid);
+tiles = game->reachable(game->getCurrentPlayerId(), uid);
         const auto t1 = std::chrono::high_resolution_clock::now();
         const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
@@ -272,7 +273,7 @@ static void rebuildAttackOverlay(const Game* game, UnitId uid) {
     // Only current player's units.
     if (u->getOwnerId() != game->getCurrentPlayerId()) return;
 
-    const std::vector<Pos> tiles = game->attackable(uid);
+const std::vector<Pos> tiles = game->attackable(game->getCurrentPlayerId(), uid);
     g_attackOverlaySet.reserve(tiles.size() * 2u + 1u);
     for (const Pos& p : tiles) {
         g_attackOverlaySet.insert(posKey(p));
@@ -568,7 +569,7 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                             perfLog("UpgradeRaftToScout", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->upgradeRaftToScout(uid);
+const bool ok = game->upgradeRaftToScout(game->getCurrentPlayerId(), uid);
                                     (void)ok;
                                 }
                             });
@@ -576,7 +577,7 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                             perfLog("UpgradeRaftToRammer", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->upgradeRaftToRammer(uid);
+const bool ok = game->upgradeRaftToRammer(game->getCurrentPlayerId(), uid);
                                     (void)ok;
                                 }
                             });
@@ -584,16 +585,14 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                             perfLog("UpgradeRaftToBomber", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->upgradeRaftToBomber(uid);
-                                    (void)ok;
+const bool ok = game->upgradeRaftToBomber(game->getCurrentPlayerId(), uid);                                    (void)ok;
                                 }
                             });
                         } else if (ab.kind == ActionKind::BecomeVeteran) {
                             perfLog("BecomeVeteran", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->becomeVeteran(uid);
-                                    (void)ok;
+const bool ok = game->becomeVeteran(game->getCurrentPlayerId(), uid);                                    (void)ok;
                                 }
                             });
                         } else if (ab.kind == ActionKind::BuildRoad) {
@@ -618,24 +617,21 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                             perfLog("ExploreRuin", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->handleRuin(uid, g_actionPos);
-                                    (void)ok;
+const bool ok = game->handleRuin(game->getCurrentPlayerId(), uid, g_actionPos);                                    (void)ok;
                                 }
                             });
                         } else if (ab.kind == ActionKind::CollectStarfish) {
                             perfLog("CollectStarfish", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->handleStarfish(uid, g_actionPos);
-                                    (void)ok;
+const bool ok = game->handleStarfish(game->getCurrentPlayerId(), uid, g_actionPos);                                    (void)ok;
                                 }
                             });
                         } else if (ab.kind == ActionKind::Heal) {
                             perfLog("Heal", [&] {
                                 const UnitId uid = game->getMap().unitOn(g_actionPos);
                                 if (uid != Map::kNoUnit) {
-                                    const bool ok = game->heal(uid);
-                                    (void)ok;
+const bool ok = game->heal(game->getCurrentPlayerId(), uid);                                    (void)ok;
                                 }
                             });
                         }
@@ -744,8 +740,7 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                         if (g_moveSelectedUnit != kNoUnit && g_attackOverlayValid) {
                             if (g_attackOverlaySet.find(posKey(hit)) != g_attackOverlaySet.end()) {
                                 perfLog("Attack", [&] {
-                                    const bool ok = game->attack(g_moveSelectedUnit, hit);
-                                    (void)ok;
+const bool ok = game->attack(game->getCurrentPlayerId(), g_moveSelectedUnit, hit);                                    (void)ok;
                                 });
                                 // After an attack we clear overlays.
                                 g_moveSelectedUnit = kNoUnit;
@@ -758,7 +753,7 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                         if (g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
                             if (g_moveOverlaySet.find(posKey(hit)) != g_moveOverlaySet.end()) {
                                 perfLog("MoveUnit", [&] {
-                                    const bool ok = game->moveUnit(g_moveSelectedUnit, hit);
+const bool ok = game->moveUnit(game->getCurrentPlayerId(), g_moveSelectedUnit, hit);
                                     (void)ok;
                                 });
                                 // After a move we clear the overlay (simple UX). Re-click unit to move again.

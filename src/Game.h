@@ -14,6 +14,7 @@
 #include "World/MapGenerator.h"
 
 #include "Player/Player.h"
+#include "Systems/CityUpgradeSystem.h"
 #include "units/Unit.h"
 #include "tribes/Tribe.h"
 #include "World/Settlements/City.h"
@@ -59,8 +60,8 @@ public:
     bool markLighthouseDiscovered(uint8_t lighthouseIdx, PlayerId pid); // true tylko przy pierwszym odkryciu
 
     bool endTurn(PlayerId pid); // przechodzi do następnego gracza
-    bool handleRuin(UnitId unitId, Pos pos);
-    bool handleStarfish(UnitId unitId, Pos pos);
+    bool handleRuin(PlayerId pid, UnitId unitId, Pos pos);
+    bool handleStarfish(PlayerId pid, UnitId unitId, Pos pos);
 
     // ---- Dostęp do stanu (AI/UI) ----
     const Map &getMap() const { return map; }
@@ -73,11 +74,12 @@ public:
     std::vector<Unit> &getUnits() { return units; }
 
     // ---- Akcje (walidacja kolejności tur) ----
-    bool moveUnit(UnitId unitId, Pos to);
+    bool moveUnit(PlayerId pid, UnitId unitId, Pos to);
+    bool attack(PlayerId pid, UnitId attackerId, Pos target);
+    bool heal(PlayerId pid, UnitId healerId);
 
-    bool attack(UnitId attackerId, Pos target);
-
-    bool heal(UnitId healerId);
+    std::vector<Pos> attackable(PlayerId pid, UnitId attackerId) const;
+    std::vector<Pos> reachable(PlayerId pid, UnitId unitId) const;
 
     // Fabryka jednostek w świecie (na razie minimalnie)
     UnitId spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately=false);
@@ -104,11 +106,16 @@ public:
 
     int getPlayerScore(PlayerId pid) const;
 
-    bool foundCityFromVillage(PlayerId owner, Pos pos);
-    bool captureCityAt(PlayerId newOwner, Pos pos);
+    bool foundCityFromVillage(PlayerId pid, Pos pos);
 
-    City* getCityBySettlementId(SettlementId sid);
-    const City* getCityBySettlementId(SettlementId sid) const;
+    bool canUpgradeCity(PlayerId pid, CityId cityId) const;
+
+    CityUpgradeOptions getCityUpgradeOptions(PlayerId pid, CityId cityId) const;
+
+    bool upgradeCity(PlayerId pid, CityId cityId, CityUpgradeChoice choice);
+
+    bool captureCityAt(PlayerId pid, Pos pos);
+
     bool buildBuilding(PlayerId builder, Pos pos, BuildingTypeEnum type);
 
     // ---- Tile actions (clear/hunt/fish/etc.) ----
@@ -120,20 +127,16 @@ public:
     bool destroyTile(PlayerId pid, Pos pos);
     bool organization(PlayerId pid, Pos pos);
 
-    bool canUpgradeRaftToScout(UnitId unitId) const;
-    bool canUpgradeRaftToRammer(UnitId unitId) const;
-    bool canUpgradeRaftToBomber(UnitId unitId) const;
+    bool canUpgradeRaftToScout(PlayerId pid, UnitId unitId) const;
+    bool canUpgradeRaftToRammer(PlayerId pid, UnitId unitId) const;
+    bool canUpgradeRaftToBomber(PlayerId pid, UnitId unitId) const;
 
-    bool upgradeRaftToScout(UnitId unitId);
-    bool upgradeRaftToRammer(UnitId unitId);
-    bool upgradeRaftToBomber(UnitId unitId);
+    bool upgradeRaftToScout(PlayerId pid, UnitId unitId);
+    bool upgradeRaftToRammer(PlayerId pid, UnitId unitId);
+    bool upgradeRaftToBomber(PlayerId pid, UnitId unitId);
 
-    bool canUnitBecomeVeteran(UnitId unitId) const;
-    bool becomeVeteran(UnitId unitId);
-    std::vector<Pos> attackable(UnitId attackerId) const;
-    std::vector<Pos> reachable(UnitId unitId) const;
-
-    bool attack(PlayerId pid, UnitId attackerId, Pos target);
+    bool canUnitBecomeVeteran(PlayerId pid, UnitId unitId) const;
+    bool becomeVeteran(PlayerId pid, UnitId unitId);
 
     bool buildRoad(PlayerId pid, Pos pos);
     bool buildBridge(PlayerId pid, Pos pos);

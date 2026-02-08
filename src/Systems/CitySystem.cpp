@@ -569,3 +569,21 @@ bool CitySystem::setCityWorkshopEnabled(Game& game, CityId cityId, bool enabled)
     c->setWorkshopEnabled(enabled);
     return true;
 }
+
+City* CitySystem::getCityBySettlementId(Game& game, SettlementId sid) {
+    if (sid == kNoSettlement) return nullptr;
+
+    const CityId cid = static_cast<CityId>(sid);
+    if (static_cast<size_t>(cid) >= game.getCities().size()) return nullptr;
+
+    return game.getCity(cid);
+}
+
+const City* CitySystem::getCityBySettlementId(const Game& game, SettlementId sid) {
+    if (sid == kNoSettlement) return nullptr;
+
+    const CityId cid = static_cast<CityId>(sid);
+    if (static_cast<size_t>(cid) >= game.getCities().size()) return nullptr;
+
+    return game.getCity(cid);
+}

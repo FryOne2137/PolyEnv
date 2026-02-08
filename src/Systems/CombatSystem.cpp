@@ -66,7 +66,7 @@ static double computeDefenceBonus(const Game& game, UnitId defenderId) {
             cityBonus = 1.5;
 
             // City wall adds +2.5 => total 4.0
-            if (const City* c = game.getCityBySettlementId(t.getSettlementId())) {
+            if (const City* c = CitySystem::getCityBySettlementId(game, t.getSettlementId())) {
                 if (c->hasCityWallEnabled()) {
                     cityBonus += 2.5; // 1.5 + 2.5 = 4.0
                 }
@@ -135,7 +135,7 @@ static void killUnit(Game& game, UnitId uid) {
     if (game.getMap().inBounds(p)) {
         const Tile& t = game.getMap().at(p);
         if (t.getSettlementType() == SettlementTypeEnum::City) {
-            if (City* c = game.getCityBySettlementId(t.getSettlementId())) {
+            if (City* c = CitySystem::getCityBySettlementId(game, t.getSettlementId())) {
                 CitySystem::removeUnitFromCity(game, uid, c->getCityId());
             }
         }

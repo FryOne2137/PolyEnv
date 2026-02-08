@@ -111,7 +111,7 @@ void VisionSystem::revealArea(
 
             // ---- WROGIE MIASTO ----
             if (t.getSettlementType() == SettlementTypeEnum::City) {
-                City* c = game.getCityBySettlementId(t.getSettlementId());
+                const City* c = CitySystem::getCityBySettlementId(game, t.getSettlementId());
                 const CityId cid = c ? c->getCityId() : kNoCity;
                 const uint8_t owner = (cid == kNoCity) ? 0 : CitySystem::getCityOwner(game, cid);
 
