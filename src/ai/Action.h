@@ -25,7 +25,10 @@ struct Action {
         BuildRoad,
         BuildBridge,
         Explorer,
-        FoundCity
+        FoundCity,
+        Ruin,
+        Starfish,
+        CaptureCity
     };
     enum class UnitUpgradeKind {
         None = 0,

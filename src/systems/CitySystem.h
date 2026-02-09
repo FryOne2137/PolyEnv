@@ -55,7 +55,9 @@ public:
     static bool addPopulation(Game& game, CityId cityId, uint16_t amount);
 
     // ---- High-level city actions ----
+    static bool canFoundCityFromVillage(const Game& game, PlayerId owner, Pos pos);
     static bool foundCityFromVillage(Game& game, PlayerId owner, Pos pos);
+    static bool canCaptureCityAt(const Game& game, PlayerId newOwner, Pos pos);
     static bool captureCityAt(Game& game, PlayerId newOwner, Pos pos);
 
     static bool isCityUnderSiege(const Game &game, CityId cityId);

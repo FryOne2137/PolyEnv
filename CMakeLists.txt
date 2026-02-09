@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 4.1)
-project(game_engine)
+cmake_minimum_required(VERSION 3.20)
+project(game_engine VERSION 0.1.0 LANGUAGES CXX)
 
 # ---- C++ standard ----
 set(CMAKE_CXX_STANDARD 20)
@@ -8,21 +8,39 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 
-FetchContent_Declare(
-    sfml
-    GIT_REPOSITORY https://github.com/SFML/SFML.git
-    GIT_TAG        2.6.x
-)
+if(DEFINED SKBUILD)
+    set(_default_build_apps OFF)
+    set(_default_build_gui OFF)
+    set(_default_build_python ON)
+else()
+    set(_default_build_apps ON)
+    set(_default_build_gui ON)
+    set(_default_build_python OFF)
+endif()
 
-FetchContent_MakeAvailable(sfml)
+option(GAME_ENGINE_BUILD_APPS "Build CLI/GUI applications" ${_default_build_apps})
+option(GAME_ENGINE_BUILD_GUI "Build GUI application (requires SFML)" ${_default_build_gui})
+option(GAME_ENGINE_BUILD_PYTHON_BINDINGS "Build Python extension module" ${_default_build_python})
+
+if(GAME_ENGINE_BUILD_GUI)
+    FetchContent_Declare(
+        sfml
+        GIT_REPOSITORY https://github.com/SFML/SFML.git
+        GIT_TAG        2.6.x
+    )
+    FetchContent_MakeAvailable(sfml)
+endif()
 
 # ---- nlohmann/json (header-only) ----
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG        v3.11.3
-)
-FetchContent_MakeAvailable(nlohmann_json)
+find_package(nlohmann_json CONFIG QUIET)
+if(NOT nlohmann_json_FOUND)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
 
 set(ENGINE_SOURCES
         src/content/units/Unit.cpp
@@ -127,6 +145,7 @@ set(ENGINE_SOURCES
 add_library(game_engine_lib STATIC
         ${ENGINE_SOURCES}
 )
+set_target_properties(game_engine_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # nlohmann/json provides the imported target nlohmann_json::nlohmann_json
 target_link_libraries(game_engine_lib PUBLIC nlohmann_json::nlohmann_json)
@@ -145,31 +164,55 @@ target_include_directories(game_engine_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/content/settlements
 )
 
-# ---- Console/core executable (uses main.cpp) ----
-add_executable(game_engine_core
-        apps/cli/main.cpp
-)
-target_link_libraries(game_engine_core PRIVATE game_engine_lib)
-target_compile_features(game_engine_core PRIVATE cxx_std_20)
+if(GAME_ENGINE_BUILD_APPS)
+    # ---- Console/core executable (uses main.cpp) ----
+    add_executable(game_engine_core
+            apps/cli/main.cpp
+    )
+    target_link_libraries(game_engine_core PRIVATE game_engine_lib)
+    target_compile_features(game_engine_core PRIVATE cxx_std_20)
+endif()
 
-# ---- GUI executable (uses main_gui.cpp + SFML) ----
-add_executable(game_engine_gui
-        apps/gui/main_gui.cpp
-        src/gui/GuiApp.cpp
-        src/gui/GuiApp.h
-        src/gui/TextureStore.cpp
-        src/gui/TextureStore.h
-        src/gui/TribeSelectScreen.cpp
-        src/gui/TribeSelectScreen.h
-        src/gui/MapRenderer.cpp
-        src/gui/MapRenderer.h
-)
+if(GAME_ENGINE_BUILD_GUI)
+    # ---- GUI executable (uses main_gui.cpp + SFML) ----
+    add_executable(game_engine_gui
+            apps/gui/main_gui.cpp
+            src/gui/GuiApp.cpp
+            src/gui/GuiApp.h
+            src/gui/TextureStore.cpp
+            src/gui/TextureStore.h
+            src/gui/TribeSelectScreen.cpp
+            src/gui/TribeSelectScreen.h
+            src/gui/MapRenderer.cpp
+            src/gui/MapRenderer.h
+    )
 
-target_link_libraries(game_engine_gui
-        PRIVATE
-        game_engine_lib
-        sfml-graphics
-        sfml-window
-        sfml-system
-)
-target_compile_features(game_engine_gui PRIVATE cxx_std_20)
+    target_link_libraries(game_engine_gui
+            PRIVATE
+            game_engine_lib
+            sfml-graphics
+            sfml-window
+            sfml-system
+    )
+    target_compile_features(game_engine_gui PRIVATE cxx_std_20)
+endif()
+
+if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
+    find_package(pybind11 CONFIG REQUIRED)
+
+    pybind11_add_module(_game_engine MODULE
+            src/python/bindings.cpp
+    )
+    target_link_libraries(_game_engine PRIVATE game_engine_lib)
+    target_compile_features(_game_engine PRIVATE cxx_std_20)
+
+    install(TARGETS _game_engine LIBRARY DESTINATION game_engine)
+    install(FILES
+            python/game_engine/__init__.py
+            DESTINATION game_engine
+    )
+    install(FILES
+            python/game_engine/data/Units.json
+            DESTINATION game_engine/data
+    )
+endif()

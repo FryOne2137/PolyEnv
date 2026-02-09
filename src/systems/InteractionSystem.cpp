@@ -66,6 +66,9 @@ void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
 
 void InteractionSystem::handleStarfish(Game& game, UnitId unitId, Pos pos) {
     if (!UnitSystem::unitExists(game, unitId)) return;
+    if (!game.getMap().inBounds(pos)) return;
+    if (UnitSystem::getPos(game, unitId) != pos) return;
+    if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
 
     Tile& tile = game.getMap().at(pos);
 
@@ -75,6 +78,9 @@ void InteractionSystem::handleStarfish(Game& game, UnitId unitId, Pos pos) {
 
     // Usuń starfish z mapy, żeby nie dało się zebrać drugi raz
     tile.setResource(ResourcesEnum::None);
+    tile.setSettlement(SettlementTypeEnum::None, kNoSettlement);
+    UnitSystem::setAttackedThisTurn(game, unitId, true);
+    UnitSystem::setMovedThisTurn(game, unitId, true);
 }
 
 void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {

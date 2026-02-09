@@ -24,6 +24,8 @@ PlayerId GameStateAdapter::currentPlayer() const {
 }
 
 bool GameStateAdapter::isTerminal() const {
+    if (game_.isGameOver()) return true;
+
     int alive = 0;
     for (const Player& p : game_.getPlayers()) {
         if (!p.getCities().empty() || !p.getUnits().empty()) {
@@ -36,6 +38,9 @@ bool GameStateAdapter::isTerminal() const {
 
 float GameStateAdapter::evaluate(PlayerId forPlayer) const {
     if (forPlayer == kNoPlayer || static_cast<size_t>(forPlayer) >= game_.getPlayers().size()) return 0.0f;
+    if (game_.isGameOver()) {
+        return (game_.getWinner() == forPlayer) ? 1.0f : -1.0f;
+    }
 
     const int myScore = game_.getPlayerScore(forPlayer);
     int maxOther = 0;
@@ -140,6 +145,22 @@ std::vector<Action> GameStateAdapter::legalActions(PlayerId pid) const {
             a.unitUpgrade = Action::UnitUpgradeKind::BecomeVeteran;
             out.push_back(a);
         }
+
+        const Pos up = UnitSystem::getPos(game_, uid);
+        Action ix{};
+        ix.type = Action::Type::TileAction;
+        ix.pid = pid;
+        ix.unit = uid;
+        ix.pos = up;
+
+        ix.tileAction = Action::TileActionKind::Ruin;
+        if (game_.canHandleRuin(pid, uid, up)) out.push_back(ix);
+
+        ix.tileAction = Action::TileActionKind::Starfish;
+        if (game_.canHandleStarfish(pid, uid, up)) out.push_back(ix);
+
+        ix.tileAction = Action::TileActionKind::CaptureCity;
+        if (game_.canHandleCityCapture(pid, uid, up)) out.push_back(ix);
     }
 
     const int w = game_.getMap().getWidth();
@@ -322,6 +343,9 @@ bool GameStateAdapter::applyAction(const Action& a) {
                 case Action::TileActionKind::BuildBridge: return game_.buildBridge(a.pid, a.pos);
                 case Action::TileActionKind::Explorer: return game_.explorer(a.pid, a.pos);
                 case Action::TileActionKind::FoundCity: return game_.foundCityFromVillage(a.pid, a.pos);
+                case Action::TileActionKind::Ruin: return game_.handleRuin(a.pid, a.unit, a.pos);
+                case Action::TileActionKind::Starfish: return game_.handleStarfish(a.pid, a.unit, a.pos);
+                case Action::TileActionKind::CaptureCity: return game_.handleCityCapture(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::None: return false;
             }
             return false;

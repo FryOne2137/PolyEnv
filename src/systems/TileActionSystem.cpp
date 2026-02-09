@@ -31,16 +31,18 @@ inline ResourcesEnum removeFlag(ResourcesEnum v, ResourcesEnum f) {
 
 // ---- common checks ----
 inline bool requireTech(const Game& game, PlayerId pid, TechId tech) {
-    // TechId::Count is used as "no requirement".
     if (tech == TechId::Count) return true;
 
     const auto idx = static_cast<uint32_t>(tech);
     const auto cnt = static_cast<uint32_t>(TechId::Count);
 
-    // Defensive: if an invalid/unknown tech id is passed, do NOT allow the action.
     if (idx >= cnt) return false;
-
     return PlayerSystem::hasTech(game, pid, tech);
+}
+
+inline bool canSpendStars(const Game& game, PlayerId pid, int cost) {
+    cost = std::max(0, cost);
+    return PlayerSystem::getStars(game, pid) >= cost;
 }
 
 inline bool spendStars(Game& game, PlayerId pid, int cost) {
@@ -49,8 +51,7 @@ inline bool spendStars(Game& game, PlayerId pid, int cost) {
     return PlayerSystem::spendStars(game, pid, cost);
 }
 
-// Enforce: action can be done only on current player's territory (city owned by pid)
-inline bool ensureOwnTerritory(Game& game, PlayerId pid, Pos pos, CityId& outCid) {
+inline bool ensureOwnTerritory(const Game& game, PlayerId pid, Pos pos, CityId& outCid) {
     if (!game.getMap().inBounds(pos)) return false;
     const Tile& t = game.getMap().at(pos);
 
@@ -60,95 +61,110 @@ inline bool ensureOwnTerritory(Game& game, PlayerId pid, Pos pos, CityId& outCid
     if (!CitySystem::cityExists(game, cid)) return false;
     if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
 
-
     outCid = cid;
     return true;
 }
 
-
-
 } // namespace
 
-// ------------------------------
-//            ACTIONS
-// ------------------------------
-
-bool TileActionSystem::hunt(Game& game, PlayerId pid, Pos pos) {
-    // Polytopia-style (adjust if you want):
-    // Hunting tech, costs stars, Animals -> Crops, +1 pop.
+bool TileActionSystem::canHunt(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Hunting;
     static constexpr int kCost = 2;
-    static constexpr int kPopGain = 1;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
+
+    const Tile& t = game.getMap().at(pos);
+    if (t.getBaseTerrain() != BaseTerrainEnum::Land && t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
+    return hasFlag(t.getResource(), ResourcesEnum::Animal);
+}
+
+bool TileActionSystem::hunt(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 2;
+    static constexpr int kPopGain = 1;
+
+    if (!canHunt(game, pid, pos)) return false;
+
+    CityId cid = kNoCity;
+    (void)ensureOwnTerritory(game, pid, pos, cid);
 
     Tile& t = game.getMap().at(pos);
-    // Hunting can be done on Land or Forest tiles that have Animal.
-    if (t.getBaseTerrain() != BaseTerrainEnum::Land && t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
-
     const ResourcesEnum r = t.getResource();
-    if (!hasFlag(r, ResourcesEnum::Animal)) return false;
 
     if (!spendStars(game, pid, kCost)) return false;
 
-    // Hunting removes Animal from the tile
-    ResourcesEnum nr = removeFlag(r, ResourcesEnum::Animal);
-    t.setResource(nr);
-
+    t.setResource(removeFlag(r, ResourcesEnum::Animal));
     (void)CitySystem::addPopulation(game, cid, kPopGain);
 
     return true;
 }
 
-bool TileActionSystem::organization(Game& game, PlayerId pid, Pos pos) {
-    // Polytopia-style (adjust if you want):
-    // Hunting tech, costs stars, Animals -> Crops, +1 pop.
+bool TileActionSystem::canOrganization(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Organization;
     static constexpr int kCost = 2;
-    static constexpr int kPopGain = 1;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
+
+    const Tile& t = game.getMap().at(pos);
+    if (t.getBaseTerrain() != BaseTerrainEnum::Land) return false;
+    return hasFlag(t.getResource(), ResourcesEnum::Fruit);
+}
+
+bool TileActionSystem::organization(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 2;
+    static constexpr int kPopGain = 1;
+
+    if (!canOrganization(game, pid, pos)) return false;
+
+    CityId cid = kNoCity;
+    (void)ensureOwnTerritory(game, pid, pos, cid);
 
     Tile& t = game.getMap().at(pos);
-    if (t.getBaseTerrain() != BaseTerrainEnum::Land) return false;
-
     const ResourcesEnum r = t.getResource();
-    if (!hasFlag(r, ResourcesEnum::Fruit)) return false;
 
     if (!spendStars(game, pid, kCost)) return false;
 
-    // Consume the fruit.
-    ResourcesEnum nr = removeFlag(r, ResourcesEnum::Fruit);
-    t.setResource(nr);
-
+    t.setResource(removeFlag(r, ResourcesEnum::Fruit));
     (void)CitySystem::addPopulation(game, cid, static_cast<uint16_t>(kPopGain));
     return true;
 }
 
-
-
-bool TileActionSystem::fishing(Game& game, PlayerId pid, Pos pos) {
-    // Fishing tech:
-    // - Fish: cost 2, remove Fish, +1 pop
-    // - Whale: remove Whale, +10 stars (no cost)
+bool TileActionSystem::canFishing(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Fishing;
     static constexpr int kFishCost = 2;
-    static constexpr int kFishPop = 1;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
     if (!requireTech(game, pid, kTech)) return false;
 
-    Tile& t = game.getMap().at(pos);
+    const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Water &&
         t.getBaseTerrain() != BaseTerrainEnum::Ocean) {
         return false;
     }
 
+    if (hasFlag(t.getResource(), ResourcesEnum::Fish)) {
+        return canSpendStars(game, pid, kFishCost);
+    }
+
+    return false;
+}
+
+bool TileActionSystem::fishing(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kFishCost = 2;
+    static constexpr int kFishPop = 1;
+
+    if (!canFishing(game, pid, pos)) return false;
+
+    CityId cid = kNoCity;
+    (void)ensureOwnTerritory(game, pid, pos, cid);
+
+    Tile& t = game.getMap().at(pos);
     ResourcesEnum r = t.getResource();
 
     if (hasFlag(r, ResourcesEnum::Fish)) {
@@ -158,97 +174,102 @@ bool TileActionSystem::fishing(Game& game, PlayerId pid, Pos pos) {
         return true;
     }
 
-
     return false;
 }
 
-bool TileActionSystem::clearForest(Game& game, PlayerId pid, Pos pos) {
-    // Polytopia: Forestry tech, remove forest, +1 star, no cost.
+bool TileActionSystem::canClearForest(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Forestry;
     static constexpr int kCost = 0;
-    static constexpr int kReward = 1;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
 
-    Tile& t = game.getMap().at(pos);
-    if (t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
+    const Tile& t = game.getMap().at(pos);
+    return t.getBaseTerrain() == BaseTerrainEnum::Forest;
+}
+
+bool TileActionSystem::clearForest(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 0;
+    static constexpr int kReward = 1;
+
+    if (!canClearForest(game, pid, pos)) return false;
 
     if (!spendStars(game, pid, kCost)) return false;
 
-    // Remove forest (Forest -> Land)
+    Tile& t = game.getMap().at(pos);
     t.setBaseTerrain(BaseTerrainEnum::Land);
-
-    // Reward stars
     PlayerSystem::addStars(game, pid, kReward);
-
 
     return true;
 }
 
-
-bool TileActionSystem::burnForest(Game& game, PlayerId pid, Pos pos) {
-    // Placeholder: pick the tech you want for burn.
-    // I suggest Spiritualism for “nature actions”.
+bool TileActionSystem::canBurnForest(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Construction;
     static constexpr int kCost = 5;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
-    (void)cid;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
+
+    const Tile& t = game.getMap().at(pos);
+    return t.getBaseTerrain() == BaseTerrainEnum::Forest;
+}
+
+bool TileActionSystem::burnForest(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 5;
+
+    if (!canBurnForest(game, pid, pos)) return false;
 
     Tile& t = game.getMap().at(pos);
-    if (t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
-
     const ResourcesEnum r = t.getResource();
 
     if (!spendStars(game, pid, kCost)) return false;
 
-    // Burn = convert Forest terrain into Land + Crops resource
     t.setBaseTerrain(BaseTerrainEnum::Land);
-    ResourcesEnum nr = addFlag(r, ResourcesEnum::Crops);
-    t.setResource(nr);
+    t.setResource(addFlag(r, ResourcesEnum::Crops));
     return true;
 }
 
-bool TileActionSystem::growForest(Game& game, PlayerId pid, Pos pos) {
-    // Polytopia: Spiritualism unlocks Grow Forest.
+bool TileActionSystem::canGrowForest(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Spiritualism;
     static constexpr int kCost = 5;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
-    (void)cid;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
 
-    Tile& t = game.getMap().at(pos);
+    const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Land) return false;
+    return t.getResource() == ResourcesEnum::None;
+}
 
-    // Keep it strict: only on completely empty resource tile.
-    if (t.getResource() != ResourcesEnum::None) return false;
+bool TileActionSystem::growForest(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 5;
+
+    if (!canGrowForest(game, pid, pos)) return false;
 
     if (!spendStars(game, pid, kCost)) return false;
 
-    // Grow Forest: Land -> Forest (resource stays empty)
+    Tile& t = game.getMap().at(pos);
     t.setBaseTerrain(BaseTerrainEnum::Forest);
     return true;
 }
 
-bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
-    // Polytopia: Free Spirit unlocks Destroy.
+bool TileActionSystem::canDestroy(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Chivalry;
     static constexpr int kCost = 0;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
-    (void)cid;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
 
-    Tile& t = game.getMap().at(pos);
+    const Tile& t = game.getMap().at(pos);
 
-    // Do not destroy the settlement itself.
     if (t.getSettlementType() == SettlementTypeEnum::City ||
         t.getSettlementType() == SettlementTypeEnum::Village) {
         return false;
@@ -258,73 +279,79 @@ bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
     const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
     const bool hasRoadBridge = (t.getRoadBridge() != RoadBridgeEnum::None);
 
-    if (!hasAnyRes && !hasBuilding && !hasRoadBridge) return false;
+    return hasAnyRes || hasBuilding || hasRoadBridge;
+}
 
+bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 0;
+
+    if (!canDestroy(game, pid, pos)) return false;
     if (!spendStars(game, pid, kCost)) return false;
+
+    Tile& t = game.getMap().at(pos);
+
+    const bool hasAnyRes = (t.getResource() != ResourcesEnum::None);
+    const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
+    const bool hasRoadBridge = (t.getRoadBridge() != RoadBridgeEnum::None);
 
     if (hasAnyRes) t.setResource(ResourcesEnum::None);
     if (hasBuilding) t.setBuildingType(BuildingTypeEnum::None);
     if (hasRoadBridge) t.setRoadBridge(RoadBridgeEnum::None);
 
-    // Destroy may affect connections.
     CitiesConnectionSystem::update(game);
-
     return true;
 }
 
-
-bool TileActionSystem::buildRoad(Game& game, PlayerId pid, Pos pos) {
+bool TileActionSystem::canBuildRoad(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Roads;
     static constexpr int kCost = 3;
 
     if (!game.getMap().inBounds(pos)) return false;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
 
-    Tile& t = game.getMap().at(pos);
-
-    // Only land tiles
+    const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Land) return false;
 
-    // Must be own territory OR unclaimed territory
     const CityId cid = t.getTerritoryCityId();
     if (cid != kNoCity) {
         if (!CitySystem::cityExists(game, cid)) return false;
         if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
     }
 
-    // Already has road/bridge
-    if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
+    return t.getRoadBridge() == RoadBridgeEnum::None;
+}
 
+bool TileActionSystem::buildRoad(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 3;
+
+    if (!canBuildRoad(game, pid, pos)) return false;
     if (!spendStars(game, pid, kCost)) return false;
 
+    Tile& t = game.getMap().at(pos);
     t.setRoadBridge(RoadBridgeEnum::Road);
 
-    // Road affects city connections.
     CitiesConnectionSystem::update(game);
-
     return true;
 }
 
-bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
+bool TileActionSystem::canBuildBridge(const Game& game, PlayerId pid, Pos pos) {
     static constexpr TechId kTech = TechId::Roads;
     static constexpr int kCost = 5;
 
     if (!game.getMap().inBounds(pos)) return false;
     if (!requireTech(game, pid, kTech)) return false;
+    if (!canSpendStars(game, pid, kCost)) return false;
 
-    Tile& t = game.getMap().at(pos);
-
-    // Bridge can be placed only on WATER (not Ocean).
+    const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Water) return false;
 
-    // Must be own territory OR unclaimed territory
     const CityId cid = t.getTerritoryCityId();
     if (cid != kNoCity) {
         if (!CitySystem::cityExists(game, cid)) return false;
         if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
     }
 
-    // Must not already have a road/bridge
     if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
 
     auto isLandish = [&](Pos p) -> bool {
@@ -336,15 +363,18 @@ bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
     const bool ns = isLandish(Pos{pos.x, pos.y - 1}) && isLandish(Pos{pos.x, pos.y + 1});
     const bool ew = isLandish(Pos{pos.x - 1, pos.y}) && isLandish(Pos{pos.x + 1, pos.y});
 
-    // Must connect across opposite sides (N-S or E-W), but NOT both (no cross).
-    if (!(ns ^ ew)) return false;
+    return (ns ^ ew);
+}
 
+bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
+    static constexpr int kCost = 5;
+
+    if (!canBuildBridge(game, pid, pos)) return false;
     if (!spendStars(game, pid, kCost)) return false;
 
+    Tile& t = game.getMap().at(pos);
     t.setRoadBridge(RoadBridgeEnum::Bridge);
 
-    // Bridge affects city connections.
     CitiesConnectionSystem::update(game);
-
     return true;
 }

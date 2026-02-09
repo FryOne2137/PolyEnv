@@ -25,6 +25,7 @@
 
 #include "../systems/UnitUpgradeSystem.h"
 #include "../systems/CityRewardSystem.h"
+#include "../content/skills/UnitSkill.h"
 
 #include <algorithm>
 
@@ -33,7 +34,7 @@
 
 namespace {
     static bool canCurrentPlayerAct(const Game& game, PlayerId pid) {
-        return game.isPlayersTurn(pid) && !game.hasPendingCityUpgrade(pid);
+        return !game.isGameOver() && game.isPlayersTurn(pid) && !game.hasPendingCityUpgrade(pid);
     }
 
     static bool canControlUnit(const Game& game, PlayerId pid, UnitId unitId, bool requireActionSlot) {
@@ -43,11 +44,6 @@ namespace {
         return game.isPlayersTurn(pid);
     }
 
-    template <typename Fn>
-    static bool dryRun(const Game& game, Fn&& fn) {
-        Game copy = game;
-        return fn(copy);
-    }
 }
 
 // Game.cpp
@@ -184,9 +180,11 @@ void Game::newGame(const NewGameConfig& cfg) {
 
     currentPlayer = 0;
     turnNumber = 0;
+    winner = kNoPlayer;
 
     // 5) start tury gracza 0
     TurnSystem::startTurn(*this);
+    updateWinnerByCapitals();
 }
 
 bool Game::buyTech(PlayerId pid, TechId tech) {
@@ -202,6 +200,7 @@ bool Game::canBuyTech(PlayerId pid, TechId tech) const {
 }
 
 bool Game::endTurn(PlayerId pid) {
+    if (isGameOver()) return false;
     if (!isPlayersTurn(pid)) return false;
     if (hasPendingCityUpgrade(pid)) return false;
 
@@ -251,11 +250,20 @@ bool Game::canMoveUnit(PlayerId pid, UnitId unitId, Pos to) const {
 }
 
 bool Game::handleRuin(PlayerId pid, UnitId unitId, Pos pos) {
-    if (!canControlUnit(*this, pid, unitId, true)) return false;
-    if (!map.inBounds(pos)) return false;
+    if (!canHandleRuin(pid, unitId, pos)) return false;
 
     InteractionSystem::handleRuin(*this, unitId, pos);
     return true;
+}
+
+bool Game::canHandleRuin(PlayerId pid, UnitId unitId, Pos pos) const {
+    if (!canControlUnit(*this, pid, unitId, true)) return false;
+    if (!map.inBounds(pos)) return false;
+    if (UnitSystem::getPos(*this, unitId) != pos) return false;
+    if (UnitSystem::movedThisTurn(*this, unitId) || UnitSystem::attackedThisTurn(*this, unitId)) return false;
+
+    const Tile& t = map.at(pos);
+    return t.getSettlementType() == SettlementTypeEnum::Ruin;
 }
 
 int Game::getPlayerScore(PlayerId pid) const {
@@ -263,11 +271,37 @@ int Game::getPlayerScore(PlayerId pid) const {
 }
 
 bool Game::handleStarfish(PlayerId pid, UnitId unitId, Pos pos) {
-    if (!canControlUnit(*this, pid, unitId, true)) return false;
-    if (!map.inBounds(pos)) return false;
+    if (!canHandleStarfish(pid, unitId, pos)) return false;
 
     InteractionSystem::handleStarfish(*this, unitId, pos);
     return true;
+}
+
+bool Game::canHandleStarfish(PlayerId pid, UnitId unitId, Pos pos) const {
+    if (!canControlUnit(*this, pid, unitId, true)) return false;
+    if (!map.inBounds(pos)) return false;
+    if (UnitSystem::getPos(*this, unitId) != pos) return false;
+    if (UnitSystem::movedThisTurn(*this, unitId) || UnitSystem::attackedThisTurn(*this, unitId)) return false;
+
+    const Tile& t = map.at(pos);
+    return t.getSettlementType() == SettlementTypeEnum::Starfish;
+}
+
+bool Game::handleCityCapture(PlayerId pid, UnitId unitId, Pos pos) {
+    if (!canHandleCityCapture(pid, unitId, pos)) return false;
+    if (!CitySystem::captureCityAt(*this, pid, pos)) return false;
+    updateWinnerByCapitals();
+    UnitSystem::setMovedThisTurn(*this, unitId, true);
+    UnitSystem::setAttackedThisTurn(*this, unitId, true);
+    return true;
+}
+
+bool Game::canHandleCityCapture(PlayerId pid, UnitId unitId, Pos pos) const {
+    if (!canControlUnit(*this, pid, unitId, true)) return false;
+    if (!map.inBounds(pos)) return false;
+    if (UnitSystem::getPos(*this, unitId) != pos) return false;
+    if (UnitSystem::movedThisTurn(*this, unitId) || UnitSystem::attackedThisTurn(*this, unitId)) return false;
+    return CitySystem::canCaptureCityAt(*this, pid, pos);
 }
 
 std::vector<Pos> Game::reachable(PlayerId pid, UnitId unitId) const {
@@ -293,7 +327,31 @@ bool Game::heal(PlayerId pid, UnitId healerId) {
 }
 
 bool Game::canHeal(PlayerId pid, UnitId healerId) const {
-    return dryRun(*this, [&](Game& g) { return g.heal(pid, healerId); });
+    if (!canControlUnit(*this, pid, healerId, true)) return false;
+    if (!UnitSystem::hasSkill(*this, healerId, UnitSkill::Heal)) return false;
+    if (UnitSystem::attackedThisTurn(*this, healerId)) return false;
+    if (UnitSystem::movedThisTurn(*this, healerId) && !UnitSystem::hasSkill(*this, healerId, UnitSkill::Dash)) return false;
+
+    const Pos center = UnitSystem::getPos(*this, healerId);
+    if (!map.inBounds(center)) return false;
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+
+            const Pos p{center.x + dx, center.y + dy};
+            if (!map.inBounds(p)) continue;
+
+            const UnitId uid = map.unitOn(p);
+            if (uid == Map::kNoUnit) continue;
+            if (!UnitSystem::unitExists(*this, uid)) continue;
+            if (UnitSystem::getOwnerId(*this, uid) != pid) continue;
+            if (UnitSystem::getHealth(*this, uid) <= 0) continue;
+            if (UnitSystem::getHealth(*this, uid) >= UnitSystem::getMaxHealth(*this, uid)) continue;
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<Pos> Game::attackable(PlayerId pid, UnitId attackerId) const {
@@ -339,7 +397,9 @@ bool Game::hunt(PlayerId pid, Pos pos) {
 }
 
 bool Game::canHunt(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.hunt(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canHunt(*this, pid, pos);
 }
 
 bool Game::organization(PlayerId pid, Pos pos) {
@@ -350,7 +410,9 @@ bool Game::organization(PlayerId pid, Pos pos) {
 }
 
 bool Game::canOrganization(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.organization(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canOrganization(*this, pid, pos);
 }
 
 bool Game::fishing(PlayerId pid, Pos pos) {
@@ -361,7 +423,9 @@ bool Game::fishing(PlayerId pid, Pos pos) {
 }
 
 bool Game::canFishing(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.fishing(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canFishing(*this, pid, pos);
 }
 
 bool Game::clearForest(PlayerId pid, Pos pos) {
@@ -372,7 +436,9 @@ bool Game::clearForest(PlayerId pid, Pos pos) {
 }
 
 bool Game::canClearForest(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.clearForest(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canClearForest(*this, pid, pos);
 }
 
 bool Game::burnForest(PlayerId pid, Pos pos) {
@@ -383,7 +449,9 @@ bool Game::burnForest(PlayerId pid, Pos pos) {
 }
 
 bool Game::canBurnForest(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.burnForest(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canBurnForest(*this, pid, pos);
 }
 
 bool Game::growForest(PlayerId pid, Pos pos) {
@@ -394,7 +462,9 @@ bool Game::growForest(PlayerId pid, Pos pos) {
 }
 
 bool Game::canGrowForest(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.growForest(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canGrowForest(*this, pid, pos);
 }
 
 bool Game::destroyTile(PlayerId pid, Pos pos) {
@@ -405,7 +475,9 @@ bool Game::destroyTile(PlayerId pid, Pos pos) {
 }
 
 bool Game::canDestroyTile(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.destroyTile(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canDestroy(*this, pid, pos);
 }
 
 bool Game::buildRoad(PlayerId pid, Pos pos) {
@@ -416,7 +488,9 @@ bool Game::buildRoad(PlayerId pid, Pos pos) {
 }
 
 bool Game::canBuildRoad(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.buildRoad(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canBuildRoad(*this, pid, pos);
 }
 
 std::vector<BuildingTypeEnum> Game::getPlayerEarnedMonuments(PlayerId pid) const {
@@ -455,7 +529,9 @@ bool Game::buildBridge(PlayerId pid, Pos pos) {
 }
 
 bool Game::canBuildBridge(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.buildBridge(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(pos)) return false;
+    return TileActionSystem::canBuildBridge(*this, pid, pos);
 }
 
 // ---- City actions ----
@@ -467,7 +543,8 @@ bool Game::foundCityFromVillage(PlayerId pid, Pos pos) {
 }
 
 bool Game::canFoundCityFromVillage(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.foundCityFromVillage(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    return CitySystem::canFoundCityFromVillage(*this, pid, pos);
 }
 
 bool Game::canUpgradeCity(PlayerId pid, CityId cityId) const {
@@ -519,11 +596,14 @@ bool Game::upgradeCity(PlayerId pid, CityId cityId, CityUpgradeChoice choice) {
 bool Game::captureCityAt(PlayerId pid, Pos pos) {
     if (!isPlayersTurn(pid)) return false;
     if (hasPendingCityUpgrade(pid)) return false;
-    return CitySystem::captureCityAt(*this, pid, pos);
+    if (!CitySystem::captureCityAt(*this, pid, pos)) return false;
+    updateWinnerByCapitals();
+    return true;
 }
 
 bool Game::canCaptureCityAt(PlayerId pid, Pos pos) const {
-    return dryRun(*this, [&](Game& g) { return g.captureCityAt(pid, pos); });
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    return CitySystem::canCaptureCityAt(*this, pid, pos);
 }
 
 // ---- Raft upgrades (pid-first + legacy delegate) ----
@@ -667,4 +747,34 @@ bool Game::hasPlayerSeenCorner(PlayerId pid, MapCorner corner) const {
     if (idx >= 16) return false;
 
     return (mask & (uint16_t(1) << idx)) != 0;
+}
+
+void Game::updateWinnerByCapitals() {
+    PlayerId capitalOwner = kNoPlayer;
+    int capitalsCount = 0;
+
+    for (const City& c : cities) {
+        if (!c.getIsCapital()) continue;
+        ++capitalsCount;
+
+        const PlayerId owner = static_cast<PlayerId>(c.getOwnerId());
+        if (owner == kNoPlayer) {
+            winner = kNoPlayer;
+            return;
+        }
+
+        if (capitalOwner == kNoPlayer) {
+            capitalOwner = owner;
+        } else if (capitalOwner != owner) {
+            winner = kNoPlayer;
+            return;
+        }
+    }
+
+    if (capitalsCount == 0) {
+        winner = kNoPlayer;
+        return;
+    }
+
+    winner = capitalOwner;
 }

@@ -83,6 +83,8 @@ public:
     const Player &getCurrentPlayer() const { return players[currentPlayer]; }
     uint32_t getTurnNumber() const { return turnNumber; }
     uint32_t getWorldSeed() const { return worldSeed; }
+    bool isGameOver() const { return winner != kNoPlayer; }
+    PlayerId getWinner() const { return winner; }
 
     uint16_t getLighthouseDiscoveredByMask(uint8_t lighthouseIdx) const;
     bool hasPlayerDiscoveredLighthouse(uint8_t lighthouseIdx, PlayerId pid) const;
@@ -90,7 +92,11 @@ public:
 
     bool endTurn(PlayerId pid); // przechodzi do następnego gracza
     bool handleRuin(PlayerId pid, UnitId unitId, Pos pos);
+    bool canHandleRuin(PlayerId pid, UnitId unitId, Pos pos) const;
     bool handleStarfish(PlayerId pid, UnitId unitId, Pos pos);
+    bool canHandleStarfish(PlayerId pid, UnitId unitId, Pos pos) const;
+    bool handleCityCapture(PlayerId pid, UnitId unitId, Pos pos);
+    bool canHandleCityCapture(PlayerId pid, UnitId unitId, Pos pos) const;
 
 
     bool hasPlayerSeenCorner(PlayerId pid, MapCorner corner) const;
@@ -209,6 +215,9 @@ private:
     std::array<uint16_t, 4> lighthouseDiscoveredBy = {0, 0, 0, 0};
 
     std::deque<PendingCityUpgrade> pendingCityUpgrades;
+    PlayerId winner = kNoPlayer;
+
+    void updateWinnerByCapitals();
 };
 
 #endif // GAME_ENGINE_GAME_H

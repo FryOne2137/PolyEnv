@@ -387,14 +387,32 @@ bool CitySystem::initCapital(Game& game, PlayerId owner, CityId cid, Pos capPos)
 
 // ===== High-level city actions =====
 
-bool CitySystem::foundCityFromVillage(Game& game, PlayerId owner, Pos pos) {
-    Map& map = game.getMap();
+bool CitySystem::canFoundCityFromVillage(const Game& game, PlayerId owner, Pos pos) {
+    (void)owner;
+    const Map& map = game.getMap();
     if (!map.inBounds(pos)) return false;
 
-    Tile& tile = map.at(pos);
-
+    const Tile& tile = map.at(pos);
     const SettlementTypeEnum st = tile.getSettlementType();
     if (st != SettlementTypeEnum::Village && st != SettlementTypeEnum::City) return false;
+
+    const SettlementId sid = tile.getSettlementId();
+    if (sid != kNoSettlement) {
+        const CityId cid = static_cast<CityId>(sid);
+        if (static_cast<size_t>(cid) < game.getCities().size()) {
+            const City* c = game.getCity(cid);
+            if (c && static_cast<PlayerId>(c->getOwnerId()) != owner) return false;
+        }
+    }
+    return true;
+}
+
+bool CitySystem::foundCityFromVillage(Game& game, PlayerId owner, Pos pos) {
+    if (!canFoundCityFromVillage(game, owner, pos)) return false;
+
+    Map& map = game.getMap();
+
+    Tile& tile = map.at(pos);
 
     SettlementId sid = tile.getSettlementId();
     CityId cid = kNoCity;
@@ -448,11 +466,11 @@ bool CitySystem::foundCityFromVillage(Game& game, PlayerId owner, Pos pos) {
     return true;
 }
 
-bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
-    Map& map = game.getMap();
+bool CitySystem::canCaptureCityAt(const Game& game, PlayerId newOwner, Pos pos) {
+    const Map& map = game.getMap();
     if (!map.inBounds(pos)) return false;
 
-    Tile& tile = map.at(pos);
+    const Tile& tile = map.at(pos);
     if (tile.getSettlementType() != SettlementTypeEnum::City) return false;
 
     const CityId cid = static_cast<CityId>(tile.getSettlementId());
@@ -460,6 +478,17 @@ bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
 
     const PlayerId oldOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
     if (oldOwner == newOwner) return false;
+    return true;
+}
+
+bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
+    if (!canCaptureCityAt(game, newOwner, pos)) return false;
+
+    Map& map = game.getMap();
+
+    Tile& tile = map.at(pos);
+    const CityId cid = static_cast<CityId>(tile.getSettlementId());
+    const PlayerId oldOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
 
     (void)CitySystem::setCityOwner(game, cid, static_cast<uint8_t>(newOwner));
     (void)CitySystem::setCityPos(game, cid, pos);

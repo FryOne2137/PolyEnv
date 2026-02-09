@@ -58,7 +58,7 @@ private:
     size_t totalSize_ = 0;
 
     static constexpr int kTechCount = static_cast<int>(TechDB::TECH_COUNT);
-    static constexpr int kTileActionCount = 11;   // TileActionKind without None
+    static constexpr int kTileActionCount = 14;   // TileActionKind without None
     static constexpr int kUnitUpgradeCount = 4;   // UnitUpgradeKind without None
     static constexpr int kBuildingCount = 16;     // All non-None building ids
     static constexpr int kCityUpgradeCount = 8;   // CityUpgradeChoice without None
