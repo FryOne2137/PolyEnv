@@ -16,8 +16,8 @@
 #include "TribeSelectScreen.h"
 #include "MapRenderer.h"
 
-#include "Game.h"             // Game, NewGameConfig
-#include "tribes/Tribe.h"     // TribeType
+#include "../game/Game.h"
+#include "../content/tribes/Tribe.h"
 
 class GuiApp {
 public:

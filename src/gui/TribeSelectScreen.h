@@ -14,7 +14,7 @@
 #include "TextureStore.h"
 
 
-#include "tribes/Tribe.h"
+#include "../content/tribes/Tribe.h"
 
 class TextureStore;
 

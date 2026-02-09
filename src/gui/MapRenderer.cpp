@@ -3,15 +3,15 @@
 //
 
 #include "MapRenderer.h"
-#include "Systems/TurnSystem.h"
-#include "Systems/MovementSystem.h"
-#include "Systems/InteractionSystem.h"
-#include "Systems/VisionSystem.h"
+#include "systems/TurnSystem.h"
+#include "systems/MovementSystem.h"
+#include "systems/InteractionSystem.h"
+#include "systems/VisionSystem.h"
 #include "terrain/VisibilityEnum.h"
-#include "Systems/BuildingSystem.h"
-#include "Systems/CitySystem.h"
-#include "Game.h"
-#include "tech/TechDB.h"
+#include "systems/BuildingSystem.h"
+#include "systems/CitySystem.h"
+#include "../game/Game.h"
+#include "../content/tech/TechDB.h"
 #include <SFML/Window/Mouse.hpp>
 #include <chrono>
 #include <cmath>
@@ -1007,6 +1007,8 @@ const char* MapRenderer::baseTerrainName(BaseTerrainEnum t) {
         case BaseTerrainEnum::Mountain: return "Mountain";
         case BaseTerrainEnum::Water:    return "Water";
         case BaseTerrainEnum::Ocean:    return "Ocean";
+        case BaseTerrainEnum::Forest:   return "Forest";
+
         default: return "?";
     }
 }
@@ -1233,19 +1235,19 @@ static std::vector<std::string> monumentCandidates(TribeType tribe, BuildingType
 
     const auto folders = tribeFoldersStatic(tribe);
     for (const auto& f : folders) {
-        out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/monuments/" + file + ".png");
-        out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/monuments/" + file + ".PNG");
+        out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/monuments/" + file + ".png");
+        out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/monuments/" + file + ".PNG");
     }
 
     // fallback (jakbyś miał tylko Aquarion na dysku)
-    out.push_back("assets/Polytopia_game_engine_textures/tribes/Aquarion/monuments/" + file + ".png");
-    out.push_back("assets/Polytopia_game_engine_textures/tribes/Aquarion/monuments/" + file + ".PNG");
+    out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/Aquarion/monuments/" + file + ".png");
+    out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/Aquarion/monuments/" + file + ".PNG");
 
     return out;
 }
 
 static std::vector<std::string> buildingCandidates(BuildingTypeEnum b, int level) {
-    const std::string root = "assets/Polytopia_game_engine_textures/common/";
+    const std::string root = "assets/textures/Polytopia_game_engine_textures/common/";
     std::vector<std::string> out;
     out.reserve(8);
 
@@ -1328,7 +1330,7 @@ std::vector<std::string> MapRenderer::tribeFolderCandidates(TribeType t) const {
 
 std::vector<std::string> MapRenderer::tileCandidates(TribeType tribe, const std::string& kind) const {
     // New pack layout:
-    //   assets/Polytopia_game_engine_textures/tribes/<Tribe>/
+    //   assets/textures/Polytopia_game_engine_textures/tribes/<Tribe>/
     //     tile.png (ground), forest.png, mountain.png, fruit.png, head.png, animal.png
     // Older layouts are kept as fallbacks.
 
@@ -1348,8 +1350,8 @@ std::vector<std::string> MapRenderer::tileCandidates(TribeType tribe, const std:
     for (const auto& f : folders) {
         // --- New layout (preferred) ---
         for (const auto& fn : fileNames) {
-            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/" + fn + ".png");
-            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/" + fn + ".PNG");
+            out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/" + fn + ".png");
+            out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/" + fn + ".PNG");
         }
 
         // --- Older layouts (fallback) ---
@@ -1373,9 +1375,9 @@ std::vector<std::string> MapRenderer::tileCandidates(TribeType tribe, const std:
 
 std::vector<std::string> MapRenderer::globalCandidates(const std::string& name) const {
     // New pack layout provides globals under:
-    //   assets/Polytopia_game_engine_textures/common/
-    //   assets/Polytopia_game_engine_textures/misc/
-    //   assets/Polytopia_game_engine_textures/water/
+    //   assets/textures/Polytopia_game_engine_textures/common/
+    //   assets/textures/Polytopia_game_engine_textures/misc/
+    //   assets/textures/Polytopia_game_engine_textures/water/
     // We keep older fallbacks too.
 
     std::vector<std::string> out;
@@ -1385,7 +1387,7 @@ std::vector<std::string> MapRenderer::globalCandidates(const std::string& name) 
         out.push_back(p + ".PNG");
     };
 
-    const std::string root = "assets/Polytopia_game_engine_textures/";
+    const std::string root = "assets/textures/Polytopia_game_engine_textures/";
 
     // New layout (preferred)
     addBothCases(root + "common/" + name);
@@ -1510,8 +1512,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     const sf::Texture* fogTex = nullptr;
     if (!showOverview) {
         fogTex = &pickFirstExisting({
-            "assets/Polytopia_game_engine_textures/common/fog.png",
-            "assets/Polytopia_game_engine_textures/common/fog.PNG"
+            "assets/textures/Polytopia_game_engine_textures/common/fog.png",
+            "assets/textures/Polytopia_game_engine_textures/common/fog.PNG"
         });
     }
 
@@ -1570,44 +1572,44 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     unitDraws.reserve(unitsByPos.size() * 2 + 8);
 
     // Unit texture candidates for the new pack layout:
-    // assets/Polytopia_game_engine_textures/tribes/<Tribe>/units/<unit>.png
+    // assets/textures/Polytopia_game_engine_textures/tribes/<Tribe>/units/<unit>.png
     auto unitTexture = [&](TribeType tribe, UnitType ut) -> const sf::Texture& {
         std::vector<std::string> out;
         const std::string unitFile = unitTypeToFile(ut);
         for (const auto& f : tribeFolderCandidates(tribe)) {
-            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".png");
-            out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".PNG");
+            out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".png");
+            out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/" + unitFile + ".PNG");
 
             // Naval alias fallbacks (some packs use different names)
             if (ut == UnitType::Scout) {
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/scout.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/scout.PNG");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/scout.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/scout.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.PNG");
             }
             if (ut == UnitType::Rammer) {
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/ship.PNG");
             }
             if (ut == UnitType::Raft) {
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/transportship.PNG");
             }
             if (ut == UnitType::Dinghy) {
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/cloak_boat.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/cloak_boat.PNG");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dinghy_boat.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dinghy_boat.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/cloak_boat.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/cloak_boat.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/dinghy_boat.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/dinghy_boat.PNG");
             }
 
             // A few common alias fallbacks (optional)
             if (ut == UnitType::MindBender) {
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/mindbender.PNG");
             }
             if (ut == UnitType::Dagger) {
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dagger.png");
-                out.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/units/dagger.PNG");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/dagger.png");
+                out.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/units/dagger.PNG");
             }
         }
         return pickFirstExisting(out);
@@ -1661,7 +1663,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 case BaseTerrainEnum::Mountain: type = "mountain"; break;
                 case BaseTerrainEnum::Land:
                 default:
-                    type = hasRes(ResourcesEnum::Forest) ? "forest" : "ground";
+                    type = (tile.getBaseTerrain() == BaseTerrainEnum::Forest) ? "forest" : "ground";
                     break;
             }
 
@@ -1731,8 +1733,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             // --- bridge tile overlay (above water, below resources/settlements/units) ---
             if (tile.getRoadBridge() == RoadBridgeEnum::Bridge) {
                 const sf::Texture& br = pickFirstExisting({
-                    "assets/Polytopia_game_engine_textures/common/bridge.png",
-                    "assets/Polytopia_game_engine_textures/common/bridge.PNG"
+                    "assets/textures/Polytopia_game_engine_textures/common/bridge.png",
+                    "assets/textures/Polytopia_game_engine_textures/common/bridge.PNG"
                 });
                 // Lekki lift, żeby ładnie siadło na wodzie
                 drawSprite(rt, br, x, y - 0.05f * tileSize, tileSize);
@@ -1765,12 +1767,12 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 std::vector<std::string> cityPaths;
                 for (const auto& f : tribeFolderCandidates(cityTribe)) {
                     // New layout: tribes/<Tribe>/cities/city_<level>.png
-                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".png");
-                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".PNG");
+                    cityPaths.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".png");
+                    cityPaths.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_" + std::to_string(cityLevel) + ".PNG");
 
                     // Fallback to level 1 if a specific level sprite is missing
-                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_1.png");
-                    cityPaths.push_back("assets/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_1.PNG");
+                    cityPaths.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_1.png");
+                    cityPaths.push_back("assets/textures/Polytopia_game_engine_textures/tribes/" + f + "/cities/city_1.PNG");
 
                     // Older layout fallback
                     cityPaths.push_back("assets/textures/" + f + "/City/" + f + " city " + std::to_string(cityLevel) + ".png");
@@ -1800,6 +1802,22 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     y + (tileSize - s) * 0.5f - 0.07f * tileSize,
                     s
                 });
+            } else if (hasRes(ResourcesEnum::Animal)) {
+                // Draw animal (can exist on Land or Forest). Use tribe-specific animal sprite.
+                // Support both "animal" and "animals" asset naming.
+                std::vector<std::string> cand = tileCandidates(tribe, "animal");
+                {
+                    const auto more = tileCandidates(tribe, "animals");
+                    cand.insert(cand.end(), more.begin(), more.end());
+                }
+                const sf::Texture& t = pickFirstExisting(cand);
+
+                const float s = tileSize * 0.5f;
+                aboveDraws.push_back(SpriteDrawCmd{&t,
+                    x + (tileSize - s) * 0.5f,
+                    y + (tileSize - s) * 0.25f - 0.08f * tileSize,
+                    s
+                });
             } else if (hasRes(ResourcesEnum::Crops)) {
                 const sf::Texture& t = pickFirstExisting(globalCandidates("crop"));
                 aboveDraws.push_back(SpriteDrawCmd{&t, x, y, tileSize});
@@ -1809,10 +1827,10 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             } else if (hasRes(ResourcesEnum::Metal)) {
                 // Draw metal slightly smaller and lifted
                 const sf::Texture& t = pickFirstExisting(globalCandidates("metal"));
-                const float s = tileSize * 0.5f;
+                const float s = tileSize * 0.35f;
                 aboveDraws.push_back(SpriteDrawCmd{&t,
                     x + (tileSize - s) * 0.5f,
-                    y + (tileSize - s) * 0.5f - 0.12f * tileSize,
+                    y + (tileSize - s) * 0.22f - 0.12f * tileSize,
                     s
                 });
             } else if (isRuin) {
@@ -2037,10 +2055,10 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 if (!showOverview && g_moveSelectedUnit != kNoUnit && g_attackOverlayValid) {
                     const uint32_t key = (uint32_t(row) << 16u) | uint32_t(column);
                     if (g_attackOverlaySet.find(key) != g_attackOverlaySet.end()) {
-                        // Resolves to: assets/Polytopia_game_engine_textures/misc/attackTarget.png
+                        // Resolves to: assets/textures/Polytopia_game_engine_textures/misc/attackTarget.png
                         const sf::Texture& at = pickFirstExisting({
-                            "assets/Polytopia_game_engine_textures/misc/attackTarget.png",
-                            "assets/Polytopia_game_engine_textures/misc/attackTarget.PNG"
+                            "assets/textures/Polytopia_game_engine_textures/misc/attackTarget.png",
+                            "assets/textures/Polytopia_game_engine_textures/misc/attackTarget.PNG"
                         });
                         const float s = tileSize * 0.78f;
                         markerDraws.push_back(SpriteDrawCmd{&at,
@@ -2071,7 +2089,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     }
 
                     if (canCapture) {
-                        // Resolves to assets/Polytopia_game_engine_textures/misc/hint.png
+                        // Resolves to assets/textures/Polytopia_game_engine_textures/misc/hint.png
                         const sf::Texture& hint = pickFirstExisting(globalCandidates("hint"));
                         const float s = tileSize * 0.70f;
                         markerDraws.push_back(SpriteDrawCmd{&hint,
@@ -2165,7 +2183,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             drawSprite(rt, utex, cmd.ux, cmd.uy, cmd.s);
         }
 
-        // --- City Rewards panel (always visible, top-right) ---
+        // --- City Rewards panel (gameplay view only) ---
+        if (!showOverview) {
         g_rewardHitValid = false;
         g_rewardHits.clear();
 
@@ -2274,6 +2293,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                        "Super unit", CityUpgradeChoice::SuperUnit, 5);
 
         g_rewardHitValid = true;
+
+        }
 
         // --- Bottom context actions (gameplay view only) ---
         g_actionBtnsValid = false;
@@ -2599,6 +2620,9 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
                     addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
                     addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                    if (st.getBaseTerrain() == BaseTerrainEnum::Forest) {
+                        addLine(ty, std::string("Forest tribe: ") + tribeDisplayName(st.getTribe()), 14);
+                    }
                     addLine(ty, std::string("Road: ") + (st.getRoadBridge() == RoadBridgeEnum::Road ? "yes" : "no"), 14);
                     addLine(ty, std::string("Water path: ") + (st.getRoadBridge() == RoadBridgeEnum::WaterConnection ? "yes" : "no"), 14);
                     addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
@@ -2627,9 +2651,9 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
                         std::string rline = "Resources: ";
                         bool any = false;
-                        if (hasR(ResourcesEnum::Forest)) { rline += "Forest "; any = true; }
                         if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
                         if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
+                        if (hasR(ResourcesEnum::Animal)) { rline += "Animal "; any = true; }
                         if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
                         if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
                         if (!any) rline += "None";
@@ -3277,6 +3301,9 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                         addLine(ty, "Pos: (" + std::to_string(selectedPos.x) + ", " + std::to_string(selectedPos.y) + ")", 14);
                         addLine(ty, std::string("Tribe: ") + tribeDisplayName(st.getTribe()), 14);
                         addLine(ty, std::string("Terrain: ") + baseTerrainName(st.getBaseTerrain()), 14);
+                        if (st.getBaseTerrain() == BaseTerrainEnum::Forest) {
+                            addLine(ty, std::string("Forest tribe: ") + tribeDisplayName(st.getTribe()), 14);
+                        }
                         addLine(ty, std::string("Road: ") + (st.getRoadBridge() == RoadBridgeEnum::Road ? "yes" : "no"), 14);
                         addLine(ty, std::string("Water path: ") + (st.getRoadBridge() == RoadBridgeEnum::WaterConnection ? "yes" : "no"), 14);
                         addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
@@ -3289,9 +3316,9 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
                             std::string rline = "Resources: ";
                             bool any = false;
-                            if (hasR(ResourcesEnum::Forest)) { rline += "Forest "; any = true; }
                             if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
                             if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
+                            if (hasR(ResourcesEnum::Animal)) { rline += "Animal "; any = true; }
                             if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
                             if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
                             if (!any) rline += "None";

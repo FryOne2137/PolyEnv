@@ -1,0 +1,56 @@
+//
+// Created by Fryderyk Niedzwiecki on 15/01/2026.
+//
+
+#ifndef GAME_ENGINE_VISIONSYSTEM_H
+#define GAME_ENGINE_VISIONSYSTEM_H
+
+#include <cstdint>
+
+#include "../content/units/Unit.h"
+#include "world/Pos.h"       // Pos
+#include "terrain/VisibilityEnum.h"
+#include "world/Tile.h"
+
+class Map;
+class Game;
+
+enum class RevealSource : uint8_t {
+    Initial,   // start gry
+    Unit,      // normalna jednostka
+    Explorer   // explorer
+};
+
+// Fog-of-war / visibility updates.
+// Each unit reveals tiles within its vision range (in tiles, not pixels).
+class VisionSystem {
+public:
+    // Reveal tiles around a single unit using Unit::getVisionRange().
+    static void revealFromUnit(Game& game, UnitId unitId);
+    static void revealTile(Game& game, PlayerId pid, Pos p, RevealSource source);
+
+    // Recompute (union) visibility for a player from all their units.
+    // NOTE: This function only ADDS visibility (like Polytopia fog). It does not hide tiles again.
+    static void revealForPlayerFromUnits(Game& game, PlayerId playerId);
+
+    static int countRevealedTiles(const Game& game, PlayerId playerId);
+    static int meetingReward(int enemyScore);
+
+
+
+    // Reveal a square/chebyshev disk centered at `center` with radius `range`.
+    static void revealArea(Game& game,PlayerId pid,Pos center,int range,RevealSource source);
+    // Helper: convert playerId (0..15) into a VisibilityEnum bit.
+    static VisibilityEnum bitForPlayer(PlayerId playerId);
+    static void doExplorer(Game& game, PlayerId pid, Pos start);
+
+private:
+    static bool isCornerTile(const Map& map, Pos p);
+
+    static bool isFogForPlayer(const Tile& t, PlayerIndex idx);
+    static bool tileHasLighthouse(const Tile& t);
+
+
+};
+
+#endif //GAME_ENGINE_VISIONSYSTEM_H

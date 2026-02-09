@@ -285,7 +285,7 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         if (textureStore) {
             const char* folder = tribeFolder(allTribes[i]);
             std::string path =
-                std::string("assets/Polytopia_game_engine_textures/tribes/") + folder + "/head.png";
+                std::string("assets/textures/Polytopia_game_engine_textures/tribes/") + folder + "/head.png";
             const sf::Texture& tex = textureStore->get(path);
             sf::Sprite spr(tex);
 

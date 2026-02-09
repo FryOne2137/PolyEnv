@@ -18,11 +18,11 @@
 
 #include "TextureStore.h"
 
-#include "Game.h"
-#include "World/Map.h"
-#include "World/Pos.h"
+#include "../game/Game.h"
+#include "world/Map.h"
+#include "world/Pos.h"
 #include "Tile.h"
-#include "tribes/Tribe.h"
+#include "../content/tribes/Tribe.h"
 #include "terrain/BaseTerrainEnum.h"
 #include "terrain/ResourcesEnum.h"
 #include "terrain/SettlementTypeEnum.h"
