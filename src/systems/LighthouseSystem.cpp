@@ -4,6 +4,8 @@
 
 #include "LighthouseSystem.h"
 
+#include <vector>
+
 #include "../game/Game.h"
 #include "world/Map.h"
 #include "world/Tile.h"
@@ -114,6 +116,68 @@ uint16_t LighthouseSystem::getDiscoveredByMask(const Game& game, uint8_t lightho
     return game.getLighthouseDiscoveredByMask(lighthouseIdx);
 }
 
-bool LighthouseSystem::hasPlayerDiscovered(const Game& game, uint8_t lighthouseIdx, PlayerId pid) {
-    return game.hasPlayerDiscoveredLighthouse(lighthouseIdx, pid);
+bool LighthouseSystem::hasPlayerDiscovered(const Game& game, PlayerId pid, LighthouseCorner corner) {
+    if (pid == kNoPlayer) return false;
+
+    const Map& map = game.getMap();
+    const int max = map.getWidth() - 1;
+
+    Pos p;
+    switch (corner) {
+        case LighthouseCorner::TopLeft:     p = Pos{0, 0}; break;
+        case LighthouseCorner::BottomLeft:  p = Pos{0, max}; break;
+        case LighthouseCorner::TopRight:    p = Pos{max, 0}; break;
+        case LighthouseCorner::BottomRight: p = Pos{max, max}; break;
+    }
+    const Tile& t = game.getMap().at(p);
+
+    const VisibilityEnum vis = t.getVisibility();
+    const uint16_t mask = static_cast<uint16_t>(vis);
+
+    const uint32_t idx = static_cast<uint32_t>(pid);
+    if (idx >= 16) return false;
+
+    return (mask & (uint16_t(1) << idx)) != 0;
+}
+
+static inline Pos cornerPos(const Game& game, LighthouseCorner c) {
+    const Map& map = game.getMap();
+    const int max = map.getWidth() - 1; // albo mapMaxCoord(map)
+    switch (c) {
+        case LighthouseCorner::TopLeft:     return Pos{0, 0};
+        case LighthouseCorner::BottomLeft:  return Pos{0, max};
+        case LighthouseCorner::TopRight:    return Pos{max, 0};
+        case LighthouseCorner::BottomRight: return Pos{max, max};
+    }
+    return Pos{0,0}; // żeby kompilator nie marudził
+}
+
+
+static inline std::vector<PlayerId> getCornerDiscoveredPlayers(const Game& game, LighthouseCorner c) {
+    std::vector<PlayerId> out;
+
+    const Pos p = cornerPos(game, c);
+    const Tile& t = game.getMap().at(p);
+
+    const VisibilityEnum vis = t.getVisibility();
+    const uint16_t mask = static_cast<uint16_t>(vis);
+
+    for (uint8_t pid = 0; pid < 16; ++pid) {
+        if (mask & (uint16_t(1) << pid)) {
+            out.push_back(static_cast<PlayerId>(pid));
+        }
+    }
+
+    return out;
+}
+
+static inline bool hasPlayerDiscoveredCorner(const Game& game, LighthouseCorner c, PlayerId pid) {
+    if (pid == kNoPlayer) return false;
+
+    const auto players = getCornerDiscoveredPlayers(game, c);
+    for (PlayerId p : players) {
+        if (p == pid) return true;
+    }
+
+    return false;
 }

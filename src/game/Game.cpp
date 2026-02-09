@@ -648,3 +648,27 @@ bool Game::resolvePendingCityUpgrade(PlayerId pid, CityUpgradeChoice choice) {
     pendingCityUpgrades.pop_front();
     return true;
 }
+
+bool Game::hasPlayerSeenCorner(PlayerId pid, MapCorner corner) const {
+    if (pid == kNoPlayer) return false;
+
+    const int max = map.getWidth() - 1;
+
+    Pos p{0, 0};
+    switch (corner) {
+        case MapCorner::TopLeft:     p = Pos{0, 0}; break;
+        case MapCorner::BottomLeft:  p = Pos{0, max}; break;
+        case MapCorner::TopRight:    p = Pos{max, 0}; break;
+        case MapCorner::BottomRight: p = Pos{max, max}; break;
+    }
+
+    if (!map.inBounds(p)) return false;
+
+    const Tile& t = map.at(p);
+    const uint16_t mask = static_cast<uint16_t>(t.getVisibility());
+
+    const uint32_t idx = static_cast<uint32_t>(pid);
+    if (idx >= 16) return false;
+
+    return (mask & (uint16_t(1) << idx)) != 0;
+}

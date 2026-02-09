@@ -31,6 +31,15 @@ class City;
 
 class Game {
 public:
+
+    enum class MapCorner : uint8_t {
+        TopLeft = 0,
+        BottomLeft = 1,
+        TopRight = 2,
+        BottomRight = 3,
+    };
+
+
     struct NewGameConfig {
         int mapSize = 16;
         float initialLand = 0.5f;
@@ -81,6 +90,9 @@ public:
     bool endTurn(PlayerId pid); // przechodzi do następnego gracza
     bool handleRuin(PlayerId pid, UnitId unitId, Pos pos);
     bool handleStarfish(PlayerId pid, UnitId unitId, Pos pos);
+
+
+    bool hasPlayerSeenCorner(PlayerId pid, MapCorner corner) const;
 
     // ---- Dostęp do stanu (AI/UI) ----
     const Map &getMap() const { return map; }

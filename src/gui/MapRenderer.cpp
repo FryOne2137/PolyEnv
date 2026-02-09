@@ -8,6 +8,7 @@
 #include "systems/InteractionSystem.h"
 #include "systems/VisionSystem.h"
 #include "terrain/VisibilityEnum.h"
+#include "systems/LighthouseSystem.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
 #include "../game/Game.h"
@@ -2527,6 +2528,66 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                 for (std::size_t i = 0; i < 5; ++i) outline2[i].color = sf::Color(255, 220, 80, 140);
                 rt.draw(outline2);
             }
+
+            // --- Lighthouse corner visit labels (gameplay view only) ---
+// Draw near each map corner tile: "visited: 0, 1, 2" (only if that corner tile is visible to current player).
+if (!showOverview) {
+    const bool hasFont = ensureUIFontLoaded();
+    if (hasFont) {
+        struct CornerInfo { Pos pos; uint8_t idx; };
+
+        const int maxC = map.getWidth() - 1;
+        const CornerInfo corners[4] = {
+            {Pos{0, 0},        0},
+            {Pos{0, maxC},     1},
+            {Pos{maxC, 0},     2},
+            {Pos{maxC, maxC},  3},
+        };
+
+        auto maskToCsv = [](uint16_t mask) -> std::string {
+            std::string out;
+            bool first = true;
+            for (uint8_t i = 0; i < 16; ++i) {
+                if (mask & (uint16_t(1) << i)) {
+                    if (!first) out += ", ";
+                    first = false;
+                    out += std::to_string(int(i));
+                }
+            }
+            if (first) return std::string("none");
+            return out;
+        };
+
+        for (const auto& c : corners) {
+            if (!map.inBounds(c.pos)) continue;
+            const Tile& ct = map.at(c.pos);
+
+            // Only show if this corner tile is visible to current player
+            if (!isRevealed(ct.getVisibility(), static_cast<PlayerIndex>(curPid)))
+                continue;
+
+            const uint16_t mask = game->getLighthouseDiscoveredByMask(c.idx);
+            const std::string label = std::string("visited: ") + maskToCsv(mask);
+
+            // Compute same isometric screen position as tiles
+            const int column = c.pos.x;
+            const int row = c.pos.y;
+
+            const float x = baseShift.x - tileSize / 2.f + (float(column - row) * tileSize / 2.f);
+            const float y = baseShift.y + (float(column + row) * yStep);
+
+            sf::Text t;
+            t.setFont(uiFont);
+            t.setCharacterSize(14);
+            t.setFillColor(sf::Color(255, 255, 255, 230));
+            t.setString(label);
+
+            // place slightly above the corner tile
+            t.setPosition(x + 6.f, y - 22.f);
+            rt.draw(t);
+        }
+    }
+}
 
             // --- Right-side info panel background (drawn last, on top) ---
             {

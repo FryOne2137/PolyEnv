@@ -113,6 +113,10 @@ set(ENGINE_SOURCES
         src/Systems/CityRewardSystem.h
         src/Systems/GameDataSystem.cpp
         src/Systems/GameDataSystem.h
+        src/ai/Action.cpp
+        src/ai/Action.h
+        src/ai/IGameState.cpp
+        src/ai/IGameState.h
 )
 
 # ---- Engine library (no mains, no SFML) ----
