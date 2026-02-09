@@ -13,6 +13,27 @@
 
 struct Action {
     enum class Type { Move, Attack, Heal, EndTurn, BuyTech, UpgradeCity, Build, TileAction, UnitUpgrade };
+    enum class TileActionKind {
+        None = 0,
+        Hunt,
+        Organization,
+        Fishing,
+        ClearForest,
+        BurnForest,
+        GrowForest,
+        DestroyTile,
+        BuildRoad,
+        BuildBridge,
+        Explorer,
+        FoundCity
+    };
+    enum class UnitUpgradeKind {
+        None = 0,
+        RaftToScout,
+        RaftToRammer,
+        RaftToBomber,
+        BecomeVeteran
+    };
     Type type;
     PlayerId pid;
     UnitId unit = kNoUnit;
@@ -22,7 +43,8 @@ struct Action {
     TechId tech = TechId::Count;
     BuildingTypeEnum building = BuildingTypeEnum::None;
     CityUpgradeChoice upgrade = CityUpgradeChoice::None;
-    // minimalny payload; rozbudujesz w razie potrzeby
+    TileActionKind tileAction = TileActionKind::None;
+    UnitUpgradeKind unitUpgrade = UnitUpgradeKind::None;
 };
 
 

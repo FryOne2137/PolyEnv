@@ -6,6 +6,8 @@
 #define GAME_ENGINE_IGAMESTATE_H
 
 #include "Action.h"
+#include <memory>
+#include <vector>
 
 #include "Pos.h"
 #include "content/tech/TechDB.h"
@@ -21,10 +23,10 @@ struct IGameState {
 
     virtual std::vector<Action> legalActions(PlayerId pid) const = 0;
     virtual void apply(const Action& a) = 0;
-    virtual void undo(const Action& a) = 0; // albo clone() jeśli wolisz kopie
+    virtual void undo(const Action& a) = 0;
     virtual std::unique_ptr<IGameState> clone() const = 0;
 
-    virtual uint64_t hash() const = 0; // dla transposition table
+    virtual uint64_t hash() const = 0;
 };
 
 

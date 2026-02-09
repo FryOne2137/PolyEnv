@@ -10,15 +10,15 @@
 #include <array>
 #include <deque>
 
-#include "../world/Map.h"
-#include "../world/Pos.h"
-#include "../world/MapGenerator.h"
+#include "world/Map.h"
+#include "world/Pos.h"
+#include "world/MapGenerator.h"
 
-#include "../player/Player.h"
-#include "../systems/CityRewardSystem.h"
-#include "../content/units/Unit.h"
-#include "../content/tribes/Tribe.h"
-#include "../world/Settlements/City.h"
+#include "player/Player.h"
+#include "systems/CityRewardSystem.h"
+#include "content/units/Unit.h"
+#include "content/tribes/Tribe.h"
+#include "content/settlements/City.h"
 #include "terrain/BuildingTypeEnum.h"
 
 // Forward declarations systemów (żeby Game.h nie robił ciężkich include)
@@ -74,6 +74,7 @@ public:
     void newGame(const NewGameConfig &cfg);
 
     bool buyTech(PlayerId pid, TechId tech);
+    bool canBuyTech(PlayerId pid, TechId tech) const;
 
 
     // ---- Tura / kolejność ----
@@ -106,8 +107,11 @@ public:
 
     // ---- Akcje (walidacja kolejności tur) ----
     bool moveUnit(PlayerId pid, UnitId unitId, Pos to);
+    bool canMoveUnit(PlayerId pid, UnitId unitId, Pos to) const;
     bool attack(PlayerId pid, UnitId attackerId, Pos target);
+    bool canAttack(PlayerId pid, UnitId attackerId, Pos target) const;
     bool heal(PlayerId pid, UnitId healerId);
+    bool canHeal(PlayerId pid, UnitId healerId) const;
 
     std::vector<Pos> attackable(PlayerId pid, UnitId attackerId) const;
     std::vector<Pos> reachable(PlayerId pid, UnitId unitId) const;
@@ -138,6 +142,7 @@ public:
     int getPlayerScore(PlayerId pid) const;
 
     bool foundCityFromVillage(PlayerId pid, Pos pos);
+    bool canFoundCityFromVillage(PlayerId pid, Pos pos) const;
 
     bool canUpgradeCity(PlayerId pid, CityId cityId) const;
 
@@ -146,17 +151,26 @@ public:
     bool upgradeCity(PlayerId pid, CityId cityId, CityUpgradeChoice choice);
 
     bool captureCityAt(PlayerId pid, Pos pos);
+    bool canCaptureCityAt(PlayerId pid, Pos pos) const;
 
     bool buildBuilding(PlayerId builder, Pos pos, BuildingTypeEnum type);
+    bool canBuildBuilding(PlayerId builder, Pos pos, BuildingTypeEnum type) const;
 
     // ---- Tile actions (clear/hunt/fish/etc.) ----
     bool hunt(PlayerId pid, Pos pos);
+    bool canHunt(PlayerId pid, Pos pos) const;
     bool fishing(PlayerId pid, Pos pos);
+    bool canFishing(PlayerId pid, Pos pos) const;
     bool clearForest(PlayerId pid, Pos pos);
+    bool canClearForest(PlayerId pid, Pos pos) const;
     bool burnForest(PlayerId pid, Pos pos);
+    bool canBurnForest(PlayerId pid, Pos pos) const;
     bool growForest(PlayerId pid, Pos pos);
+    bool canGrowForest(PlayerId pid, Pos pos) const;
     bool destroyTile(PlayerId pid, Pos pos);
+    bool canDestroyTile(PlayerId pid, Pos pos) const;
     bool organization(PlayerId pid, Pos pos);
+    bool canOrganization(PlayerId pid, Pos pos) const;
 
     bool canUpgradeRaftToScout(PlayerId pid, UnitId unitId) const;
     bool canUpgradeRaftToRammer(PlayerId pid, UnitId unitId) const;
@@ -170,9 +184,12 @@ public:
     bool becomeVeteran(PlayerId pid, UnitId unitId);
 
     bool buildRoad(PlayerId pid, Pos pos);
+    bool canBuildRoad(PlayerId pid, Pos pos) const;
     bool buildBridge(PlayerId pid, Pos pos);
+    bool canBuildBridge(PlayerId pid, Pos pos) const;
 
     bool explorer(PlayerId pid, Pos start);
+    bool canExplorer(PlayerId pid, Pos start) const;
     bool isPlayersTurn(PlayerId pid) const { return pid == currentPlayer; };
 
 private:

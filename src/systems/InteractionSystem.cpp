@@ -20,8 +20,6 @@
 #include "systems/PlayerSystem.h"
 
 #include <cstdint>
-#include <iostream>
-#include <ostream>
 #include <vector>
 
 #include "UnitSpawnSystem.h"
@@ -50,17 +48,6 @@ static inline uint32_t ruinRng(uint32_t worldSeed, Pos pos, uint32_t salt) {
 static constexpr int kStarfishReward = 8;
 static constexpr int kRuinStarsReward = 10;
 
-
-static const char* ruinRewardToString(InteractionSystem::RuinReward r) {
-    switch (r) {
-        case InteractionSystem::RuinReward::Stars:        return "Stars";
-        case InteractionSystem::RuinReward::Tech:         return "Tech";
-        case InteractionSystem::RuinReward::Population:   return "Population";
-        case InteractionSystem::RuinReward::Explorer:     return "Explorer";
-        case InteractionSystem::RuinReward::VeteranUnit:  return "VeteranUnit";
-        default:                                         return "<Unknown>";
-    }
-}
 
 void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
     if (!UnitSystem::unitExists(game, unitId)) return;
@@ -107,9 +94,6 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
 
     const PlayerId pid = UnitSystem::getOwnerId(game, unitId);
     const RuinReward reward = rollRuinReward(game, pid, pos);
-
-    std::cout << "[RuinReward] " << ruinRewardToString(reward) << std::endl;
-
 
     switch (reward) {
         case RuinReward::Stars:

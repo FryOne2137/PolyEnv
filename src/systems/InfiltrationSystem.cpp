@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <vector>
 #include <algorithm>
-#include <iostream>
 
 #include "../game/Game.h"
 #include "world/Map.h"
@@ -139,7 +138,6 @@ bool InfiltrationSystem::infiltrateCity(Game& game, UnitId cloakId, CityId cityI
             // If the occupant is some other attacker unit (not this cloak), also treat as siege.
             const PlayerId occOwner = UnitSystem::getOwnerId(game, occ);
             if (occOwner == defender || (occOwner != kNoPlayer && occOwner != defender && occ != cloakId)) {
-                std::cout << "[infiltrate] blocked: city under siege cityId=" << int(cityId) << "\n";
                 return false;
             }
         }
@@ -147,7 +145,6 @@ bool InfiltrationSystem::infiltrateCity(Game& game, UnitId cloakId, CityId cityI
 
     // Blockade 2: cannot infiltrate again until the owner's next turn has cleared the infiltration flag.
     if (CitySystem::getCityIsInfiltrated(game, cityId)) {
-        std::cout << "[infiltrate] blocked: cooldown (city already infiltrated) cityId=" << int(cityId) << "\n";
         return false;
     }
 

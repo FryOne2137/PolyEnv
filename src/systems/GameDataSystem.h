@@ -13,6 +13,7 @@ class GameDataSystem {
 public:
 
     static void loadUnits(const std::string& path);
+    static bool isUnitsLoaded();
     static const Unit& getUnitTemplate(UnitType type);
     static void applyUnitTemplate(Unit& u);
     static int getUnitCost(UnitType type);

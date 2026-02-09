@@ -50,15 +50,15 @@ uint8_t City::getUnitsCount() const {
 }
 
 uint8_t City::getStarsPerRound() const {
-    uint8_t starsPerRound = getLevel();
+    uint8_t perRound = starsPerRound;
     if (isCapitalCity()) {
-        starsPerRound+20;
+        perRound = static_cast<uint8_t>(perRound + 1);
     }
     if (hasWorkshopEnabled()) {
-        starsPerRound++;
+        perRound = static_cast<uint8_t>(perRound + 1);
     }
-
-    return starsPerRound+20;
+    perRound=perRound+parkCount;
+    return perRound;
 }
 
 bool City::addPopulation(uint16_t v) {
@@ -71,4 +71,3 @@ bool City::addPopulation(uint16_t v) {
 
     return true;
 }
-

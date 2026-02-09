@@ -5,7 +5,7 @@
 #include "systems/CitySystem.h"
 #include "systems/PlayerSystem.h"
 #include "world/Tile.h"
-#include "Buildings/BuildingDB.h"
+#include "BuildingDB.h"
 #include "terrain/BuildingTypeEnum.h"
 
 static inline bool isMonument(BuildingTypeEnum t) {

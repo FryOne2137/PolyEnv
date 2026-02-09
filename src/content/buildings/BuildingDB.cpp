@@ -1,4 +1,4 @@
-#include "Buildings/BuildingDB.h"
+#include "BuildingDB.h"
 
 namespace BuildingDB {
 

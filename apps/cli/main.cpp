@@ -1,18 +1,20 @@
 #include <iostream>
+#include <vector>
 
-#include "techs/ArcheryTech.h"
-#include "techs/ClimbingTech.h"
-#include "techs/NavigationTech.h"
-#include "techs/Tech.h"
-#include "tribes/Bardur.h"
-#include "../../src/content/tribes/Tribe.h"
+#include "game/Game.h"
 
-// TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 int main() {
-    Tribe *tribe = new Bardur();
-    std::cout<<tribe->getName()<<std::endl;
-    std::cout<<tribe->getId()<<std::endl;
-    std::cout<<tribe->getStartStars()<<std::endl;
-    std::cout<<tribe->getStartTech()<<std::endl;
+    Game game;
+    Game::NewGameConfig cfg;
+    cfg.mapSize = 16;
+    cfg.seed = 1;
+    cfg.tribes = {TribeType::Bardur, TribeType::Imperius};
 
+    game.newGame(cfg);
+
+    std::cout << "Started game. players=" << game.getPlayers().size()
+              << " map=" << game.getMap().getWidth() << "x" << game.getMap().getHeight()
+              << " turn=" << game.getTurnNumber() << "\n";
+
+    return 0;
 }

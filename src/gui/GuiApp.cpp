@@ -59,7 +59,7 @@ static bool loadAnyFont(sf::Font& font) {
 static bool loadAnyWindowIcon(sf::Image& img) {
     static const std::array<std::string, 6> kPrefixes = {"", "../", "../../", "../../../", "../../../../", "../../../../../"};
 
-    const std::string rel = "assets/Polytopia_game_engine_textures/tribes/Bardur/head.png";
+    const std::string rel = "assets/textures/Polytopia_game_engine_textures/tribes/Bardur/head.png";
 
     // Absolute path support (just in case)
     if (!rel.empty() && rel[0] == '/') {

@@ -15,6 +15,7 @@ using json = nlohmann::json;
 // Internal storage for unit templates loaded from Units.json
 static std::unordered_map<UnitType, Unit> g_unitTemplates;
 static bool g_unitsLoaded = false;
+static std::string g_loadedFromPath;
 
 static UnitType unitTypeFromString(const std::string& s) {
     // Keep this in sync with Units.json keys.
@@ -160,6 +161,10 @@ static void applyJsonToUnit(Unit& out, const json& j) {
 }
 
 void GameDataSystem::loadUnits(const std::string& path) {
+    if (g_unitsLoaded && g_loadedFromPath == path) {
+        return;
+    }
+
     std::ifstream f(path);
     if (!f.is_open()) {
         throw std::runtime_error("GameDataSystem: failed to open Units.json at " + path);
@@ -202,6 +207,11 @@ void GameDataSystem::loadUnits(const std::string& path) {
     }
 
     g_unitsLoaded = true;
+    g_loadedFromPath = path;
+}
+
+bool GameDataSystem::isUnitsLoaded() {
+    return g_unitsLoaded;
 }
 
 const Unit& GameDataSystem::getUnitTemplate(UnitType type) {
