@@ -1,0 +1,30 @@
+[build-system]
+requires = [
+  "scikit-build-core>=0.10",
+  "pybind11>=2.11",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "game-engine"
+version = "0.1.0"
+description = "Polytopia-like game engine Python bindings"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Fryderyk Niedzwiecki" }
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Operating System :: OS Independent",
+]
+
+[tool.scikit-build]
+cmake.version = ">=3.20"
+cmake.args = [
+  "-DGAME_ENGINE_BUILD_APPS=OFF",
+  "-DGAME_ENGINE_BUILD_GUI=OFF",
+  "-DGAME_ENGINE_BUILD_PYTHON_BINDINGS=ON",
+]
+wheel.packages = ["python/game_engine"]
