@@ -10,6 +10,7 @@
 
 #include <SFML/Graphics.hpp>   // sf::RenderWindow, sf::Font, sf::Event etc.
 #include <memory>
+#include <random>
 #include <vector>
 
 #include "TextureStore.h"
@@ -29,6 +30,7 @@ private:
     TextureStore* textures = nullptr;
 
     void startGameWithTribes(const std::vector<TribeType>& tribes);
+    bool runRandomAutoActionStep();
 
 private:
     sf::RenderWindow window;
@@ -48,6 +50,9 @@ private:
     std::unique_ptr<MapRenderer> mapRenderer;
 
     Game game;
+    bool autoRandomEnabled = false;
+    sf::Clock autoRandomClock;
+    std::mt19937 rng;
 };
 
 #endif //GAME_ENGINE_GUIAPP_H

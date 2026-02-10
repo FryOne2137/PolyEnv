@@ -10,9 +10,11 @@
 #include <chrono>
 #include <filesystem>
 #include <array>
+#include <random>
 #include <SFML/Graphics/Image.hpp>
 
 #include "MapRenderer.h"
+#include "ai/GameStateAdapter.h"
 
 static bool existsFile(const std::string& p) {
     std::error_code ec;
@@ -106,6 +108,11 @@ int GuiApp::run() {
                 if (mapRenderer->consumeToggleOverviewRequested()) {
                     mapRenderer->toggleOverview();
                 }
+                if (mapRenderer->consumeAutoPlayToggleRequested()) {
+                    autoRandomEnabled = !autoRandomEnabled;
+                    mapRenderer->setAutoPlayActive(autoRandomEnabled);
+                    autoRandomClock.restart();
+                }
             }
             if (ev.type == sf::Event::Closed) window.close();
             if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Escape) {
@@ -113,6 +120,7 @@ int GuiApp::run() {
                     // Back to TribeSelectScreen: kill the old world completely
                     mapRenderer.reset();
                     game = Game();              // reset whole game state
+                    autoRandomEnabled = false;
                     mode = Mode::SelectTribes;
                 } else {
                     window.close();             // ESC closes only in TribeSelectScreen
@@ -126,12 +134,26 @@ int GuiApp::run() {
                     if (tribes.size() >= 2 && tribes.size() <= 16) {
                         mapRenderer.reset();
                         game = Game();
+                        autoRandomEnabled = false;
                         startGameWithTribes(tribes);
                         mode = Mode::InGame;
                     }
                 }
             } else {
                 // in-game input (na razie minimal)
+            }
+        }
+
+        if (mode == Mode::InGame && mapRenderer && autoRandomEnabled) {
+            if (game.isGameOver()) {
+                autoRandomEnabled = false;
+                mapRenderer->setAutoPlayActive(false);
+            } else if (autoRandomClock.getElapsedTime().asSeconds() >= 0.2f) {
+                autoRandomClock.restart();
+                if (!runRandomAutoActionStep()) {
+                    autoRandomEnabled = false;
+                    mapRenderer->setAutoPlayActive(false);
+                }
             }
         }
 
@@ -197,6 +219,8 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
 
     mapRenderer = std::make_unique<MapRenderer>(*textures);
     mapRenderer->setGame(&game);
+    mapRenderer->setAutoPlayActive(false);
+    autoRandomClock.restart();
 
     // możesz tu od razu dopasować zoom / tile size:
     mapRenderer->setTileSizePx(48);
@@ -205,4 +229,34 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
 
 GuiApp::GuiApp() {
     textures = &TextureStore::instance();
+    rng.seed(std::random_device{}());
+}
+
+bool GuiApp::runRandomAutoActionStep() {
+    if (game.isGameOver()) return false;
+
+    GameStateAdapter adapter(game);
+    const PlayerId pid = adapter.currentPlayer();
+    const std::vector<uint8_t> mask = adapter.legalActionMask(pid);
+
+    std::vector<size_t> legalIds;
+    legalIds.reserve(mask.size() / 8 + 1);
+    for (size_t i = 0; i < mask.size(); ++i) {
+        if (mask[i]) legalIds.push_back(i);
+    }
+    if (legalIds.empty()) return false;
+
+    std::uniform_int_distribution<size_t> dist(0, legalIds.size() - 1);
+    const size_t chosen = legalIds[dist(rng)];
+
+    const std::optional<Action> action = adapter.decodeActionId(pid, chosen);
+    if (!action) return false;
+
+    adapter.apply(*action);
+    game = adapter.getGame();
+
+    if (mapRenderer) {
+        mapRenderer->clearSelection();
+    }
+    return true;
 }

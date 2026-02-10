@@ -20,7 +20,8 @@ ActionSpace::ActionSpace(int width, int height)
     offUnitUpgrade_ = offHeal_ + static_cast<size_t>(cellCount_);
     offTileAction_ = offUnitUpgrade_ + static_cast<size_t>(kUnitUpgradeCount) * static_cast<size_t>(cellCount_);
     offBuild_ = offTileAction_ + static_cast<size_t>(kTileActionCount) * static_cast<size_t>(cellCount_);
-    offUpgradeCity_ = offBuild_ + static_cast<size_t>(kBuildingCount) * static_cast<size_t>(cellCount_);
+    offSpawn_ = offBuild_ + static_cast<size_t>(kBuildingCount) * static_cast<size_t>(cellCount_);
+    offUpgradeCity_ = offSpawn_ + static_cast<size_t>(kSpawnUnitCount) * static_cast<size_t>(cellCount_);
     totalSize_ = offUpgradeCity_ + static_cast<size_t>(kCityUpgradeCount) * static_cast<size_t>(cellCount_);
 }
 
@@ -81,6 +82,14 @@ std::optional<size_t> ActionSpace::encode(const Game& game, const Action& action
             if (building < 0 || !validPos(action.pos)) return std::nullopt;
             return offBuild_
                  + static_cast<size_t>(building) * static_cast<size_t>(cellCount_)
+                 + static_cast<size_t>(posToIndex(action.pos));
+        }
+
+        case Action::Type::SpawnUnit: {
+            const int spawnType = idxForSpawnUnit(action.spawnType);
+            if (spawnType < 0 || !validPos(action.pos)) return std::nullopt;
+            return offSpawn_
+                 + static_cast<size_t>(spawnType) * static_cast<size_t>(cellCount_)
                  + static_cast<size_t>(posToIndex(action.pos));
         }
 
@@ -166,12 +175,22 @@ std::optional<Action> ActionSpace::decode(const Game& game, size_t actionId) con
         return a;
     }
 
-    if (actionId >= offBuild_ && actionId < offUpgradeCity_) {
+    if (actionId >= offBuild_ && actionId < offSpawn_) {
         const size_t rel = actionId - offBuild_;
         const int kind = static_cast<int>(rel / static_cast<size_t>(cellCount_));
         const int pos = static_cast<int>(rel % static_cast<size_t>(cellCount_));
         a.type = Action::Type::Build;
         a.building = buildingFromIdx(kind);
+        a.pos = indexToPos(pos);
+        return a;
+    }
+
+    if (actionId >= offSpawn_ && actionId < offUpgradeCity_) {
+        const size_t rel = actionId - offSpawn_;
+        const int kind = static_cast<int>(rel / static_cast<size_t>(cellCount_));
+        const int pos = static_cast<int>(rel % static_cast<size_t>(cellCount_));
+        a.type = Action::Type::SpawnUnit;
+        a.spawnType = spawnUnitFromIdx(kind);
         a.pos = indexToPos(pos);
         return a;
     }
@@ -238,6 +257,17 @@ int ActionSpace::idxForBuilding(BuildingTypeEnum b) {
 BuildingTypeEnum ActionSpace::buildingFromIdx(int idx) {
     if (idx < 0 || idx >= kBuildingCount) return BuildingTypeEnum::None;
     return static_cast<BuildingTypeEnum>(idx + 1);
+}
+
+int ActionSpace::idxForSpawnUnit(UnitType t) {
+    const int v = static_cast<int>(t);
+    if (v <= 0 || v > kSpawnUnitCount) return -1;
+    return v - 1;
+}
+
+UnitType ActionSpace::spawnUnitFromIdx(int idx) {
+    if (idx < 0 || idx >= kSpawnUnitCount) return UnitType::Unknown;
+    return static_cast<UnitType>(idx + 1);
 }
 
 int ActionSpace::idxForCityUpgrade(CityUpgradeChoice c) {

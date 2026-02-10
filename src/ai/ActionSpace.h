@@ -35,6 +35,9 @@ private:
     static int idxForBuilding(BuildingTypeEnum b);
     static BuildingTypeEnum buildingFromIdx(int idx);
 
+    static int idxForSpawnUnit(UnitType t);
+    static UnitType spawnUnitFromIdx(int idx);
+
     static int idxForCityUpgrade(CityUpgradeChoice c);
     static CityUpgradeChoice cityUpgradeFromIdx(int idx);
 
@@ -54,6 +57,7 @@ private:
     size_t offUnitUpgrade_ = 0;
     size_t offTileAction_ = 0;
     size_t offBuild_ = 0;
+    size_t offSpawn_ = 0;
     size_t offUpgradeCity_ = 0;
     size_t totalSize_ = 0;
 
@@ -61,6 +65,7 @@ private:
     static constexpr int kTileActionCount = 14;   // TileActionKind without None
     static constexpr int kUnitUpgradeCount = 4;   // UnitUpgradeKind without None
     static constexpr int kBuildingCount = 16;     // All non-None building ids
+    static constexpr int kSpawnUnitCount = static_cast<int>(UnitType::GiantSuper); // UnitType values 1..90
     static constexpr int kCityUpgradeCount = 8;   // CityUpgradeChoice without None
 };
 

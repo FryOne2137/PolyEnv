@@ -99,7 +99,7 @@ void Game::newGame(const NewGameConfig& cfg) {
         (void)CitySystem::setCityOwner(*this, cid, static_cast<uint8_t>(i));
         (void)CitySystem::setCityLevel(*this, cid, 1);
         (void)CitySystem::setCityPopulation(*this, cid, 0);
-        (void)CitySystem::setCityStarsPerRound(*this, cid, 20);
+        (void)CitySystem::setCityStarsPerRound(*this, cid, 1);
         (void)CitySystem::setCityName(*this, cid, std::string("City ") + std::to_string(i));
 
         // IMPORTANT: store the city position (used by movement/connection systems).
@@ -228,12 +228,20 @@ const Unit* Game::getUnit(UnitId id) const {
 }
 
 // Spawns a unit on the map. If `canActImmediately` is false, the unit cannot move/attack until next turn.
-UnitId Game::spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately) {
+bool Game::canSpawnUnit(PlayerId owner, UnitType type, Pos pos, bool canActImmediately) const {
     if (!canActImmediately) {
-        if (!isPlayersTurn(owner)) return kNoUnit;
-        if (owner == kNoPlayer) return kNoUnit;
-        if (!PlayerSystem::playerExists(*this, owner)) return kNoUnit;
+        if (!isPlayersTurn(owner)) return false;
+        if (hasPendingCityUpgrade(owner)) return false;
     }
+    if (owner == kNoPlayer) return false;
+    if (!PlayerSystem::playerExists(*this, owner)) return false;
+
+    return UnitSpawnSystem::canSpawnUnit(*this, map, type, owner, pos, canActImmediately);
+}
+
+// Spawns a unit on the map. If `canActImmediately` is false, the unit cannot move/attack until next turn.
+UnitId Game::spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately) {
+    if (!canSpawnUnit(owner, type, pos, canActImmediately)) return kNoUnit;
 
     return UnitSpawnSystem::spawnUnit(*this, map, type, owner, pos, canActImmediately);
 }
@@ -509,16 +517,21 @@ std::vector<BuildingTypeEnum> Game::getPlayerOwnedMonuments(PlayerId pid) const 
 }
 
 bool Game::explorer(PlayerId pid, Pos start) {
-    if (!canCurrentPlayerAct(*this, pid)) return false;
-    if (!map.inBounds(start)) return false;
+    if (!canExplorer(pid, start)) return false;
     VisionSystem::doExplorer(*this, pid, start);
     return true;
 }
 
 bool Game::canExplorer(PlayerId pid, Pos start) const {
-    if (!isPlayersTurn(pid)) return false;
-    if (hasPendingCityUpgrade(pid)) return false;
-    return map.inBounds(start);
+    if (!canCurrentPlayerAct(*this, pid)) return false;
+    if (!map.inBounds(start)) return false;
+
+    const Tile& t = map.at(start);
+    if (t.getSettlementType() != SettlementTypeEnum::City) return false;
+
+    const CityId cid = static_cast<CityId>(t.getSettlementId());
+    if (!CitySystem::cityExists(*this, cid)) return false;
+    return static_cast<PlayerId>(CitySystem::getCityOwner(*this, cid)) == pid;
 }
 
 bool Game::buildBridge(PlayerId pid, Pos pos) {

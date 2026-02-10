@@ -47,7 +47,9 @@ public:
     // --- UI actions (polled by GuiApp) ---
     bool consumeEndTurnClicked();
     bool consumeToggleOverviewRequested();
+    bool consumeAutoPlayToggleRequested();
     void toggleOverview();
+    void setAutoPlayActive(bool active);
 
 private:
     sf::Vector2u lastRtSize{0u, 0u};
@@ -89,9 +91,12 @@ private:
     bool showOverview = false;
     bool endTurnClicked = false;
     bool toggleOverviewRequested = false;
+    bool autoPlayToggleRequested = false;
+    bool autoPlayActive = false;
 
     // Cached clickable rects (screen coords)
     sf::FloatRect btnEndTurn{};
+    sf::FloatRect btnAutoPlay{};
     sf::FloatRect btnOverview{};
     sf::FloatRect btnBack{};
 

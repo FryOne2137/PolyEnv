@@ -135,8 +135,6 @@ set(ENGINE_SOURCES
         src/ai/Action.h
         src/ai/ActionSpace.cpp
         src/ai/ActionSpace.h
-        src/ai/IGameState.cpp
-        src/ai/IGameState.h
         src/ai/GameStateAdapter.cpp
         src/ai/GameStateAdapter.h
 )

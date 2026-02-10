@@ -19,8 +19,12 @@ bool TechSystem::canBuyTech(const Game& game, PlayerId pid, TechId tech) {
 
     if (PlayerSystem::hasTech(game, pid, tech)) return false;
 
-    // prerequisite
+    // prerequisite:
+    // - Tier1 can be bought directly
+    // - Tier2/Tier3 must have a valid prerequisite tech and that tech must be owned
+    const TechData& techData = TechDB::getTech(tech);
     const TechId prereq = TechDB::getPrerequisite(tech);
+    if (techData.tier != TechTier::Tier1 && prereq == TechId::Count) return false;
     if (prereq != TechId::Count && !PlayerSystem::hasTech(game, pid, prereq)) return false;
 
     // cena

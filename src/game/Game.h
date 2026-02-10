@@ -123,6 +123,7 @@ public:
     std::vector<Pos> reachable(PlayerId pid, UnitId unitId) const;
 
     // Fabryka jednostek w świecie (na razie minimalnie)
+    bool canSpawnUnit(PlayerId owner, UnitType type, Pos pos, bool canActImmediately=false) const;
     UnitId spawnUnit(UnitType type, PlayerId owner, Pos pos, bool canActImmediately=false);
 
     std::vector<BuildingTypeEnum> getPlayerEarnedMonuments(PlayerId pid) const;

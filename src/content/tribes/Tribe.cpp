@@ -66,7 +66,7 @@ uint8_t Tribe::defaultStartStars(TribeType type) {
     // If you later add game-mode modifiers, do it outside of Tribe.
     switch (type) {
         case TribeType::XinXi: return 7;
-        case TribeType::Oumaji: return 255;
+        case TribeType::Oumaji: return 6;
         case TribeType::Hoodrick: return 7;
         case TribeType::Luxidoor: return 2;
         case TribeType::Quetzali: return 7;

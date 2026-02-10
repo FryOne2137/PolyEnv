@@ -15,6 +15,7 @@
 
 class UnitSpawnSystem {
     public:
+    static bool canSpawnUnit(const Game& game, const Map& map, UnitType type, PlayerId owner, Pos pos, bool canActImmediately);
     static UnitId spawnUnit(Game& game, Map& map, UnitType type, PlayerId owner, Pos pos, bool canActImmediately);
     static UnitId spawnUnitForced(Game& game, Map& map, UnitType type, PlayerId owner, Pos pos, bool canActImmediately, bool makeVeteran);
 

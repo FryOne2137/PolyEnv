@@ -9,10 +9,11 @@
 #include "core/Ids.h"
 #include "systems/CityRewardSystem.h"
 #include "terrain/BuildingTypeEnum.h"
+#include "content/units/Unit.h"
 
 
 struct Action {
-    enum class Type { Move, Attack, Heal, EndTurn, BuyTech, UpgradeCity, Build, TileAction, UnitUpgrade };
+    enum class Type { Move, Attack, Heal, EndTurn, BuyTech, UpgradeCity, Build, SpawnUnit, TileAction, UnitUpgrade };
     enum class TileActionKind {
         None = 0,
         Hunt,
@@ -45,6 +46,7 @@ struct Action {
     Pos target = {0,0};
     TechId tech = TechId::Count;
     BuildingTypeEnum building = BuildingTypeEnum::None;
+    UnitType spawnType = UnitType::Unknown;
     CityUpgradeChoice upgrade = CityUpgradeChoice::None;
     TileActionKind tileAction = TileActionKind::None;
     UnitUpgradeKind unitUpgrade = UnitUpgradeKind::None;

@@ -38,6 +38,7 @@ void TurnSystem::startTurn(Game& game) {
 }
 
 void TurnSystem::endTurn(Game& game) {
+    applyPassiveRecoveryForCurrentPlayer(game);
     refreshUnitsForCurrentPlayer(game);
 
     // TODO: end-of-turn effects:
@@ -63,6 +64,38 @@ void TurnSystem::endTurn(Game& game) {
             pid,
             static_cast<int>(PlayerSystem::getNoAttackTurns(game, pid))
         );
+    }
+}
+
+void TurnSystem::applyPassiveRecoveryForCurrentPlayer(Game& game) {
+    const PlayerId pid = game.getCurrentPlayerId();
+    const auto& unitIds = PlayerSystem::getUnits(game, pid);
+    Map& map = game.getMap();
+
+    for (UnitId uid : unitIds) {
+        if (!UnitSystem::unitExists(game, uid)) continue;
+
+        // Recovery is granted only if the unit did not move and did not attack this turn.
+        if (UnitSystem::movedThisTurn(game, uid)) continue;
+        if (UnitSystem::attackedThisTurn(game, uid)) continue;
+
+        const int hp = UnitSystem::getHealth(game, uid);
+        const int maxHp = UnitSystem::getMaxHealth(game, uid);
+        if (hp <= 0 || hp >= maxHp) continue;
+
+        const Pos pos = UnitSystem::getPos(game, uid);
+        if (!map.inBounds(pos)) continue;
+
+        int recovery = 2; // default recovery outside own territory
+        const Tile& tile = map.at(pos);
+        const CityId territoryCity = tile.getTerritoryCityId();
+        if (territoryCity != kNoCity &&
+            CitySystem::cityExists(game, territoryCity) &&
+            static_cast<PlayerId>(CitySystem::getCityOwner(game, territoryCity)) == pid) {
+            recovery = 4; // stronger recovery on own city territory
+        }
+
+        (void)UnitSystem::heal(game, uid, recovery);
     }
 }
 

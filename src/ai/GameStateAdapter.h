@@ -4,27 +4,19 @@
 #include <optional>
 #include <vector>
 
-#include "IGameState.h"
 #include "ActionSpace.h"
 #include "game/Game.h"
 
-// Adapter around Game that exposes IGameState for tree-search algorithms.
-// It keeps rules delegated to existing game systems and stores full-state
-// snapshots for robust undo semantics.
-class GameStateAdapter final : public IGameState {
+// Adapter around Game that exposes a stable action/state API.
+class GameStateAdapter final {
 public:
     explicit GameStateAdapter(Game game);
 
-    PlayerId currentPlayer() const override;
-    bool isTerminal() const override;
-    float evaluate(PlayerId forPlayer) const override;
+    PlayerId currentPlayer() const;
+    bool isTerminal() const;
 
-    std::vector<Action> legalActions(PlayerId pid) const override;
-    void apply(const Action& a) override;
-    void undo(const Action& a) override;
-    std::unique_ptr<IGameState> clone() const override;
-
-    uint64_t hash() const override;
+    std::vector<Action> legalActions(PlayerId pid) const;
+    void apply(const Action& a);
     std::vector<uint8_t> legalActionMask(PlayerId pid) const;
     std::optional<Action> decodeActionId(PlayerId pid, size_t actionId) const;
     std::optional<size_t> encodeActionId(const Action& action) const;
@@ -34,11 +26,9 @@ public:
     Game& getGame() { return game_; }
 
 private:
-    static uint64_t fnv1a64(uint64_t h, uint64_t v);
     bool applyAction(const Action& a);
 
     Game game_;
-    std::vector<Game> undoStack_;
     ActionSpace actionSpace_;
 };
 

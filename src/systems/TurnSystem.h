@@ -26,6 +26,7 @@ public:
     static int calcIncomeForPlayer(const Game& game, PlayerId pid);
 
 private:
+    static void applyPassiveRecoveryForCurrentPlayer(Game& game);
     static void refreshUnitsForCurrentPlayer(Game& game);
     static void applyIncomeForCurrentPlayer(Game &game, PlayerId pid);
 };

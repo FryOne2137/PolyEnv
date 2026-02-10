@@ -1,18 +1,23 @@
 #include "GameStateAdapter.h"
 
-#include <algorithm>
+#include <array>
 
 #include "content/tech/TechDB.h"
 #include "systems/TechSystem.h"
 #include "systems/UnitSystem.h"
-#include "world/Tile.h"
 
 namespace {
-static uint64_t packPos(Pos p) {
-    const uint32_t x = static_cast<uint32_t>(p.x);
-    const uint32_t y = static_cast<uint32_t>(p.y);
-    return (static_cast<uint64_t>(x) << 32) | static_cast<uint64_t>(y);
-}
+static constexpr std::array<UnitType, 9> kTrainableUnitTypes = {
+    UnitType::Warrior,
+    UnitType::Archer,
+    UnitType::Defender,
+    UnitType::Rider,
+    UnitType::MindBender,
+    UnitType::Swordsman,
+    UnitType::Catapult,
+    UnitType::Cloak,
+    UnitType::Knight,
+};
 }
 
 GameStateAdapter::GameStateAdapter(Game game)
@@ -34,21 +39,6 @@ bool GameStateAdapter::isTerminal() const {
         }
     }
     return true;
-}
-
-float GameStateAdapter::evaluate(PlayerId forPlayer) const {
-    if (forPlayer == kNoPlayer || static_cast<size_t>(forPlayer) >= game_.getPlayers().size()) return 0.0f;
-    if (game_.isGameOver()) {
-        return (game_.getWinner() == forPlayer) ? 1.0f : -1.0f;
-    }
-
-    const int myScore = game_.getPlayerScore(forPlayer);
-    int maxOther = 0;
-    for (PlayerId pid = 0; pid < static_cast<PlayerId>(game_.getPlayers().size()); ++pid) {
-        if (pid == forPlayer) continue;
-        maxOther = std::max(maxOther, game_.getPlayerScore(pid));
-    }
-    return static_cast<float>(myScore - maxOther);
 }
 
 std::vector<Action> GameStateAdapter::legalActions(PlayerId pid) const {
@@ -201,10 +191,25 @@ std::vector<Action> GameStateAdapter::legalActions(PlayerId pid) const {
             if (game_.canBuildRoad(pid, p)) out.push_back(t);
             t.tileAction = Action::TileActionKind::BuildBridge;
             if (game_.canBuildBridge(pid, p)) out.push_back(t);
-            t.tileAction = Action::TileActionKind::Explorer;
-            if (game_.canExplorer(pid, p)) out.push_back(t);
             t.tileAction = Action::TileActionKind::FoundCity;
             if (game_.canFoundCityFromVillage(pid, p)) out.push_back(t);
+        }
+    }
+
+    for (CityId cid : player.getCities()) {
+        const City* city = game_.getCity(cid);
+        if (!city) continue;
+        const Pos spawnPos = city->getPos();
+
+        for (UnitType ut : kTrainableUnitTypes) {
+            if (!game_.canSpawnUnit(pid, ut, spawnPos, false)) continue;
+
+            Action s{};
+            s.type = Action::Type::SpawnUnit;
+            s.pid = pid;
+            s.pos = spawnPos;
+            s.spawnType = ut;
+            out.push_back(s);
         }
     }
 
@@ -233,85 +238,7 @@ std::optional<size_t> GameStateAdapter::encodeActionId(const Action& action) con
 }
 
 void GameStateAdapter::apply(const Action& a) {
-    Game snapshot = game_;
-    if (applyAction(a)) {
-        undoStack_.push_back(std::move(snapshot));
-    }
-}
-
-void GameStateAdapter::undo(const Action&) {
-    if (undoStack_.empty()) return;
-    game_ = std::move(undoStack_.back());
-    undoStack_.pop_back();
-}
-
-std::unique_ptr<IGameState> GameStateAdapter::clone() const {
-    auto copy = std::make_unique<GameStateAdapter>(game_);
-    copy->undoStack_ = undoStack_;
-    return copy;
-}
-
-uint64_t GameStateAdapter::hash() const {
-    uint64_t h = 1469598103934665603ull;
-
-    h = fnv1a64(h, game_.getCurrentPlayerId());
-    h = fnv1a64(h, game_.getTurnNumber());
-    h = fnv1a64(h, game_.getWorldSeed());
-
-    const Map& map = game_.getMap();
-    h = fnv1a64(h, static_cast<uint64_t>(map.getWidth()));
-    h = fnv1a64(h, static_cast<uint64_t>(map.getHeight()));
-
-    for (int y = 0; y < map.getHeight(); ++y) {
-        for (int x = 0; x < map.getWidth(); ++x) {
-            const Pos p{x, y};
-            const Tile& t = map.at(p);
-            h = fnv1a64(h, static_cast<uint8_t>(t.getBaseTerrain()));
-            h = fnv1a64(h, static_cast<uint8_t>(t.getResource()));
-            h = fnv1a64(h, static_cast<uint8_t>(t.getSettlementType()));
-            h = fnv1a64(h, static_cast<uint16_t>(t.getSettlementId()));
-            h = fnv1a64(h, static_cast<uint8_t>(t.getBuildingType()));
-            h = fnv1a64(h, static_cast<uint8_t>(t.getRoadBridge()));
-            h = fnv1a64(h, static_cast<uint16_t>(t.getVisibility()));
-            h = fnv1a64(h, static_cast<uint16_t>(t.getTerritoryCityId()));
-            h = fnv1a64(h, static_cast<uint16_t>(map.unitOn(p)));
-        }
-    }
-
-    for (const Player& player : game_.getPlayers()) {
-        h = fnv1a64(h, player.getId());
-        h = fnv1a64(h, static_cast<uint8_t>(player.getTribeType()));
-        h = fnv1a64(h, static_cast<uint64_t>(player.getStars()));
-        h = fnv1a64(h, static_cast<uint64_t>(player.getCapitalId()));
-        for (TechId tech : player.getTechs()) h = fnv1a64(h, static_cast<uint8_t>(tech));
-        for (CityId city : player.getCities()) h = fnv1a64(h, city);
-        for (UnitId unit : player.getUnits()) h = fnv1a64(h, unit);
-    }
-
-    for (const Unit& unit : game_.getUnits()) {
-        h = fnv1a64(h, unit.getId());
-        h = fnv1a64(h, unit.getOwnerId());
-        h = fnv1a64(h, static_cast<uint8_t>(unit.getType()));
-        h = fnv1a64(h, packPos(unit.getPos()));
-        h = fnv1a64(h, static_cast<uint64_t>(unit.getHealth()));
-        h = fnv1a64(h, static_cast<uint64_t>(unit.getMaxHealth()));
-        h = fnv1a64(h, static_cast<uint64_t>(unit.getMovePoints()));
-        h = fnv1a64(h, static_cast<uint64_t>(unit.getRange()));
-        h = fnv1a64(h, static_cast<uint64_t>(unit.getVisionRange()));
-        h = fnv1a64(h, unit.movedThisTurn() ? 1u : 0u);
-        h = fnv1a64(h, unit.attackedThisTurn() ? 1u : 0u);
-        h = fnv1a64(h, unit.isVeteran() ? 1u : 0u);
-        h = fnv1a64(h, unit.poisoned() ? 1u : 0u);
-        h = fnv1a64(h, static_cast<uint64_t>(unit.getKillCounter()));
-    }
-
-    return h;
-}
-
-uint64_t GameStateAdapter::fnv1a64(uint64_t h, uint64_t v) {
-    h ^= v;
-    h *= 1099511628211ull;
-    return h;
+    (void)applyAction(a);
 }
 
 bool GameStateAdapter::applyAction(const Action& a) {
@@ -330,6 +257,8 @@ bool GameStateAdapter::applyAction(const Action& a) {
             return game_.upgradeCity(a.pid, a.city, a.upgrade);
         case Action::Type::Build:
             return game_.buildBuilding(a.pid, a.pos, a.building);
+        case Action::Type::SpawnUnit:
+            return game_.spawnUnit(a.spawnType, a.pid, a.pos, false) != kNoUnit;
         case Action::Type::TileAction:
             switch (a.tileAction) {
                 case Action::TileActionKind::Hunt: return game_.hunt(a.pid, a.pos);

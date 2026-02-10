@@ -134,11 +134,13 @@ static inline bool inEnemyZoC(const Game& game, Pos p, UnitId moverUid) {
     return false;
 }
 
-// Returns true if p is a land or mountain tile that is adjacent (8-neigh) to water or ocean.
+// Returns true if p is a land/mountain/forest tile that is adjacent (8-neigh) to water or ocean.
 static inline bool isCoastalLandTile(const Game& game, Pos p) {
     if (!game.getMap().inBounds(p)) return false;
     const Tile& t = game.getMap().at(p);
-    const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
+    const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land ||
+                          t.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                          t.getBaseTerrain() == BaseTerrainEnum::Forest);
     if (!landish) return false;
 
     // Coastal = touches Water or Ocean in 8-neighborhood.
@@ -236,7 +238,9 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId mover
     if (unitWaterCapable) {
         if (!game.getMap().inBounds(p)) return false;
         const Tile& t = game.getMap().at(p);
-        const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool landish = (t.getBaseTerrain() == BaseTerrainEnum::Land ||
+                              t.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                              t.getBaseTerrain() == BaseTerrainEnum::Forest);
         if (landish) {
             // Any time a water-capable unit enters land, it must stop.
             return true;
@@ -432,7 +436,9 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
         const bool toIsWater   = (tt.getBaseTerrain() == BaseTerrainEnum::Water);
         const bool toIsOcean   = (tt.getBaseTerrain() == BaseTerrainEnum::Ocean);
         const bool toIsPort    = (tt.getBuildingType() == BuildingTypeEnum::Port);
-        const bool toIsLandish = (tt.getBaseTerrain() == BaseTerrainEnum::Land || tt.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool toIsLandish = (tt.getBaseTerrain() == BaseTerrainEnum::Land ||
+                                  tt.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                  tt.getBaseTerrain() == BaseTerrainEnum::Forest);
         const bool toIsBridge  = (tt.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         // Ocean requires Sailing (even for water-capable units).
@@ -515,7 +521,8 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
         {
             const Tile& dst = game.getMap().at(to);
             const bool dstIsLandish = (dst.getBaseTerrain() == BaseTerrainEnum::Land ||
-                                      dst.getBaseTerrain() == BaseTerrainEnum::Mountain);
+                                      dst.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                      dst.getBaseTerrain() == BaseTerrainEnum::Forest);
 
             if (dstIsLandish && UnitSystem::isEmbarked(game, pushedUnit)) {
                 const UnitType original = UnitSystem::getEmbarkedBaseType(game, pushedUnit);
@@ -668,7 +675,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         const bool toIsBridge = (tt.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         const bool fromIsLandish = (tf.getBaseTerrain() == BaseTerrainEnum::Land ||
-                                   tf.getBaseTerrain() == BaseTerrainEnum::Mountain);
+                                   tf.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                   tf.getBaseTerrain() == BaseTerrainEnum::Forest);
 
         const bool unitWaterCapable = isWaterMover(game, unitId);
 
@@ -704,7 +712,9 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
         // Water-capable units may step onto land ONLY if it is coastal (touches water/ocean).
         // This prevents walking multiple tiles inland.
-        const bool toIsLandish = (tt.getBaseTerrain() == BaseTerrainEnum::Land || tt.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool toIsLandish = (tt.getBaseTerrain() == BaseTerrainEnum::Land ||
+                                  tt.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                  tt.getBaseTerrain() == BaseTerrainEnum::Forest);
         if (unitWaterCapable && toIsLandish) {
             if (!isCoastalLandTile(game, to)) return false;
         }
@@ -937,9 +947,11 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
 
         const bool dstIsPort = (dst.getBuildingType() == BuildingTypeEnum::Port);
         const bool srcIsLandish = (src.getBaseTerrain() == BaseTerrainEnum::Land ||
-                                  src.getBaseTerrain() == BaseTerrainEnum::Mountain);
+                                  src.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                  src.getBaseTerrain() == BaseTerrainEnum::Forest);
         const bool dstIsLandish = (dst.getBaseTerrain() == BaseTerrainEnum::Land ||
-                                  dst.getBaseTerrain() == BaseTerrainEnum::Mountain);
+                                  dst.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                  dst.getBaseTerrain() == BaseTerrainEnum::Forest);
 
         // Defensive: only the owning player with Fishing can embark via a Port.
         const PlayerId mover = UnitSystem::getOwnerId(game, unitId);
@@ -1109,7 +1121,9 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
         const bool toIsWater   = (t.getBaseTerrain() == BaseTerrainEnum::Water);
         const bool toIsOcean   = (t.getBaseTerrain() == BaseTerrainEnum::Ocean);
         const bool toIsPort    = (t.getBuildingType() == BuildingTypeEnum::Port);
-        const bool toIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land || t.getBaseTerrain() == BaseTerrainEnum::Mountain);
+        const bool toIsLandish = (t.getBaseTerrain() == BaseTerrainEnum::Land ||
+                                  t.getBaseTerrain() == BaseTerrainEnum::Mountain ||
+                                  t.getBaseTerrain() == BaseTerrainEnum::Forest);
         const bool toIsBridge  = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
         if (unitWaterCapable) {

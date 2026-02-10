@@ -446,6 +446,16 @@ bool MapRenderer::consumeToggleOverviewRequested() {
     return v;
 }
 
+bool MapRenderer::consumeAutoPlayToggleRequested() {
+    const bool v = autoPlayToggleRequested;
+    autoPlayToggleRequested = false;
+    return v;
+}
+
+void MapRenderer::setAutoPlayActive(bool active) {
+    autoPlayActive = active;
+}
+
 void MapRenderer::toggleOverview() {
     showOverview = !showOverview;
 
@@ -712,6 +722,10 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                 if (!showOverview) {
                     if (btnEndTurn.contains(up)) {
                         endTurnClicked = true;
+                        return;
+                    }
+                    if (btnAutoPlay.contains(up)) {
+                        autoPlayToggleRequested = true;
                         return;
                     }
                     if (btnOverview.contains(up)) {
@@ -2610,6 +2624,7 @@ if (!showOverview) {
 
                 btnBack = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
                 btnEndTurn = sf::FloatRect();
+                btnAutoPlay = sf::FloatRect();
                 btnOverview = sf::FloatRect();
 
                 // Back button
@@ -2771,7 +2786,7 @@ if (!showOverview) {
                 // Buttons area (bottom of right panel)
                 const float bw = panelRect.width - 2.f * panelPad;
                 const float bh = 40.f;
-                const float baseY = panelRect.top + panelRect.height - panelPad - (bh * 2.f + 10.f);
+                const float baseY = panelRect.top + panelRect.height - panelPad - (bh * 3.f + 20.f);
 
                 auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
                     if (!hasFont) return;
@@ -2807,7 +2822,8 @@ if (!showOverview) {
                 float yAfterPlayers = panelPad + 30.f;
 
                 btnEndTurn  = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
-                btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
+                btnAutoPlay = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
+                btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + 2.f * (bh + 10.f), bw, bh);
                 btnBack     = btnOverview;
 
                 auto drawBtn = [&](const sf::FloatRect& r, bool active, const char* label) {
@@ -2836,6 +2852,7 @@ if (!showOverview) {
                 };
 
                 drawBtn(btnEndTurn, false, "End Turn");
+                drawBtn(btnAutoPlay, autoPlayActive, autoPlayActive ? "Auto Random: ON" : "Auto Random: OFF");
                 drawBtn(btnOverview, false, "Map View");
 
                 // Top indicators (turn + current player)
@@ -3288,6 +3305,7 @@ if (!showOverview) {
 
                 btnBack = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
                 btnEndTurn = sf::FloatRect();
+                btnAutoPlay = sf::FloatRect();
                 btnOverview = sf::FloatRect();
 
                 // --- ALWAYS draw Back button in Map View (font optional) ---
@@ -3592,4 +3610,3 @@ if (!showOverview) {
             }
         }
     }
-

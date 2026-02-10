@@ -388,13 +388,17 @@ bool CitySystem::initCapital(Game& game, PlayerId owner, CityId cid, Pos capPos)
 // ===== High-level city actions =====
 
 bool CitySystem::canFoundCityFromVillage(const Game& game, PlayerId owner, Pos pos) {
-    (void)owner;
     const Map& map = game.getMap();
     if (!map.inBounds(pos)) return false;
 
     const Tile& tile = map.at(pos);
     const SettlementTypeEnum st = tile.getSettlementType();
-    if (st != SettlementTypeEnum::Village && st != SettlementTypeEnum::City) return false;
+    if (st != SettlementTypeEnum::Village) return false;
+
+    const UnitId uid = map.unitOn(pos);
+    if (uid == Map::kNoUnit) return false;
+    if (!UnitSystem::unitExists(game, uid)) return false;
+    if (UnitSystem::getOwnerId(game, uid) != owner) return false;
 
     const SettlementId sid = tile.getSettlementId();
     if (sid != kNoSettlement) {

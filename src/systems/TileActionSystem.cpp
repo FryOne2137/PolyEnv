@@ -187,7 +187,12 @@ bool TileActionSystem::canClearForest(const Game& game, PlayerId pid, Pos pos) {
     if (!canSpendStars(game, pid, kCost)) return false;
 
     const Tile& t = game.getMap().at(pos);
-    return t.getBaseTerrain() == BaseTerrainEnum::Forest;
+    if (t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
+    if (t.getBuildingType() != BuildingTypeEnum::None) return false;
+
+    // Only "animal-capable" forests are valid targets: empty forest or forest with Animal.
+    const ResourcesEnum r = t.getResource();
+    return r == ResourcesEnum::None || hasFlag(r, ResourcesEnum::Animal);
 }
 
 bool TileActionSystem::clearForest(Game& game, PlayerId pid, Pos pos) {
@@ -199,7 +204,9 @@ bool TileActionSystem::clearForest(Game& game, PlayerId pid, Pos pos) {
     if (!spendStars(game, pid, kCost)) return false;
 
     Tile& t = game.getMap().at(pos);
+    const ResourcesEnum r = t.getResource();
     t.setBaseTerrain(BaseTerrainEnum::Land);
+    t.setResource(removeFlag(r, ResourcesEnum::Animal));
     PlayerSystem::addStars(game, pid, kReward);
 
     return true;
@@ -215,7 +222,12 @@ bool TileActionSystem::canBurnForest(const Game& game, PlayerId pid, Pos pos) {
     if (!canSpendStars(game, pid, kCost)) return false;
 
     const Tile& t = game.getMap().at(pos);
-    return t.getBaseTerrain() == BaseTerrainEnum::Forest;
+    if (t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
+    if (t.getBuildingType() != BuildingTypeEnum::None) return false;
+
+    // Only "animal-capable" forests are valid targets: empty forest or forest with Animal.
+    const ResourcesEnum r = t.getResource();
+    return r == ResourcesEnum::None || hasFlag(r, ResourcesEnum::Animal);
 }
 
 bool TileActionSystem::burnForest(Game& game, PlayerId pid, Pos pos) {
@@ -229,7 +241,7 @@ bool TileActionSystem::burnForest(Game& game, PlayerId pid, Pos pos) {
     if (!spendStars(game, pid, kCost)) return false;
 
     t.setBaseTerrain(BaseTerrainEnum::Land);
-    t.setResource(addFlag(r, ResourcesEnum::Crops));
+    t.setResource(addFlag(removeFlag(r, ResourcesEnum::Animal), ResourcesEnum::Crops));
     return true;
 }
 
@@ -277,9 +289,10 @@ bool TileActionSystem::canDestroy(const Game& game, PlayerId pid, Pos pos) {
 
     const bool hasAnyRes = (t.getResource() != ResourcesEnum::None);
     const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
-    const bool hasRoadBridge = (t.getRoadBridge() != RoadBridgeEnum::None);
+    const bool hasBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
-    return hasAnyRes || hasBuilding || hasRoadBridge;
+    // Roads are intentionally not destroyable; bridges are destroyable.
+    return hasAnyRes || hasBuilding || hasBridge;
 }
 
 bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
@@ -292,11 +305,11 @@ bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
 
     const bool hasAnyRes = (t.getResource() != ResourcesEnum::None);
     const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
-    const bool hasRoadBridge = (t.getRoadBridge() != RoadBridgeEnum::None);
+    const bool hasBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
 
     if (hasAnyRes) t.setResource(ResourcesEnum::None);
     if (hasBuilding) t.setBuildingType(BuildingTypeEnum::None);
-    if (hasRoadBridge) t.setRoadBridge(RoadBridgeEnum::None);
+    if (hasBridge) t.setRoadBridge(RoadBridgeEnum::None);
 
     CitiesConnectionSystem::update(game);
     return true;
