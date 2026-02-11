@@ -398,7 +398,7 @@ public:
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
                     static_cast<int>(t.getSettlementType()),
-                    static_cast<int>(t.getSettlementId()),
+                    (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement)) ? -1 : static_cast<int>(t.getSettlementId()),
                     static_cast<int>(t.getResource()),
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
