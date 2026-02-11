@@ -10,14 +10,14 @@
 enum class ResourcesEnum : uint8_t {
     None        = 0,
 
-    Fish        = 1u << 0,
-    Whale       = 1u << 1,
+    Fish        = 0,
+    Whale       = 1,
 
-    Fruit       = 1u << 3,
-    Crops       = 1u << 4,
-    Animal     = 1u << 5,
+    Fruit       = 3,
+    Crops       = 4,
+    Animal     =  5,
 
-    Metal       = 1u << 6,
+    Metal       = 6,
 };
 
 #endif //GAME_ENGINE_RESOURCESENUM_H
