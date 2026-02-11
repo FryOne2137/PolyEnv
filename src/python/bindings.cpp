@@ -359,19 +359,21 @@ public:
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
+        const int perspective = static_cast<int>(g.getCurrentPlayerId());
 
         const size_t tileCount = static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h));
         std::vector<std::vector<int>> out;
         out.reserve(tileCount);
 
-        auto noneToMinusOne = [](int v) -> int {
-            return v == 0 ? -1 : v;
-        };
-
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
                 const Pos p{x, y};
                 const Tile& t = m.at(p);
+                const uint16_t visMask = static_cast<uint16_t>(t.getVisibility());
+                const int visibility = (perspective >= 0 && perspective < 16 &&
+                                        ((visMask & (uint16_t(1) << perspective)) != 0))
+                                           ? 1
+                                           : 0;
 
                 int unitHp = -1;
                 int unitOwner = -1;
@@ -388,18 +390,18 @@ public:
                 }
 
                 out.push_back({
+                    visibility,
                     unitHp,
                     unitOwner,
                     (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
-                    noneToMinusOne(static_cast<int>(static_cast<uint16_t>(t.getVisibility()))),
-                    (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
-                    noneToMinusOne(static_cast<int>(t.getRoadBridge())),
-                    noneToMinusOne(static_cast<int>(t.getBuildingType())),
-                    noneToMinusOne(static_cast<int>(t.getSettlementType())),
-                    (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement)) ? -1 : static_cast<int>(t.getSettlementId()),
-                    noneToMinusOne(static_cast<int>(t.getResource())),
+                    static_cast<int>(t.getTerritoryCityId()),
+                    static_cast<int>(t.getRoadBridge()),
+                    static_cast<int>(t.getBuildingType()),
+                    static_cast<int>(t.getSettlementType()),
+                    static_cast<int>(t.getSettlementId()),
+                    static_cast<int>(t.getResource()),
                     static_cast<int>(t.getBaseTerrain()),
-                    noneToMinusOne(static_cast<int>(t.getTribe())),
+                    static_cast<int>(t.getTribe()),
                 });
             }
         }
