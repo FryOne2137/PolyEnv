@@ -394,7 +394,7 @@ public:
                     unitHp,
                     unitOwner,
                     (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
-                    static_cast<int>(t.getTerritoryCityId()),
+                    (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
                     static_cast<int>(t.getSettlementType()),
