@@ -57,6 +57,50 @@ const City* Game::getCity(CityId id) const {
     return &cities[id];
 }
 
+const std::vector<Pos>& Game::getVisibleTiles(PlayerId pid) const {
+    static const std::vector<Pos> empty;
+    if (pid == kNoPlayer) return empty;
+    const size_t idx = static_cast<size_t>(pid);
+    if (idx >= visibleTilesByPlayer.size()) return empty;
+    return visibleTilesByPlayer[idx];
+}
+
+bool Game::isTileVisibleForPlayer(PlayerId pid, Pos p) const {
+    if (pid == kNoPlayer) return false;
+    if (!map.inBounds(p)) return false;
+    const size_t idx = static_cast<size_t>(pid);
+    if (idx >= visibleLookupByPlayer.size()) return false;
+    const int flat = map.index(p);
+    if (flat < 0) return false;
+    const size_t sflat = static_cast<size_t>(flat);
+    if (sflat >= visibleLookupByPlayer[idx].size()) return false;
+    return visibleLookupByPlayer[idx][sflat] != 0;
+}
+
+void Game::noteTileVisible(PlayerId pid, Pos p) {
+    if (pid == kNoPlayer) return;
+    if (!map.inBounds(p)) return;
+    const size_t idx = static_cast<size_t>(pid);
+    if (idx >= visibleLookupByPlayer.size() || idx >= visibleTilesByPlayer.size()) return;
+    const int flat = map.index(p);
+    if (flat < 0) return;
+    const size_t sflat = static_cast<size_t>(flat);
+    if (sflat >= visibleLookupByPlayer[idx].size()) return;
+    if (visibleLookupByPlayer[idx][sflat] != 0) return;
+
+    visibleLookupByPlayer[idx][sflat] = 1;
+    visibleTilesByPlayer[idx].push_back(p);
+}
+
+void Game::resetVisibilityCache(size_t playerCount) {
+    const size_t cellCount = static_cast<size_t>(std::max(0, map.getWidth())) * static_cast<size_t>(std::max(0, map.getHeight()));
+    visibleTilesByPlayer.assign(playerCount, {});
+    for (auto& v : visibleTilesByPlayer) {
+        v.reserve(cellCount / 4 + 16);
+    }
+    visibleLookupByPlayer.assign(playerCount, std::vector<uint8_t>(cellCount, 0));
+}
+
 void Game::newGame(const NewGameConfig& cfg) {
     // Load static game data (unit templates) before any units are spawned.
     if (!GameDataSystem::isUnitsLoaded()) {
@@ -139,6 +183,8 @@ void Game::newGame(const NewGameConfig& cfg) {
             PlayerSystem::addTech(*this, pid, startTech);
         }
     }
+
+    resetVisibilityCache(players.size());
 
     // 3b) Initialize capitals (tile settlement + territory) via CitySystem.
     // Must happen after players are created, because initCapital also ensures player city list + capital id.

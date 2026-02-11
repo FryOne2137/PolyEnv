@@ -85,6 +85,7 @@ void VisionSystem::revealArea(
             VisibilityEnum v = t.getVisibility();
             reveal(v, static_cast<PlayerIndex>(pid));
             t.setVisibility(v);
+            game.noteTileVisible(pid, p);
 
             if (!wasFog) continue;
 

@@ -100,6 +100,10 @@ public:
 
 
     bool hasPlayerSeenCorner(PlayerId pid, MapCorner corner) const;
+    const std::vector<Pos>& getVisibleTiles(PlayerId pid) const;
+    bool isTileVisibleForPlayer(PlayerId pid, Pos p) const;
+    void noteTileVisible(PlayerId pid, Pos p);
+    void resetVisibilityCache(size_t playerCount);
 
     // ---- Dostęp do stanu (AI/UI) ----
     const Map &getMap() const { return map; }
@@ -217,6 +221,8 @@ private:
 
     std::deque<PendingCityUpgrade> pendingCityUpgrades;
     PlayerId winner = kNoPlayer;
+    std::vector<std::vector<Pos>> visibleTilesByPlayer;
+    std::vector<std::vector<uint8_t>> visibleLookupByPlayer;
 
     void updateWinnerByCapitals();
 };

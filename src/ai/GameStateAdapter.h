@@ -17,6 +17,7 @@ public:
 
     std::vector<Action> legalActions(PlayerId pid) const;
     void apply(const Action& a);
+    std::vector<size_t> legalActionIds(PlayerId pid) const;
     std::vector<uint8_t> legalActionMask(PlayerId pid) const;
     std::optional<Action> decodeActionId(PlayerId pid, size_t actionId) const;
     std::optional<size_t> encodeActionId(const Action& action) const;
@@ -26,10 +27,16 @@ public:
     Game& getGame() { return game_; }
 
 private:
+    void invalidateLegalCache();
+    void ensureLegalCache(PlayerId pid) const;
     bool applyAction(const Action& a);
 
     Game game_;
     ActionSpace actionSpace_;
+    mutable bool legalCacheValid_ = false;
+    mutable PlayerId legalCachePid_ = kNoPlayer;
+    mutable std::vector<size_t> legalIdsCache_;
+    mutable std::vector<uint8_t> legalMaskCache_;
 };
 
 #endif // GAME_ENGINE_GAMESTATEADAPTER_H
