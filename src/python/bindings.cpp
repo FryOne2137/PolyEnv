@@ -364,13 +364,17 @@ public:
         std::vector<std::vector<int>> out;
         out.reserve(tileCount);
 
+        auto noneToMinusOne = [](int v) -> int {
+            return v == 0 ? -1 : v;
+        };
+
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
                 const Pos p{x, y};
                 const Tile& t = m.at(p);
 
-                int unitHp = 0;
-                int unitOwner = static_cast<int>(kNoPlayer);
+                int unitHp = -1;
+                int unitOwner = -1;
                 int unitId = static_cast<int>(Map::kNoUnit);
 
                 const UnitId uid = m.unitOn(p);
@@ -386,16 +390,16 @@ public:
                 out.push_back({
                     unitHp,
                     unitOwner,
-                    unitId,
-                    static_cast<int>(static_cast<uint16_t>(t.getVisibility())),
-                    static_cast<int>(t.getTerritoryCityId()),
-                    static_cast<int>(t.getRoadBridge()),
-                    static_cast<int>(t.getBuildingType()),
-                    static_cast<int>(t.getSettlementType()),
-                    static_cast<int>(t.getSettlementId()),
-                    static_cast<int>(t.getResource()),
+                    (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
+                    noneToMinusOne(static_cast<int>(static_cast<uint16_t>(t.getVisibility()))),
+                    (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
+                    noneToMinusOne(static_cast<int>(t.getRoadBridge())),
+                    noneToMinusOne(static_cast<int>(t.getBuildingType())),
+                    noneToMinusOne(static_cast<int>(t.getSettlementType())),
+                    (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement)) ? -1 : static_cast<int>(t.getSettlementId()),
+                    noneToMinusOne(static_cast<int>(t.getResource())),
                     static_cast<int>(t.getBaseTerrain()),
-                    static_cast<int>(t.getTribe()),
+                    noneToMinusOne(static_cast<int>(t.getTribe())),
                 });
             }
         }
