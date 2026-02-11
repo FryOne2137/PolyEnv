@@ -204,13 +204,16 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
     target_link_libraries(_game_engine PRIVATE game_engine_lib)
     target_compile_features(_game_engine PRIVATE cxx_std_20)
 
-    install(TARGETS _game_engine LIBRARY DESTINATION game_engine)
-#    install(FILES
-#            python/game_engine/__init__.py
-#            DESTINATION game_engine
-#    )
-    install(FILES
-            python/game_engine/data/Units.json
-            DESTINATION game_engine/data
-    )
+    # Install the compiled extension into the Python package
+    install(TARGETS _game_engine
+            LIBRARY DESTINATION game_engine
+            RUNTIME DESTINATION game_engine
+            ARCHIVE DESTINATION game_engine)
+
+    # Install the pure-Python package files and bundled data (e.g. JSON) in one go
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/game_engine/
+            DESTINATION game_engine
+            FILES_MATCHING
+              PATTERN "*.py"
+              PATTERN "*.json")
 endif()
