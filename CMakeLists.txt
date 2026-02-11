@@ -205,10 +205,10 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
     target_compile_features(_game_engine PRIVATE cxx_std_20)
 
     install(TARGETS _game_engine LIBRARY DESTINATION game_engine)
-    install(FILES
-            python/game_engine/__init__.py
-            DESTINATION game_engine
-    )
+#    install(FILES
+#            python/game_engine/__init__.py
+#            DESTINATION game_engine
+#    )
     install(FILES
             python/game_engine/data/Units.json
             DESTINATION game_engine/data
