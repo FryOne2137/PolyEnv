@@ -205,17 +205,7 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
     target_compile_features(_game_engine PRIVATE cxx_std_20)
 
     # ---- Python package layout for scikit-build-core (SKBUILD) ----
-    # When building wheels, scikit-build-core provides SKBUILD_PLATLIB_DIR which points at the
-    # wheel's platlib staging directory. Installing to a plain `game_engine` destination will
-    # create a namespace package (no __init__.py) on some platforms.
-
     set(_GE_PY_PKG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python/game_engine")
-
-    # Ensure the Python package is a real package (not a namespace package) by providing __init__.py.
-    # This makes `import game_engine` automatically expose symbols from the compiled extension.
-    if(NOT EXISTS "${_GE_PY_PKG_DIR}/__init__.py")
-        file(WRITE "${_GE_PY_PKG_DIR}/__init__.py" "from ._game_engine import *  # noqa: F401,F403\n")
-    endif()
 
     # Install the compiled extension into the wheel's platlib under game_engine/
     install(TARGETS _game_engine

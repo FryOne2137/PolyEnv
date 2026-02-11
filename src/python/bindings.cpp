@@ -19,6 +19,23 @@ namespace py = pybind11;
 
 namespace {
 
+static std::string resolveDefaultUnitsJsonPath() {
+    // Prefer package data path regardless of current working directory.
+    try {
+        py::module_ importlibResources = py::module_::import("importlib.resources");
+        py::object packageRoot = importlibResources.attr("files")("game_engine");
+        py::object unitsPath = packageRoot.attr("joinpath")("data", "Units.json");
+        if (py::bool_(unitsPath.attr("is_file")())) {
+            return py::cast<std::string>(py::str(unitsPath));
+        }
+    } catch (const py::error_already_set&) {
+        // Fall back to legacy relative path below.
+    }
+
+    // Legacy fallback for local C++ app runs from repository root.
+    return "data/Units.json";
+}
+
 static std::vector<TribeType> parseTribes(const std::vector<int>& tribes) {
     std::vector<TribeType> out;
     out.reserve(tribes.size());
@@ -56,7 +73,7 @@ public:
         : mapSize_(mapSize)
         , tribesRaw_(tribes)
         , seed_(seed)
-        , unitsJsonPath_(unitsJsonPath) {
+        , unitsJsonPath_(unitsJsonPath.empty() ? resolveDefaultUnitsJsonPath() : unitsJsonPath) {
         reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
     }
 
@@ -110,9 +127,8 @@ public:
         if (seed) seed_ = *seed;
         if (unitsJsonPath) unitsJsonPath_ = *unitsJsonPath;
 
-        if (!unitsJsonPath_.empty()) {
-            GameDataSystem::loadUnits(unitsJsonPath_);
-        }
+        if (unitsJsonPath_.empty()) unitsJsonPath_ = resolveDefaultUnitsJsonPath();
+        GameDataSystem::loadUnits(unitsJsonPath_);
 
         Game game;
         Game::NewGameConfig cfg;

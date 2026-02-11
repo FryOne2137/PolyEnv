@@ -18,6 +18,7 @@
 #include "../systems/TileActionSystem.h"
 #include "../systems/GameDataSystem.h"
 #include <random>
+#include <stdexcept>
 
 #include "../systems/ScoreSystem.h"
 #include "../systems/UnitSystem.h"
@@ -104,7 +105,16 @@ void Game::resetVisibilityCache(size_t playerCount) {
 void Game::newGame(const NewGameConfig& cfg) {
     // Load static game data (unit templates) before any units are spawned.
     if (!GameDataSystem::isUnitsLoaded()) {
-        GameDataSystem::loadUnits("data/Units.json");
+        try {
+            // Legacy fallback for native runs from repository root.
+            GameDataSystem::loadUnits("data/Units.json");
+        } catch (const std::exception&) {
+            throw std::runtime_error(
+                "GameDataSystem: Units.json is not loaded. "
+                "Load it explicitly (e.g. pass units_json_path in Python) "
+                "before starting a new game."
+            );
+        }
     }
 
     // 1) aktywne plemiona na mapie
