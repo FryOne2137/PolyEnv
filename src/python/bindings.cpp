@@ -615,6 +615,21 @@ private:
 PYBIND11_MODULE(_game_engine, m) {
     m.doc() = "Polytopia-like game engine Python bindings";
 
+    py::enum_<TribeType>(m, "TribeType")
+        .value("Unknown", TribeType::Unknown)
+        .value("XinXi", TribeType::XinXi)
+        .value("Imperius", TribeType::Imperius)
+        .value("Bardur", TribeType::Bardur)
+        .value("Kickoo", TribeType::Kickoo)
+        .value("Hoodrick", TribeType::Hoodrick)
+        .value("Luxidoor", TribeType::Luxidoor)
+        .value("Vengir", TribeType::Vengir)
+        .value("Zebasi", TribeType::Zebasi)
+        .value("AiMo", TribeType::AiMo)
+        .value("Quetzali", TribeType::Quetzali)
+        .value("Yadakk", TribeType::Yadakk)
+        .export_values();
+
     py::class_<GameEnv>(m, "GameEnv")
         .def(py::init<int, const std::vector<int>&, uint32_t, const std::string&>(),
              py::arg("map_size") = 16,
