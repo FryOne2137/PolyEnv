@@ -54,23 +54,12 @@ public:
 private:
     //visibility of difrent players
     VisibilityEnum visibility = VisibilityEnum::None;
-
     CityId territoryCityId = kNoCity;
-
-    //roads and bridges
     RoadBridgeEnum roadBridge = RoadBridgeEnum::None;
-
-    //stomils, market, monuments,....
     BuildingTypeEnum buildingType = BuildingTypeEnum::None;
-
-    //cities,vilagges(cities without owner),ruins, starfish
     SettlementTypeEnum settlementType = SettlementTypeEnum::None;
     SettlementId   settlementId = kNoSettlement;
-
-    //forrest animals, metals ex
     ResourcesEnum resource = ResourcesEnum::None;
-
-    //mountain,ground,water,ocean
     BaseTerrainEnum baseTerrain = BaseTerrainEnum::Ocean;
     TribeType tribe = TribeType::Unknown;
 

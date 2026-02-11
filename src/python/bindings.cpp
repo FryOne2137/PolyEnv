@@ -353,6 +353,56 @@ public:
         return obs;
     }
 
+    std::vector<std::vector<int>> tokenizedMap() const {
+        ensureState();
+        const Game& g = state_->getGame();
+        const Map& m = g.getMap();
+        const int w = m.getWidth();
+        const int h = m.getHeight();
+
+        const size_t tileCount = static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h));
+        std::vector<std::vector<int>> out;
+        out.reserve(tileCount);
+
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const Pos p{x, y};
+                const Tile& t = m.at(p);
+
+                int unitHp = 0;
+                int unitOwner = static_cast<int>(kNoPlayer);
+                int unitId = static_cast<int>(Map::kNoUnit);
+
+                const UnitId uid = m.unitOn(p);
+                if (uid != Map::kNoUnit) {
+                    unitId = static_cast<int>(uid);
+                    const Unit* u = g.getUnit(uid);
+                    if (u) {
+                        unitHp = u->getHealth();
+                        unitOwner = static_cast<int>(u->getOwnerId());
+                    }
+                }
+
+                out.push_back({
+                    unitHp,
+                    unitOwner,
+                    unitId,
+                    static_cast<int>(static_cast<uint16_t>(t.getVisibility())),
+                    static_cast<int>(t.getTerritoryCityId()),
+                    static_cast<int>(t.getRoadBridge()),
+                    static_cast<int>(t.getBuildingType()),
+                    static_cast<int>(t.getSettlementType()),
+                    static_cast<int>(t.getSettlementId()),
+                    static_cast<int>(t.getResource()),
+                    static_cast<int>(t.getBaseTerrain()),
+                    static_cast<int>(t.getTribe()),
+                });
+            }
+        }
+
+        return out;
+    }
+
     std::vector<int> lighthouseDiscoveredByMasks() const {
         ensureState();
         const Game& g = state_->getGame();
@@ -670,6 +720,7 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("player_id") = std::nullopt,
              py::arg("visible_only") = false,
              py::arg("hidden_value") = -1)
+        .def("tokenized_map", &GameEnv::tokenizedMap)
         .def("lighthouse_discovered_by_masks", &GameEnv::lighthouseDiscoveredByMasks)
         .def("lighthouse_discovered_by_players", &GameEnv::lighthouseDiscoveredByPlayers)
         .def("lighthouse_visibility", &GameEnv::lighthouseVisibility,

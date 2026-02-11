@@ -103,6 +103,9 @@ class GameEnv(_GameEnv):
             units_json_path or _default_units_path(),
         )
 
+    def tokenized_map(self) -> list[list[int]]:
+        return super().tokenized_map()
+
 
 __all__ = [
     "GameEnv",
