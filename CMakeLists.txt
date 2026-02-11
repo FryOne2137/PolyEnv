@@ -229,4 +229,8 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
             FILES_MATCHING
               PATTERN "*.py"
               PATTERN "*.json")
+
+    # Always bundle canonical units data from repository root as package data.
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/data/Units.json"
+            DESTINATION "${SKBUILD_PLATLIB_DIR}/game_engine/data")
 endif()

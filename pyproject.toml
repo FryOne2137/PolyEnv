@@ -28,3 +28,7 @@ cmake.args = [
   "-DGAME_ENGINE_BUILD_PYTHON_BINDINGS=ON",
 ]
 wheel.packages = ["python/game_engine"]
+sdist.include = [
+  "python/game_engine/**",
+  "data/Units.json",
+]
