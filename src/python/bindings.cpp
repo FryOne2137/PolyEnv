@@ -491,6 +491,35 @@ public:
         const auto a = state_->decodeActionId(state_->currentPlayer(), actionId);
         if (!a) return py::dict();
 
+        Pos resolvedTarget = a->target;
+        switch (a->type) {
+            case Action::Type::Build:
+            case Action::Type::TileAction:
+            case Action::Type::SpawnUnit:
+                resolvedTarget = a->pos;
+                break;
+            case Action::Type::UpgradeCity:
+                if (a->city != kNoCity) {
+                    if (const City* c = g.getCity(a->city)) {
+                        resolvedTarget = c->getPos();
+                    }
+                }
+                break;
+            case Action::Type::Heal:
+            case Action::Type::UnitUpgrade:
+                if (a->unit != kNoUnit) {
+                    if (const Unit* u = g.getUnit(a->unit)) {
+                        resolvedTarget = u->getPos();
+                    }
+                }
+                break;
+            case Action::Type::Move:
+            case Action::Type::Attack:
+            case Action::Type::EndTurn:
+            case Action::Type::BuyTech:
+                break;
+        }
+
         py::dict out;
         out["action_id"] = actionId;
         out["type"] = actionTypeName(a->type);
@@ -498,14 +527,15 @@ public:
         out["unit"] = (a->unit == kNoUnit) ? -1 : static_cast<int>(a->unit);
         out["city"] = (a->city == kNoCity) ? -1 : static_cast<int>(a->city);
         out["pos"] = py::make_tuple(a->pos.x, a->pos.y);
-        out["target"] = py::make_tuple(a->target.x, a->target.y);
-        out["target_x"] = a->target.x;
-        out["target_y"] = a->target.y;
-        int queryIndex = -1;
-        if (m.inBounds(a->target)) {
-            queryIndex = a->target.y * m.getWidth() + a->target.x;
+        out["target"] = py::make_tuple(resolvedTarget.x, resolvedTarget.y);
+        out["target_x"] = resolvedTarget.x;
+        out["target_y"] = resolvedTarget.y;
+        int targetIndex = -1;
+        if (m.inBounds(resolvedTarget)) {
+            targetIndex = resolvedTarget.y * m.getWidth() + resolvedTarget.x;
         }
-        out["query_index"] = queryIndex;
+        out["target_index"] = targetIndex;
+        out["query_index"] = targetIndex;
         out["tech"] = static_cast<int>(a->tech);
         out["building"] = static_cast<int>(a->building);
         out["spawn_type"] = static_cast<int>(a->spawnType);
