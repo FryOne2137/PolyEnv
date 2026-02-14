@@ -3,6 +3,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <pybind11/pybind11.h>
@@ -10,7 +11,9 @@
 
 #include "ai/Action.h"
 #include "ai/GameStateAdapter.h"
+#include "content/buildings/BuildingDB.h"
 #include "content/tribes/Tribe.h"
+#include "content/units/UnitFactory.h"
 #include "game/Game.h"
 #include "systems/GameDataSystem.h"
 #include "world/Tile.h"
@@ -62,6 +65,270 @@ static std::string actionTypeName(Action::Type t) {
         case Action::Type::UnitUpgrade: return "unit_upgrade";
     }
     return "unknown";
+}
+
+static TechId requiredTechForTileAction(Action::TileActionKind kind) {
+    switch (kind) {
+        case Action::TileActionKind::Hunt: return TechId::Hunting;
+        case Action::TileActionKind::Organization: return TechId::Organization;
+        case Action::TileActionKind::Fishing: return TechId::Fishing;
+        case Action::TileActionKind::ClearForest: return TechId::Forestry;
+        case Action::TileActionKind::BurnForest: return TechId::Construction;
+        case Action::TileActionKind::GrowForest: return TechId::Spiritualism;
+        case Action::TileActionKind::DestroyTile: return TechId::Chivalry;
+        case Action::TileActionKind::BuildRoad: return TechId::Roads;
+        case Action::TileActionKind::BuildBridge: return TechId::Roads;
+        case Action::TileActionKind::Explorer:
+        case Action::TileActionKind::FoundCity:
+        case Action::TileActionKind::Ruin:
+        case Action::TileActionKind::Starfish:
+        case Action::TileActionKind::CaptureCity:
+        case Action::TileActionKind::None:
+            return TechId::Count;
+    }
+    return TechId::Count;
+}
+
+static int starsCostForTileAction(Action::TileActionKind kind) {
+    switch (kind) {
+        case Action::TileActionKind::Hunt: return 2;
+        case Action::TileActionKind::Organization: return 2;
+        case Action::TileActionKind::Fishing: return 2;
+        case Action::TileActionKind::ClearForest: return 0;
+        case Action::TileActionKind::BurnForest: return 5;
+        case Action::TileActionKind::GrowForest: return 5;
+        case Action::TileActionKind::DestroyTile: return 0;
+        case Action::TileActionKind::BuildRoad: return 3;
+        case Action::TileActionKind::BuildBridge: return 5;
+        case Action::TileActionKind::Explorer:
+        case Action::TileActionKind::FoundCity:
+        case Action::TileActionKind::Ruin:
+        case Action::TileActionKind::Starfish:
+        case Action::TileActionKind::CaptureCity:
+        case Action::TileActionKind::None:
+            return 0;
+    }
+    return 0;
+}
+
+static int starsCostForUnitUpgrade(Action::UnitUpgradeKind kind) {
+    switch (kind) {
+        case Action::UnitUpgradeKind::RaftToScout:
+            return std::max(0, UnitFactory::getUnitCost(UnitType::Scout));
+        case Action::UnitUpgradeKind::RaftToRammer:
+            return std::max(0, UnitFactory::getUnitCost(UnitType::Rammer));
+        case Action::UnitUpgradeKind::RaftToBomber:
+            return std::max(0, UnitFactory::getUnitCost(UnitType::Bomber));
+        case Action::UnitUpgradeKind::BecomeVeteran:
+        case Action::UnitUpgradeKind::None:
+            return 0;
+    }
+    return 0;
+}
+
+static TechId requiredTechForUnitUpgrade(Action::UnitUpgradeKind kind) {
+    switch (kind) {
+        case Action::UnitUpgradeKind::RaftToScout: return TechId::Sailing;
+        case Action::UnitUpgradeKind::RaftToRammer: return TechId::Ramming;
+        case Action::UnitUpgradeKind::RaftToBomber: return TechId::Navigation;
+        case Action::UnitUpgradeKind::BecomeVeteran:
+        case Action::UnitUpgradeKind::None:
+            return TechId::Count;
+    }
+    return TechId::Count;
+}
+
+static constexpr int kActionTypeCount = static_cast<int>(Action::Type::UnitUpgrade) + 1;
+static constexpr int kTechVocabSize = static_cast<int>(TechId::Count) + 1; // + "none"/Count sentinel
+static constexpr int kBuildingVocabSize = static_cast<int>(BuildingTypeEnum::Lighthouse) + 1;
+static constexpr int kSpawnTypeVocabSize = static_cast<int>(UnitType::GiantSuper) + 1;
+static constexpr int kCityUpgradeVocabSize = static_cast<int>(CityUpgradeChoice::SuperUnit) + 1;
+static constexpr int kTileActionVocabSize = static_cast<int>(Action::TileActionKind::CaptureCity) + 1;
+static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgradeKind::BecomeVeteran) + 1;
+
+struct ActionModelFields {
+    int typeId = -1;
+    int sourceIndex = -1;
+    int targetIndex = -1;
+    int city = -1;
+    int tech = static_cast<int>(TechId::Count);
+    int building = 0;
+    int spawnType = 0;
+    int upgrade = 0;
+    int tileAction = 0;
+    int unitUpgrade = 0;
+    int costStars = 0;
+    int starsBefore = 0;
+    int affordable = 1;
+};
+
+static ActionModelFields buildActionModelFields(const Game& g, const Action& a) {
+    const Map& m = g.getMap();
+    ActionModelFields f{};
+    f.typeId = static_cast<int>(a.type);
+
+    auto toIndex = [&m](Pos p) -> int {
+        if (!m.inBounds(p)) return -1;
+        return p.y * m.getWidth() + p.x;
+    };
+
+    auto unitPos = [&g](UnitId uid, Pos fallback) -> Pos {
+        if (uid == kNoUnit) return fallback;
+        if (const Unit* u = g.getUnit(uid)) return u->getPos();
+        return fallback;
+    };
+
+    Pos sourcePos = a.pos;
+    Pos targetPos = a.target;
+    bool hasSource = false;
+    bool hasTarget = false;
+
+    switch (a.type) {
+        case Action::Type::Move:
+        case Action::Type::Attack:
+            sourcePos = unitPos(a.unit, a.pos);
+            hasSource = true;
+            hasTarget = true;
+            break;
+        case Action::Type::Build:
+            sourcePos = a.pos;
+            targetPos = a.pos;
+            hasSource = true;
+            hasTarget = true;
+            f.tech = static_cast<int>(BuildingDB::getRequiredTech(a.building));
+            f.building = static_cast<int>(a.building);
+            f.costStars = BuildingDB::getCost(a.building);
+            if (m.inBounds(a.pos)) {
+                const Tile& t = m.at(a.pos);
+                f.city = (t.getTerritoryCityId() == kNoCity) ? -1 : static_cast<int>(t.getTerritoryCityId());
+            }
+            break;
+        case Action::Type::SpawnUnit: {
+            sourcePos = a.pos;
+            targetPos = a.pos;
+            hasSource = true;
+            hasTarget = true;
+            f.spawnType = static_cast<int>(a.spawnType);
+            Unit probe = UnitFactory::create(a.spawnType, a.pid, a.pos);
+            f.tech = static_cast<int>(probe.getRequiredTechToSpawn());
+            f.costStars = std::max(0, probe.getCost());
+            break;
+        }
+        case Action::Type::TileAction:
+            sourcePos = a.pos;
+            targetPos = a.pos;
+            hasSource = true;
+            hasTarget = true;
+            f.tileAction = static_cast<int>(a.tileAction);
+            f.tech = static_cast<int>(requiredTechForTileAction(a.tileAction));
+            f.costStars = starsCostForTileAction(a.tileAction);
+            if (a.tileAction == Action::TileActionKind::CaptureCity && m.inBounds(a.pos)) {
+                const Tile& t = m.at(a.pos);
+                if (t.getSettlementType() == SettlementTypeEnum::City) {
+                    f.city = static_cast<int>(t.getSettlementId());
+                } else if (t.getTerritoryCityId() != kNoCity) {
+                    f.city = static_cast<int>(t.getTerritoryCityId());
+                }
+            }
+            break;
+        case Action::Type::UpgradeCity:
+            f.upgrade = static_cast<int>(a.upgrade);
+            if (a.city != kNoCity) {
+                f.city = static_cast<int>(a.city);
+                if (const City* c = g.getCity(a.city)) {
+                    sourcePos = c->getPos();
+                    targetPos = c->getPos();
+                    hasSource = true;
+                    hasTarget = true;
+                }
+            }
+            break;
+        case Action::Type::Heal:
+            sourcePos = unitPos(a.unit, a.pos);
+            targetPos = sourcePos;
+            hasSource = true;
+            break;
+        case Action::Type::UnitUpgrade:
+            sourcePos = unitPos(a.unit, a.pos);
+            targetPos = sourcePos;
+            hasSource = true;
+            f.unitUpgrade = static_cast<int>(a.unitUpgrade);
+            f.tech = static_cast<int>(requiredTechForUnitUpgrade(a.unitUpgrade));
+            f.costStars = starsCostForUnitUpgrade(a.unitUpgrade);
+            break;
+        case Action::Type::BuyTech:
+            f.tech = static_cast<int>(a.tech);
+            if (a.pid != kNoPlayer && static_cast<size_t>(a.pid) < g.getPlayers().size()) {
+                const Player& p = g.getPlayer(a.pid);
+                const int cityCount = static_cast<int>(p.getCities().size());
+                const bool hasLiteracy = p.hasTech(TechId::Philosophy);
+                f.costStars = TechDB::calculatePrice(a.tech, cityCount, hasLiteracy);
+            }
+            break;
+        case Action::Type::EndTurn:
+            break;
+    }
+
+    if (a.city != kNoCity && f.city < 0) {
+        f.city = static_cast<int>(a.city);
+    }
+
+    f.sourceIndex = hasSource ? toIndex(sourcePos) : -1;
+    f.targetIndex = hasTarget ? toIndex(targetPos) : -1;
+
+    if (a.pid != kNoPlayer && static_cast<size_t>(a.pid) < g.getPlayers().size()) {
+        f.starsBefore = g.getPlayer(a.pid).getStars();
+    }
+    f.affordable = (f.costStars <= f.starsBefore) ? 1 : 0;
+    return f;
+}
+
+static std::vector<uint8_t> actionArgMaskForType(Action::Type t) {
+    // [source, target, tech, building, spawn_type, city_upgrade, tile_action, unit_upgrade]
+    std::vector<uint8_t> mask(8, 0);
+    switch (t) {
+        case Action::Type::Move:
+        case Action::Type::Attack:
+            mask[0] = 1;
+            mask[1] = 1;
+            break;
+        case Action::Type::Heal:
+            mask[0] = 1;
+            break;
+        case Action::Type::EndTurn:
+            break;
+        case Action::Type::BuyTech:
+            mask[2] = 1;
+            break;
+        case Action::Type::UpgradeCity:
+            mask[0] = 1;
+            mask[5] = 1;
+            break;
+        case Action::Type::Build:
+            mask[0] = 1;
+            mask[1] = 1;
+            mask[2] = 1;
+            mask[3] = 1;
+            break;
+        case Action::Type::SpawnUnit:
+            mask[0] = 1;
+            mask[1] = 1;
+            mask[2] = 1;
+            mask[4] = 1;
+            break;
+        case Action::Type::TileAction:
+            mask[0] = 1;
+            mask[1] = 1;
+            mask[2] = 1;
+            mask[6] = 1;
+            break;
+        case Action::Type::UnitUpgrade:
+            mask[0] = 1;
+            mask[2] = 1;
+            mask[7] = 1;
+            break;
+    }
+    return mask;
 }
 
 class GameEnv {
@@ -146,15 +413,24 @@ public:
     py::dict step(size_t actionId, std::optional<int> rewardPlayer) {
         ensureState();
         const PlayerId actor = state_->currentPlayer();
+        const Game& gBefore = state_->getGame();
+        const int starsBefore = gBefore.getPlayer(actor).getStars();
         const auto decoded = state_->decodeActionId(actor, actionId);
         if (!decoded) {
             py::dict out;
             out["ok"] = false;
             out["done"] = state_->isTerminal();
             out["reward"] = 0.0f;
+            out["selected_action_id"] = static_cast<int>(actionId);
+            out["stars_before"] = starsBefore;
+            out["stars_after"] = starsBefore;
+            out["delta_stars"] = 0;
+            out["action_cost_stars"] = -1;
+            out["action_affordable"] = 0;
             out["observation"] = observation(std::nullopt, false, -1);
             return out;
         }
+        const ActionModelFields actionFeatures = buildActionModelFields(gBefore, *decoded);
 
         state_->apply(*decoded);
         revealObservedTilesForAllPlayers();
@@ -162,6 +438,7 @@ public:
 
         const bool done = state_->isTerminal();
         const Game& g = state_->getGame();
+        const int starsAfter = g.getPlayer(actor).getStars();
         int rp = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
         if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
@@ -174,6 +451,12 @@ public:
         out["reward"] = reward;
         out["winner"] = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
         out["current_player"] = static_cast<int>(state_->currentPlayer());
+        out["selected_action_id"] = static_cast<int>(actionId);
+        out["stars_before"] = starsBefore;
+        out["stars_after"] = starsAfter;
+        out["delta_stars"] = starsAfter - starsBefore;
+        out["action_cost_stars"] = actionFeatures.costStars;
+        out["action_affordable"] = actionFeatures.affordable;
         out["observation"] = observation(std::nullopt, false, -1);
         return out;
     }
@@ -321,6 +604,31 @@ public:
         obs["current_player"] = static_cast<int>(g.getCurrentPlayerId());
         obs["game_over"] = g.isGameOver();
         obs["winner"] = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
+        std::vector<int> playerStars;
+        std::vector<int> playerCityCounts;
+        std::vector<int> playerUnitCounts;
+        playerStars.reserve(g.getPlayers().size());
+        playerCityCounts.reserve(g.getPlayers().size());
+        playerUnitCounts.reserve(g.getPlayers().size());
+        for (const Player& p : g.getPlayers()) {
+            playerStars.push_back(p.getStars());
+            playerCityCounts.push_back(static_cast<int>(p.getCities().size()));
+            playerUnitCounts.push_back(static_cast<int>(p.getUnits().size()));
+        }
+        obs["player_stars"] = std::move(playerStars);
+        obs["player_city_counts"] = std::move(playerCityCounts);
+        obs["player_unit_counts"] = std::move(playerUnitCounts);
+        const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(g.getCurrentPlayerId());
+        obs["pending_city_upgrade"] = (pending != nullptr);
+        if (pending) {
+            obs["pending_city_id"] = static_cast<int>(pending->cityId);
+            obs["pending_upgrade_a"] = static_cast<int>(pending->opts.a);
+            obs["pending_upgrade_b"] = static_cast<int>(pending->opts.b);
+        } else {
+            obs["pending_city_id"] = -1;
+            obs["pending_upgrade_a"] = static_cast<int>(CityUpgradeChoice::None);
+            obs["pending_upgrade_b"] = static_cast<int>(CityUpgradeChoice::None);
+        }
         obs["terrain"] = std::move(terrain);
         obs["resources"] = std::move(resources);
         obs["buildings"] = std::move(buildings);
@@ -484,6 +792,285 @@ public:
         return legalIdsCache_;
     }
 
+    py::dict actionParamSpec() const {
+        ensureState();
+        const Game& g = state_->getGame();
+        const Map& m = g.getMap();
+        py::dict spec;
+        spec["type_vocab_size"] = kActionTypeCount;
+        spec["tile_vocab_size"] = m.getWidth() * m.getHeight();
+        spec["tech_vocab_size"] = kTechVocabSize;
+        spec["building_vocab_size"] = kBuildingVocabSize;
+        spec["spawn_type_vocab_size"] = kSpawnTypeVocabSize;
+        spec["city_upgrade_vocab_size"] = kCityUpgradeVocabSize;
+        spec["tile_action_vocab_size"] = kTileActionVocabSize;
+        spec["unit_upgrade_vocab_size"] = kUnitUpgradeVocabSize;
+        spec["tech_none_id"] = static_cast<int>(TechId::Count);
+        spec["source_none_id"] = -1;
+        spec["target_none_id"] = -1;
+        spec["city_none_id"] = -1;
+        spec["map_width"] = m.getWidth();
+        spec["map_height"] = m.getHeight();
+        spec["arg_order"] = std::vector<std::string>{
+            "source_index", "target_index", "tech", "building", "spawn_type", "upgrade", "tile_action", "unit_upgrade"};
+        return spec;
+    }
+
+    std::vector<py::dict> legalParamActions() const {
+        ensureState();
+        ensureLegalIdsCache();
+        const Game& g = state_->getGame();
+        std::vector<py::dict> out;
+        out.reserve(legalIdsCache_.size());
+        const int currentStars = g.getPlayer(g.getCurrentPlayerId()).getStars();
+        for (size_t aid : legalIdsCache_) {
+            const auto a = state_->decodeActionId(state_->currentPlayer(), aid);
+            if (!a) continue;
+            const ActionModelFields f = buildActionModelFields(g, *a);
+            py::dict d;
+            d["action_id"] = aid;
+            d["type"] = actionTypeName(a->type);
+            d["type_id"] = f.typeId;
+            d["source_index"] = f.sourceIndex;
+            d["target_index"] = f.targetIndex;
+            d["city"] = f.city;
+            d["tech"] = f.tech;
+            d["building"] = f.building;
+            d["spawn_type"] = f.spawnType;
+            d["upgrade"] = f.upgrade;
+            d["tile_action"] = f.tileAction;
+            d["unit_upgrade"] = f.unitUpgrade;
+            d["cost_stars"] = f.costStars;
+            d["stars_before"] = currentStars;
+            d["affordable"] = (f.costStars <= currentStars) ? 1 : 0;
+            d["arg_mask"] = actionArgMaskForType(a->type);
+            out.push_back(std::move(d));
+        }
+        return out;
+    }
+
+    py::dict legalParamMasks() const {
+        ensureState();
+        ensureLegalIdsCache();
+        const Game& g = state_->getGame();
+        const Map& m = g.getMap();
+        const int tileCount = m.getWidth() * m.getHeight();
+
+        std::vector<uint8_t> typeMask(kActionTypeCount, 0);
+        std::vector<uint8_t> sourceMask(std::max(0, tileCount), 0);
+        std::vector<uint8_t> targetMask(std::max(0, tileCount), 0);
+        std::vector<uint8_t> techMask(kTechVocabSize, 0);
+        std::vector<uint8_t> buildingMask(kBuildingVocabSize, 0);
+        std::vector<uint8_t> spawnTypeMask(kSpawnTypeVocabSize, 0);
+        std::vector<uint8_t> upgradeMask(kCityUpgradeVocabSize, 0);
+        std::vector<uint8_t> tileActionMask(kTileActionVocabSize, 0);
+        std::vector<uint8_t> unitUpgradeMask(kUnitUpgradeVocabSize, 0);
+
+        std::vector<std::vector<uint8_t>> sourceMaskByType(kActionTypeCount, std::vector<uint8_t>(std::max(0, tileCount), 0));
+        std::vector<std::vector<uint8_t>> targetMaskByType(kActionTypeCount, std::vector<uint8_t>(std::max(0, tileCount), 0));
+        std::vector<std::vector<uint8_t>> techMaskByType(kActionTypeCount, std::vector<uint8_t>(kTechVocabSize, 0));
+        std::vector<std::vector<uint8_t>> buildingMaskByType(kActionTypeCount, std::vector<uint8_t>(kBuildingVocabSize, 0));
+        std::vector<std::vector<uint8_t>> spawnTypeMaskByType(kActionTypeCount, std::vector<uint8_t>(kSpawnTypeVocabSize, 0));
+        std::vector<std::vector<uint8_t>> upgradeMaskByType(kActionTypeCount, std::vector<uint8_t>(kCityUpgradeVocabSize, 0));
+        std::vector<std::vector<uint8_t>> tileActionMaskByType(kActionTypeCount, std::vector<uint8_t>(kTileActionVocabSize, 0));
+        std::vector<std::vector<uint8_t>> unitUpgradeMaskByType(kActionTypeCount, std::vector<uint8_t>(kUnitUpgradeVocabSize, 0));
+        std::unordered_map<long long, std::vector<uint8_t>> targetMaskByTypeSource;
+
+        const int currentStars = g.getPlayer(g.getCurrentPlayerId()).getStars();
+        std::vector<int> actionCostById(state_->actionSpace().size(), -1);
+        std::vector<uint8_t> affordableMask(state_->actionSpace().size(), 0);
+
+        for (size_t aid : legalIdsCache_) {
+            const auto a = state_->decodeActionId(state_->currentPlayer(), aid);
+            if (!a) continue;
+            const ActionModelFields f = buildActionModelFields(g, *a);
+            if (f.typeId < 0 || f.typeId >= kActionTypeCount) continue;
+
+            typeMask[static_cast<size_t>(f.typeId)] = 1;
+            if (f.sourceIndex >= 0 && f.sourceIndex < tileCount) {
+                sourceMask[static_cast<size_t>(f.sourceIndex)] = 1;
+                sourceMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.sourceIndex)] = 1;
+            }
+            if (f.targetIndex >= 0 && f.targetIndex < tileCount) {
+                targetMask[static_cast<size_t>(f.targetIndex)] = 1;
+                targetMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.targetIndex)] = 1;
+                const long long key = (static_cast<long long>(f.typeId) << 32) | static_cast<unsigned int>(f.sourceIndex + 1);
+                auto& dstMask = targetMaskByTypeSource[key];
+                if (dstMask.empty()) dstMask.assign(static_cast<size_t>(tileCount), 0);
+                dstMask[static_cast<size_t>(f.targetIndex)] = 1;
+            }
+            if (f.tech >= 0 && f.tech < kTechVocabSize) {
+                techMask[static_cast<size_t>(f.tech)] = 1;
+                techMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.tech)] = 1;
+            }
+            if (f.building >= 0 && f.building < kBuildingVocabSize) {
+                buildingMask[static_cast<size_t>(f.building)] = 1;
+                buildingMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.building)] = 1;
+            }
+            if (f.spawnType >= 0 && f.spawnType < kSpawnTypeVocabSize) {
+                spawnTypeMask[static_cast<size_t>(f.spawnType)] = 1;
+                spawnTypeMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.spawnType)] = 1;
+            }
+            if (f.upgrade >= 0 && f.upgrade < kCityUpgradeVocabSize) {
+                upgradeMask[static_cast<size_t>(f.upgrade)] = 1;
+                upgradeMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.upgrade)] = 1;
+            }
+            if (f.tileAction >= 0 && f.tileAction < kTileActionVocabSize) {
+                tileActionMask[static_cast<size_t>(f.tileAction)] = 1;
+                tileActionMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.tileAction)] = 1;
+            }
+            if (f.unitUpgrade >= 0 && f.unitUpgrade < kUnitUpgradeVocabSize) {
+                unitUpgradeMask[static_cast<size_t>(f.unitUpgrade)] = 1;
+                unitUpgradeMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.unitUpgrade)] = 1;
+            }
+            if (aid < actionCostById.size()) {
+                actionCostById[aid] = f.costStars;
+                affordableMask[aid] = (f.costStars <= currentStars) ? 1 : 0;
+            }
+        }
+
+        py::dict sourceByType;
+        py::dict targetByType;
+        py::dict techByType;
+        py::dict buildingByType;
+        py::dict spawnByType;
+        py::dict upgradeByType;
+        py::dict tileActionByType;
+        py::dict unitUpgradeByType;
+        for (int t = 0; t < kActionTypeCount; ++t) {
+            if (!typeMask[static_cast<size_t>(t)]) continue;
+            sourceByType[py::int_(t)] = sourceMaskByType[static_cast<size_t>(t)];
+            targetByType[py::int_(t)] = targetMaskByType[static_cast<size_t>(t)];
+            techByType[py::int_(t)] = techMaskByType[static_cast<size_t>(t)];
+            buildingByType[py::int_(t)] = buildingMaskByType[static_cast<size_t>(t)];
+            spawnByType[py::int_(t)] = spawnTypeMaskByType[static_cast<size_t>(t)];
+            upgradeByType[py::int_(t)] = upgradeMaskByType[static_cast<size_t>(t)];
+            tileActionByType[py::int_(t)] = tileActionMaskByType[static_cast<size_t>(t)];
+            unitUpgradeByType[py::int_(t)] = unitUpgradeMaskByType[static_cast<size_t>(t)];
+        }
+
+        py::dict targetByTypeSource;
+        for (const auto& [key, mask] : targetMaskByTypeSource) {
+            const int typeId = static_cast<int>(key >> 32);
+            const int sourceIdx = static_cast<int>(key & 0xFFFFFFFFu) - 1;
+            targetByTypeSource[py::str(std::to_string(typeId) + ":" + std::to_string(sourceIdx))] = mask;
+        }
+
+        py::dict out;
+        out["type_mask"] = std::move(typeMask);
+        out["source_mask"] = std::move(sourceMask);
+        out["target_mask"] = std::move(targetMask);
+        out["tech_mask"] = std::move(techMask);
+        out["building_mask"] = std::move(buildingMask);
+        out["spawn_type_mask"] = std::move(spawnTypeMask);
+        out["upgrade_mask"] = std::move(upgradeMask);
+        out["tile_action_mask"] = std::move(tileActionMask);
+        out["unit_upgrade_mask"] = std::move(unitUpgradeMask);
+        out["source_mask_by_type"] = std::move(sourceByType);
+        out["target_mask_by_type"] = std::move(targetByType);
+        out["target_mask_by_type_source"] = std::move(targetByTypeSource);
+        out["tech_mask_by_type"] = std::move(techByType);
+        out["building_mask_by_type"] = std::move(buildingByType);
+        out["spawn_type_mask_by_type"] = std::move(spawnByType);
+        out["upgrade_mask_by_type"] = std::move(upgradeByType);
+        out["tile_action_mask_by_type"] = std::move(tileActionByType);
+        out["unit_upgrade_mask_by_type"] = std::move(unitUpgradeByType);
+        out["legal_count"] = static_cast<int>(legalIdsCache_.size());
+        out["current_player"] = static_cast<int>(g.getCurrentPlayerId());
+        out["turn"] = g.getTurnNumber();
+        out["stars_before"] = currentStars;
+        out["pending_city_upgrade"] = g.hasPendingCityUpgrade(g.getCurrentPlayerId());
+        out["action_cost_by_id"] = std::move(actionCostById);
+        out["action_affordable_mask"] = std::move(affordableMask);
+        return out;
+    }
+
+    py::dict stepParam(const py::dict& param, std::optional<int> rewardPlayer) {
+        ensureState();
+        ensureLegalIdsCache();
+
+        if (param.contains("action_id")) {
+            const size_t actionId = py::cast<size_t>(param["action_id"]);
+            py::dict out = step(actionId, rewardPlayer);
+            out["selected_action_id"] = static_cast<int>(actionId);
+            return out;
+        }
+        if (!param.contains("type_id")) {
+            py::dict out;
+            out["ok"] = false;
+            out["done"] = state_->isTerminal();
+            out["reward"] = 0.0f;
+            out["selected_action_id"] = -1;
+            out["observation"] = observation(std::nullopt, false, -1);
+            out["error"] = "Missing required field: type_id";
+            return out;
+        }
+
+        const int wantedType = py::cast<int>(param["type_id"]);
+        auto has = [&param](const char* key) { return param.contains(key); };
+        auto getInt = [&param](const char* key) { return py::cast<int>(param[key]); };
+
+        int selected = -1;
+        const Game& g = state_->getGame();
+        for (size_t aid : legalIdsCache_) {
+            const auto a = state_->decodeActionId(state_->currentPlayer(), aid);
+            if (!a) continue;
+            const ActionModelFields f = buildActionModelFields(g, *a);
+            if (f.typeId != wantedType) continue;
+            if (has("source_index") && f.sourceIndex != getInt("source_index")) continue;
+            if (has("target_index") && f.targetIndex != getInt("target_index")) continue;
+            if (has("tech") && f.tech != getInt("tech")) continue;
+            if (has("building") && f.building != getInt("building")) continue;
+            if (has("spawn_type") && f.spawnType != getInt("spawn_type")) continue;
+            if (has("upgrade") && f.upgrade != getInt("upgrade")) continue;
+            if (has("tile_action") && f.tileAction != getInt("tile_action")) continue;
+            if (has("unit_upgrade") && f.unitUpgrade != getInt("unit_upgrade")) continue;
+            if (has("city") && f.city != getInt("city")) continue;
+            selected = static_cast<int>(aid);
+            break;
+        }
+
+        if (selected < 0) {
+            py::dict out;
+            out["ok"] = false;
+            out["done"] = state_->isTerminal();
+            out["reward"] = 0.0f;
+            out["selected_action_id"] = -1;
+            out["observation"] = observation(std::nullopt, false, -1);
+            out["error"] = "No legal action matches provided param tuple.";
+            return out;
+        }
+
+        py::dict out = step(static_cast<size_t>(selected), rewardPlayer);
+        out["selected_action_id"] = selected;
+        return out;
+    }
+
+    py::dict stepParamVec(const std::vector<int>& vec, std::optional<int> rewardPlayer) {
+        if (vec.empty()) {
+            py::dict out;
+            out["ok"] = false;
+            out["done"] = isDone();
+            out["reward"] = 0.0f;
+            out["selected_action_id"] = -1;
+            out["observation"] = observation(std::nullopt, false, -1);
+            out["error"] = "Vector must contain at least type_id.";
+            return out;
+        }
+
+        // [type_id, source_index, target_index, tech, building, spawn_type, upgrade, tile_action, unit_upgrade, city]
+        py::dict param;
+        param["type_id"] = vec[0];
+        const std::vector<std::string> keys = {
+            "source_index", "target_index", "tech", "building", "spawn_type",
+            "upgrade", "tile_action", "unit_upgrade", "city"};
+        for (size_t i = 1; i < vec.size() && i <= keys.size(); ++i) {
+            if (vec[i] < 0) continue;
+            param[py::str(keys[i - 1])] = vec[i];
+        }
+        return stepParam(param, rewardPlayer);
+    }
+
     py::dict decodeAction(size_t actionId) const {
         ensureState();
         const Game& g = state_->getGame();
@@ -491,57 +1078,40 @@ public:
         const auto a = state_->decodeActionId(state_->currentPlayer(), actionId);
         if (!a) return py::dict();
 
-        Pos resolvedTarget = a->target;
-        switch (a->type) {
-            case Action::Type::Build:
-            case Action::Type::TileAction:
-            case Action::Type::SpawnUnit:
-                resolvedTarget = a->pos;
-                break;
-            case Action::Type::UpgradeCity:
-                if (a->city != kNoCity) {
-                    if (const City* c = g.getCity(a->city)) {
-                        resolvedTarget = c->getPos();
-                    }
-                }
-                break;
-            case Action::Type::Heal:
-            case Action::Type::UnitUpgrade:
-                if (a->unit != kNoUnit) {
-                    if (const Unit* u = g.getUnit(a->unit)) {
-                        resolvedTarget = u->getPos();
-                    }
-                }
-                break;
-            case Action::Type::Move:
-            case Action::Type::Attack:
-            case Action::Type::EndTurn:
-            case Action::Type::BuyTech:
-                break;
+        const ActionModelFields f = buildActionModelFields(g, *a);
+        Pos resolvedTarget{-1, -1};
+        if (f.targetIndex >= 0 && m.getWidth() > 0) {
+            resolvedTarget = Pos{f.targetIndex % m.getWidth(), f.targetIndex / m.getWidth()};
+        }
+        Pos resolvedPos{-1, -1};
+        if (f.sourceIndex >= 0 && m.getWidth() > 0) {
+            resolvedPos = Pos{f.sourceIndex % m.getWidth(), f.sourceIndex / m.getWidth()};
         }
 
         py::dict out;
         out["action_id"] = actionId;
         out["type"] = actionTypeName(a->type);
+        out["type_id"] = f.typeId;
         out["pid"] = static_cast<int>(a->pid);
         out["unit"] = (a->unit == kNoUnit) ? -1 : static_cast<int>(a->unit);
-        out["city"] = (a->city == kNoCity) ? -1 : static_cast<int>(a->city);
-        out["pos"] = py::make_tuple(a->pos.x, a->pos.y);
+        out["city"] = f.city;
+        out["pos"] = py::make_tuple(resolvedPos.x, resolvedPos.y);
         out["target"] = py::make_tuple(resolvedTarget.x, resolvedTarget.y);
         out["target_x"] = resolvedTarget.x;
         out["target_y"] = resolvedTarget.y;
-        int targetIndex = -1;
-        if (m.inBounds(resolvedTarget)) {
-            targetIndex = resolvedTarget.y * m.getWidth() + resolvedTarget.x;
-        }
-        out["target_index"] = targetIndex;
-        out["query_index"] = targetIndex;
-        out["tech"] = static_cast<int>(a->tech);
+        out["source_index"] = f.sourceIndex;
+        out["target_index"] = f.targetIndex;
+        out["query_index"] = f.targetIndex;
+        out["tech"] = f.tech;
+        out["cost_stars"] = f.costStars;
+        out["stars_before"] = f.starsBefore;
+        out["affordable"] = f.affordable;
         out["building"] = static_cast<int>(a->building);
         out["spawn_type"] = static_cast<int>(a->spawnType);
         out["upgrade"] = static_cast<int>(a->upgrade);
         out["tile_action"] = static_cast<int>(a->tileAction);
         out["unit_upgrade"] = static_cast<int>(a->unitUpgrade);
+        out["arg_mask"] = actionArgMaskForType(a->type);
         return out;
     }
 
@@ -764,6 +1334,15 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("legal_action_mask", &GameEnv::legalActionMask)
         .def("legal_action_ids", &GameEnv::legalActionIds)
         .def("legal_action_ids_fast", &GameEnv::legalActionIdsFast)
+        .def("action_param_spec", &GameEnv::actionParamSpec)
+        .def("legal_param_actions", &GameEnv::legalParamActions)
+        .def("legal_param_masks", &GameEnv::legalParamMasks)
+        .def("step_param", &GameEnv::stepParam,
+             py::arg("param"),
+             py::arg("reward_player") = std::nullopt)
+        .def("step_param_vec", &GameEnv::stepParamVec,
+             py::arg("vec"),
+             py::arg("reward_player") = std::nullopt)
         .def("decode_action", &GameEnv::decodeAction, py::arg("action_id"))
         .def("action_space_size", &GameEnv::actionSpaceSize)
         .def("current_player", &GameEnv::currentPlayer)
