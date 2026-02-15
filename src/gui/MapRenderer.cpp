@@ -1666,9 +1666,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
             // Convert engine tile state to JS-like "type".
             const auto res = tile.getResource();
-            const auto resU = static_cast<uint16_t>(res);
             auto hasRes = [&](ResourcesEnum r) {
-                return (resU & static_cast<uint16_t>(r)) != 0;
+                return res == r;
             };
 
             std::string type;
@@ -2722,20 +2721,18 @@ if (!showOverview) {
 
                     // Resources list (Tile)
                     {
-                        const auto resU = static_cast<uint16_t>(st.getResource());
-                        auto hasR = [&](ResourcesEnum r) { return (resU & static_cast<uint16_t>(r)) != 0; };
-
                         std::string rline = "Resources: ";
-                        bool any = false;
-                        if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
-                        if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
-                        if (hasR(ResourcesEnum::Animal)) { rline += "Animal "; any = true; }
-                        if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
-                        if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
-                        if (!any) rline += "None";
+                        switch (st.getResource()) {
+                            case ResourcesEnum::Fruit:  rline += "Fruit";  break;
+                            case ResourcesEnum::Crops:  rline += "Crops";  break;
+                            case ResourcesEnum::Animal: rline += "Animal"; break;
+                            case ResourcesEnum::Fish:   rline += "Fish";   break;
+                            case ResourcesEnum::Whale:  rline += "Whale";  break;
+                            case ResourcesEnum::Metal:  rline += "Metal";  break;
+                            default:                    rline += "None";   break;
+                        }
                         addLine(ty, rline, 14);
                     }
-
                     if (st.getSettlementType() == SettlementTypeEnum::City) {
                         addLine(ty, "===== CITY =====", 18);
                         const City* cObj = resolveCityForTile(game, st);
@@ -3390,19 +3387,18 @@ if (!showOverview) {
 
                         // Resources list (Tile)
                         {
-                            const auto resU = static_cast<uint16_t>(st.getResource());
-                            auto hasR = [&](ResourcesEnum r) { return (resU & static_cast<uint16_t>(r)) != 0; };
-
                             std::string rline = "Resources: ";
-                            bool any = false;
-                            if (hasR(ResourcesEnum::Fruit))  { rline += "Fruit ";  any = true; }
-                            if (hasR(ResourcesEnum::Crops))  { rline += "Crops ";  any = true; }
-                            if (hasR(ResourcesEnum::Animal)) { rline += "Animal "; any = true; }
-                            if (hasR(ResourcesEnum::Fish))   { rline += "Fish ";   any = true; }
-                            if (hasR(ResourcesEnum::Metal))  { rline += "Metal ";  any = true; }
-                            if (!any) rline += "None";
+                            switch (st.getResource()) {
+                                case ResourcesEnum::Fruit:  rline += "Fruit";  break;
+                                case ResourcesEnum::Crops:  rline += "Crops";  break;
+                                case ResourcesEnum::Animal: rline += "Animal"; break;
+                                case ResourcesEnum::Fish:   rline += "Fish";   break;
+                                case ResourcesEnum::Whale:  rline += "Whale";  break;
+                                case ResourcesEnum::Metal:  rline += "Metal";  break;
+                                default:                    rline += "None";   break;
+                            }
                             addLine(ty, rline, 14);
-                        }
+                         }
 
                         if (st.getSettlementType() == SettlementTypeEnum::City) {
                             addLine(ty, "===== CITY =====", 18);

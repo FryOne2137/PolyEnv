@@ -530,7 +530,12 @@ void MapGenerator::generate(Map& map, const Params& params) {
         if (t.getSettlementType() == SettlementTypeEnum::City) continue; // capital already
 
         BaseTerrainEnum bt = t.getBaseTerrain();
+
+        // One-resource rule: never place more than one resource on a tile.
+        const bool hasResource = (t.getResource() != ResourcesEnum::None);
+
         if (bt == BaseTerrainEnum::Land) {
+            // Fruit/Crops are only allowed on ground (plain Land).
             float fruit = P_FRUIT * pr.fruit;
             float crops = P_CROPS * pr.crops;
 
@@ -543,23 +548,25 @@ void MapGenerator::generate(Map& map, const Params& params) {
                 }
                 t.setSettlement(SettlementTypeEnum::Village, nextSettlementId++);
                 t.setRoadBridge(RoadBridgeEnum::Road);
-            } else if (proc(cell, fruit * (1.0f - crops / 2.0f))) {
+            } else if (!hasResource && proc(cell, fruit * (1.0f - crops / 2.0f))) {
                 t.setResource(ResourcesEnum::Fruit);
-            } else if (proc(cell, crops * (1.0f - fruit / 2.0f))) {
+            } else if (!hasResource && proc(cell, crops * (1.0f - fruit / 2.0f))) {
                 t.setResource(ResourcesEnum::Crops);
             }
         } else if (bt == BaseTerrainEnum::Forest) {
-            if (proc(cell, P_ANIM * pr.animals)) {
+            // Animals only on forest.
+            if (!hasResource && proc(cell, P_ANIM * pr.animals)) {
                 t.setResource(ResourcesEnum::Animal);
             }
         } else if (bt == BaseTerrainEnum::Water) {
-            if (proc(cell, P_FISH * pr.fish)) {
+            if (!hasResource && proc(cell, P_FISH * pr.fish)) {
                 t.setResource(ResourcesEnum::Fish);
             }
         } else if (bt == BaseTerrainEnum::Ocean) {
             // Starfish are placed in a dedicated pass below (global frequency rules)
         } else if (bt == BaseTerrainEnum::Mountain) {
-            if (proc(cell, P_METAL * pr.metal)) {
+            // On mountains only metal may appear.
+            if (!hasResource && proc(cell, P_METAL * pr.metal)) {
                 t.setResource(ResourcesEnum::Metal);
             }
         }

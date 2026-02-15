@@ -18,15 +18,16 @@
 
 namespace {
 
-// ---- common bitmask helpers ----
+// ---- resource helpers (single resource enum) ----
 inline bool hasFlag(ResourcesEnum v, ResourcesEnum f) {
-    return (static_cast<uint8_t>(v) & static_cast<uint8_t>(f)) != 0;
+    return v == f;
 }
 inline ResourcesEnum addFlag(ResourcesEnum v, ResourcesEnum f) {
-    return static_cast<ResourcesEnum>(static_cast<uint8_t>(v) | static_cast<uint8_t>(f));
+    (void)v;
+    return f;
 }
 inline ResourcesEnum removeFlag(ResourcesEnum v, ResourcesEnum f) {
-    return static_cast<ResourcesEnum>(static_cast<uint8_t>(v) & ~static_cast<uint8_t>(f));
+    return (v == f) ? ResourcesEnum::None : v;
 }
 
 // ---- common checks ----

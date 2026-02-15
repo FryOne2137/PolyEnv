@@ -5,15 +5,17 @@
 #include "Tile.h"
 
 void Tile::removeResourceFlag(ResourcesEnum flag) {
-    const uint8_t nr = static_cast<uint8_t>(resource) & ~static_cast<uint8_t>(flag);
-    resource = static_cast<ResourcesEnum>(nr);
+    if (resource == flag) {
+        resource = ResourcesEnum::None;
+    }
 }
 
 void Tile::addResourceFlag(ResourcesEnum flag) {
-    const uint8_t nr = static_cast<uint8_t>(resource) | static_cast<uint8_t>(flag);
-    resource = static_cast<ResourcesEnum>(nr);
+    if (flag != ResourcesEnum::None) {
+        resource = flag;
+    }
 }
 
 bool Tile::hasResourceFlag(ResourcesEnum flag) const {
-    return (static_cast<uint8_t>(resource) & static_cast<uint8_t>(flag)) != 0;
+    return resource == flag;
 }

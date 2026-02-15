@@ -30,8 +30,7 @@ static inline bool terrainAllowed(BuildingDB::TerrainMask mask, BaseTerrainEnum 
 }
 
 static inline bool resourceAllowed(BuildingDB::ResourceMask mask, ResourcesEnum r) {
-    const uint8_t rb = static_cast<uint8_t>(r); // r to już bit
-    return (mask & rb) != 0;
+    return mask == static_cast<uint8_t>(r);
 }
 
 // --- Polytopia-style Forge/Sawmill/Windmill/Market helpers ---

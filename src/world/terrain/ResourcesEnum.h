@@ -9,14 +9,11 @@
 
 enum class ResourcesEnum : uint8_t {
     None        = 0,
-
-    Fish        = 0,
-    Whale       = 1,
-
+    Fish        = 1,
+    Whale       = 2,
     Fruit       = 3,
     Crops       = 4,
-    Animal     =  5,
-
+    Animal      = 5,
     Metal       = 6,
 };
 
