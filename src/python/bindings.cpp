@@ -669,6 +669,28 @@ public:
         const int h = m.getHeight();
         const int perspective = static_cast<int>(g.getCurrentPlayerId());
 
+        auto isEnemyHiddenUnitForPerspective = [&](const Unit* u) -> bool {
+            if (!u) return false;
+            if (perspective < 0 || perspective >= 16) return false;
+            const bool isEnemy = static_cast<int>(u->getOwnerId()) != perspective;
+            return isEnemy && u->hasSkill(UnitSkill::Hide);
+        };
+
+        auto hasAdjacentEnemyHiddenUnit = [&](Pos center) -> bool {
+            if (perspective < 0 || perspective >= 16) return false;
+            static constexpr int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+            static constexpr int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+            for (int i = 0; i < 8; ++i) {
+                const Pos np{center.x + kDx[i], center.y + kDy[i]};
+                if (!m.inBounds(np)) continue;
+                const UnitId nUid = m.unitOn(np);
+                if (nUid == Map::kNoUnit) continue;
+                const Unit* nu = g.getUnit(nUid);
+                if (isEnemyHiddenUnitForPerspective(nu)) return true;
+            }
+            return false;
+        };
+
         const size_t tileCount = static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h));
         std::vector<std::vector<int>> out;
         out.reserve(tileCount);
@@ -686,14 +708,23 @@ public:
                 int unitHp = -1;
                 int unitOwner = -1;
                 int unitId = static_cast<int>(Map::kNoUnit);
+                int isCloakAround = 0;
 
                 const UnitId uid = m.unitOn(p);
                 if (uid != Map::kNoUnit) {
-                    unitId = static_cast<int>(uid);
                     const Unit* u = g.getUnit(uid);
                     if (u) {
-                        unitHp = u->getHealth();
-                        unitOwner = static_cast<int>(u->getOwnerId());
+                        const bool hiddenEnemy = isEnemyHiddenUnitForPerspective(u);
+                        if (!hiddenEnemy) {
+                            unitId = static_cast<int>(uid);
+                            unitHp = u->getHealth();
+                            unitOwner = static_cast<int>(u->getOwnerId());
+                        }
+                        if (perspective >= 0 && perspective < 16 &&
+                            static_cast<int>(u->getOwnerId()) == perspective &&
+                            hasAdjacentEnemyHiddenUnit(p)) {
+                            isCloakAround = 1;
+                        }
                     }
                 }
 
@@ -710,6 +741,7 @@ public:
                     static_cast<int>(t.getResource()),
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
+                    isCloakAround,
                 });
             }
         }
