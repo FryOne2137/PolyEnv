@@ -119,6 +119,12 @@ static const City* resolveCityForTribe(const Game* game, TribeType tribe) {
     return nullptr;
 }
 
+static inline bool unitHasActivatedHide(const Unit& u) {
+    if (!u.hasSkill(UnitSkill::Hide)) return false;
+    const Pos d = u.getLastMoveDir();
+    return !(d.x == 0 && d.y == 0);
+}
+
 // Resolve city object using the tile's settlement id (works for enemy cities too).
 static const City* resolveCityForTile(const Game* game, const Tile& tile) {
     if (!game) return nullptr;
@@ -1545,12 +1551,32 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         const auto& units = game->getUnits();
         unitsByPos.reserve(units.size() * 2 + 1);
         for (const Unit& u : units) {
+            // Gameplay view: enemy activated-hide units are invisible.
+            if (!showOverview && u.getOwnerId() != curPid && unitHasActivatedHide(u)) {
+                continue;
+            }
             const Pos up = u.getPos();
             if (up.x < 0 || up.y < 0 || up.x >= map.getWidth() || up.y >= map.getHeight()) continue;
             const uint32_t key = (uint32_t(up.y) << 16u) | uint32_t(up.x);
             unitsByPos[key].push_back(&u);
         }
     }
+
+    auto hasAdjacentEnemyActivatedHide = [&](Pos p, PlayerId viewer) -> bool {
+        static constexpr int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+        static constexpr int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+        for (int i = 0; i < 8; ++i) {
+            const Pos np{p.x + kDx[i], p.y + kDy[i]};
+            if (!map.inBounds(np)) continue;
+            const UnitId nUid = map.unitOn(np);
+            if (nUid == Map::kNoUnit) continue;
+            const Unit* nu = game->getUnit(nUid);
+            if (!nu) continue;
+            if (nu->getOwnerId() == viewer) continue;
+            if (unitHasActivatedHide(*nu)) return true;
+        }
+        return false;
+    };
 
     // --- Road overlay segments (drawn above base tiles but BELOW settlements/buildings/units) ---
     sf::VertexArray roadLines(sf::Triangles);
@@ -2195,6 +2221,28 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
             const sf::Texture& utex = unitTexture(cmd.tribeSource, cmd.u->getType());
             drawSprite(rt, utex, cmd.ux, cmd.uy, cmd.s);
+
+            // Gameplay hint: show marker on own units when an enemy activated-hide unit is adjacent.
+            if (!showOverview && cmd.u->getOwnerId() == curPid) {
+                const Pos up = cmd.u->getPos();
+                if (hasAdjacentEnemyActivatedHide(up, curPid)) {
+                    const float ex = cmd.ux + cmd.s * 0.72f;
+                    const float ey = cmd.uy + cmd.s * 0.10f;
+                    const float rw = std::max(2.0f, tileSize * 0.11f);
+                    const float rh = std::max(1.5f, tileSize * 0.07f);
+
+                    sf::CircleShape eyeWhite(rw);
+                    eyeWhite.setScale(1.0f, rh / rw);
+                    eyeWhite.setPosition(ex - rw, ey - rh);
+                    eyeWhite.setFillColor(sf::Color(245, 245, 245, 230));
+                    rt.draw(eyeWhite);
+
+                    sf::CircleShape pupil(std::max(1.0f, tileSize * 0.022f));
+                    pupil.setPosition(ex - pupil.getRadius(), ey - pupil.getRadius());
+                    pupil.setFillColor(sf::Color(20, 20, 20, 230));
+                    rt.draw(pupil);
+                }
+            }
         }
 
         // --- City Rewards panel (gameplay view only) ---

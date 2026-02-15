@@ -25,6 +25,13 @@ static inline int iround(double v) {
     return static_cast<int>(std::llround(v));
 }
 
+static inline bool unitHasActivatedHide(const Game& game, UnitId uid) {
+    if (!UnitSystem::unitExists(game, uid)) return false;
+    if (!UnitSystem::hasSkill(game, uid, UnitSkill::Hide)) return false;
+    const Pos d = UnitSystem::getLastMoveDir(game, uid);
+    return !(d.x == 0 && d.y == 0);
+}
+
 int CombatSystem::chebyshevDistance(Pos a, Pos b) {
     const int dx = std::abs(a.x - b.x);
     const int dy = std::abs(a.y - b.y);
@@ -162,6 +169,25 @@ std::vector<Pos> CombatSystem::attackable(const Game& game, UnitId attackerId) {
     const Pos from = UnitSystem::getPos(game, attackerId);
     const int range = UnitSystem::getRange(game, attackerId);
 
+    // Infiltrators can only target adjacent enemy city tiles.
+    if (UnitSystem::hasSkill(game, attackerId, UnitSkill::Infiltrate)) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0) continue;
+                const Pos p{from.x + dx, from.y + dy};
+                if (!game.getMap().inBounds(p)) continue;
+                const Tile& t = game.getMap().at(p);
+                if (t.getSettlementType() != SettlementTypeEnum::City) continue;
+                const CityId cityId = static_cast<CityId>(t.getSettlementId());
+                if (!CitySystem::cityExists(game, cityId)) continue;
+                const PlayerId cityOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));
+                if (cityOwner == kNoPlayer || cityOwner == attackerOwner) continue;
+                out.push_back(p);
+            }
+        }
+        return out;
+    }
+
     // Scan tiles within Chebyshev radius (same metric as `attack()`).
     for (int dy = -range; dy <= range; ++dy) {
         for (int dx = -range; dx <= range; ++dx) {
@@ -177,6 +203,7 @@ std::vector<Pos> CombatSystem::attackable(const Game& game, UnitId attackerId) {
 
             // Only enemy units.
             if (UnitSystem::getOwnerId(game, uid) == attackerOwner) continue;
+            if (unitHasActivatedHide(game, uid)) continue; // hidden cloak-like units are not targetable
 
             out.push_back(p);
         }
@@ -221,6 +248,7 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
 
     // Can only attack other players
     if (UnitSystem::getOwnerId(game, defenderId) == UnitSystem::getOwnerId(game, attackerId)) return false;
+    if (unitHasActivatedHide(game, defenderId)) return false;
     // --- Polytopia damage formula ---
     const double aAtk = static_cast<double>(UnitSystem::getAttack(game, attackerId));
     const double dDef = static_cast<double>(UnitSystem::getDefense(game, defenderId));

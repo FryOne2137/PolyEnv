@@ -106,6 +106,18 @@ static inline bool unitHasHide(const Game& game, UnitId uid) {
     return (uid != Map::kNoUnit) && UnitSystem::unitExists(game, uid) && UnitSystem::hasSkill(game, uid, UnitSkill::Hide);
 }
 
+static inline bool unitHasCreep(const Game& game, UnitId uid) {
+    return (uid != Map::kNoUnit) && UnitSystem::unitExists(game, uid) && UnitSystem::hasSkill(game, uid, UnitSkill::Creep);
+}
+
+// Hide becomes "active stealth" after the unit performs at least one move.
+// We use lastMoveDir != (0,0) as the marker.
+static inline bool unitHasActivatedHide(const Game& game, UnitId uid) {
+    if (!unitHasHide(game, uid)) return false;
+    const Pos d = UnitSystem::getLastMoveDir(game, uid);
+    return !(d.x == 0 && d.y == 0);
+}
+
 // Returns true if tile `p` is inside enemy ZoC for `moverUid`.
 // ZoC is projected by enemy units that do NOT have Hide onto their 8-neighborhood.
 // Movers with Hide ignore ZoC completely.
@@ -253,6 +265,7 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId mover
     {
         if (!game.getMap().inBounds(p)) return false;
         const Tile& t = game.getMap().at(p);
+        const bool movingHasCreep = unitHasCreep(game, movingUnit);
 
         if (t.getBaseTerrain() == BaseTerrainEnum::Mountain) {
             return true;
@@ -261,6 +274,7 @@ static inline bool isTerminalAfterEntering(const Game& game, Pos p, UnitId mover
         // Forest is modeled as a resource on a land tile.
         // Forest WITHOUT a road is terminal; Forest WITH a road/bridge/settlement-road is NOT terminal.
         if (t.getBaseTerrain() == BaseTerrainEnum::Forest) {
+            if (movingHasCreep) return false;
             if (!isRoadLikeTile(game, p, movingUnit)) {
                 return true;
             }
@@ -651,7 +665,33 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     if (UnitSystem::movedThisTurn(game, unitId)) return false;
     if (UnitSystem::attackedThisTurn(game, unitId) && !UnitSystem::hasSkill(game, unitId, UnitSkill::Escape)) return false;
 
-    if (game.getMap().unitOn(to) != Map::kNoUnit) return false;
+    auto handleHiddenCloakEncounter = [&](Pos p) -> bool {
+        if (!game.getMap().inBounds(p)) return false;
+        const UnitId occ = game.getMap().unitOn(p);
+        if (occ == Map::kNoUnit) return false;
+        if (!UnitSystem::unitExists(game, occ)) return false;
+
+        const PlayerId moverOwner = UnitSystem::getOwnerId(game, unitId);
+        const PlayerId occOwner = UnitSystem::getOwnerId(game, occ);
+        if (occOwner == moverOwner) return false;
+        if (!unitHasActivatedHide(game, occ)) return false;
+
+        // Reveal the cloak after contact attempt (cloak-like detection behavior).
+        UnitSystem::setLastMoveDir(game, occ, Pos{0, 0});
+        return true;
+    };
+
+    {
+        const UnitId occ = game.getMap().unitOn(to);
+        if (occ != Map::kNoUnit) {
+            // Entering a tile occupied by an enemy active-hide unit (cloak-like behavior)
+            // bounces the mover back to its start and does not consume movement.
+            if (handleHiddenCloakEncounter(to)) {
+                return true;
+            }
+            return false;
+        }
+    }
 
     // Destination restrictions.
     {
@@ -766,7 +806,10 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             } else {
                 if (!UnitSystem::unitExists(game, occ)) return false; // be conservative
                 if (UnitSystem::getOwnerId(game, occ) != moverOwner) {
-                    return false; // enemy blocks
+                    // Active-hide enemy is treated as unknown: path may traverse that tile.
+                    if (!unitHasActivatedHide(game, occ)) {
+                        return false; // visible enemy blocks
+                    }
                 }
                 // friendly -> passable (destination is still required to be empty)
             }
@@ -907,6 +950,7 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             }
         }
     }
+
     // Update map occupancy
     game.getMap().setUnitOn(from, Map::kNoUnit);
     game.getMap().setUnitOn(to, unitId);
@@ -1108,7 +1152,11 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             } else {
                 if (!UnitSystem::unitExists(game, occ)) return false; // be conservative
                 if (UnitSystem::getOwnerId(game, occ) != moverOwner) {
-                    return false; // enemy blocks
+                    // Active-hide enemy is treated as "unknown occupant":
+                    // you may target that tile, but movement cannot continue through it.
+                    if (!unitHasActivatedHide(game, occ)) {
+                        return false; // visible enemy blocks
+                    }
                 }
                 // friendly -> passable
             }
@@ -1171,11 +1219,17 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             if (g_bucket.getDist(ci, INF) != d) continue; // stale
 
             const Pos curP = fromIdx(ci, w);
+            const UnitId occCur = game.getMap().unitOn(curP);
+            const bool occCurExists = (occCur != Map::kNoUnit) && UnitSystem::unitExists(game, occCur);
+            const bool curHasEnemyActiveHide =
+                occCurExists &&
+                (UnitSystem::getOwnerId(game, occCur) != moverOwner) &&
+                unitHasActivatedHide(game, occCur);
 
             if (curP != start) {
-                if (game.getMap().unitOn(curP) != Map::kNoUnit) {
-                    // never show occupied tiles as reachable destinations
-                } else {
+                const bool occupiedByBlockingUnit =
+                    (occCur != Map::kNoUnit) && !curHasEnemyActiveHide;
+                if (!occupiedByBlockingUnit) {
                     const Tile& tn = game.getMap().at(curP);
                     if (tileVisibleToPlayer(tn, moverOwner)) {
                         // Dedup without sorting.
@@ -1191,7 +1245,6 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             if (curP != start && isTerminalAfterEntering(game, curP, unitId, unitId, unitWaterCapable)) {
                 continue;
             }
-
             for (int i = 0; i < 8; ++i) {
                 const Pos nb{ curP.x + kNbDx8[i], curP.y + kNbDy8[i] };
                 if (!canStep(nb)) continue;

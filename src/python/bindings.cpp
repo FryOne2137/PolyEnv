@@ -669,11 +669,18 @@ public:
         const int h = m.getHeight();
         const int perspective = static_cast<int>(g.getCurrentPlayerId());
 
+        auto hasActivatedHide = [](const Unit* u) -> bool {
+            if (!u) return false;
+            if (!u->hasSkill(UnitSkill::Hide)) return false;
+            const Pos d = u->getLastMoveDir();
+            return !(d.x == 0 && d.y == 0);
+        };
+
         auto isEnemyHiddenUnitForPerspective = [&](const Unit* u) -> bool {
             if (!u) return false;
             if (perspective < 0 || perspective >= 16) return false;
             const bool isEnemy = static_cast<int>(u->getOwnerId()) != perspective;
-            return isEnemy && u->hasSkill(UnitSkill::Hide);
+            return isEnemy && hasActivatedHide(u);
         };
 
         auto hasAdjacentEnemyHiddenUnit = [&](Pos center) -> bool {
