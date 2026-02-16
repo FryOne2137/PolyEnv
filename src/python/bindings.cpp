@@ -668,6 +668,15 @@ public:
         const int w = m.getWidth();
         const int h = m.getHeight();
         const int perspective = static_cast<int>(g.getCurrentPlayerId());
+        bool hasClimbing = false;
+        bool hasOrganization = false;
+        bool hasFishing = false;
+        if (perspective >= 0 && perspective < static_cast<int>(g.getPlayers().size())) {
+            const Player& p = g.getPlayer(static_cast<PlayerId>(perspective));
+            hasClimbing = p.hasTech(TechId::Climbing);
+            hasOrganization = p.hasTech(TechId::Organization);
+            hasFishing = p.hasTech(TechId::Fishing);
+        }
 
         auto hasActivatedHide = [](const Unit* u) -> bool {
             if (!u) return false;
@@ -716,6 +725,23 @@ public:
                 int unitOwner = -1;
                 int unitId = static_cast<int>(Map::kNoUnit);
                 int isCloakAround = 0;
+                int resourceToken = static_cast<int>(t.getResource());
+                int settlementTypeToken = static_cast<int>(t.getSettlementType());
+                int settlementIdToken =
+                    (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement))
+                        ? -1
+                        : static_cast<int>(t.getSettlementId());
+
+                if (!hasClimbing && resourceToken == static_cast<int>(ResourcesEnum::Metal)) {
+                    resourceToken = static_cast<int>(ResourcesEnum::None);
+                }
+                if (!hasOrganization && resourceToken == static_cast<int>(ResourcesEnum::Crops)) {
+                    resourceToken = static_cast<int>(ResourcesEnum::None);
+                }
+                if (!hasFishing && settlementTypeToken == static_cast<int>(SettlementTypeEnum::Starfish)) {
+                    settlementTypeToken = static_cast<int>(SettlementTypeEnum::None);
+                    settlementIdToken = -1;
+                }
 
                 const UnitId uid = m.unitOn(p);
                 if (uid != Map::kNoUnit) {
@@ -743,9 +769,9 @@ public:
                     (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
-                    static_cast<int>(t.getSettlementType()),
-                    (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement)) ? -1 : static_cast<int>(t.getSettlementId()),
-                    static_cast<int>(t.getResource()),
+                    settlementTypeToken,
+                    settlementIdToken,
+                    resourceToken,
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
                     isCloakAround,
