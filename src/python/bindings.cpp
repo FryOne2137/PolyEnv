@@ -582,8 +582,7 @@ public:
             perspectiveStars = g.getPlayer(static_cast<PlayerId>(perspective)).getStars();
         }
         obs["player_stars"] = perspectiveStars;
-        obs["stars"] = playerStars;
-        obs["player_stars_by_player"] = std::move(playerStars);
+        obs["stars"] = std::move(playerStars);
         obs["player_city_counts"] = std::move(playerCityCounts);
         obs["player_unit_counts"] = std::move(playerUnitCounts);
         const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(g.getCurrentPlayerId());
