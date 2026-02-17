@@ -618,7 +618,6 @@ public:
             obs["lighthouse_discovered_by_players"] = std::move(knownPlayers);
         }
         obs["map_size"] = w;
-        obs["actions"] = legalParamActions();
         obs["tokenized_map"] = tokenizedMap(playerId, visibleOnly, hiddenValue);
         obs["techs"] = getTechs(playerId);
         obs["seen_lighthouses"] = seenLighthouses(playerId);
@@ -929,6 +928,10 @@ public:
             out.push_back(std::move(d));
         }
         return out;
+    }
+
+    std::vector<py::dict> getActions() const {
+        return legalParamActions();
     }
 
     py::dict legalParamMasks() const {
@@ -1452,6 +1455,7 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("legal_action_ids", &GameEnv::legalActionIds)
         .def("legal_action_ids_fast", &GameEnv::legalActionIdsFast)
         .def("action_param_spec", &GameEnv::actionParamSpec)
+        .def("get_actions", &GameEnv::getActions)
         .def("legal_param_actions", &GameEnv::legalParamActions)
         .def("legal_param_masks", &GameEnv::legalParamMasks)
         .def("step_param", &GameEnv::stepParam,
