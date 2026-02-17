@@ -51,7 +51,7 @@ static std::vector<TribeType> parseTribes(const std::vector<int>& tribes) {
     return out;
 }
 
-static std::string actionTypeName(Action::Type t) {
+static std::string actionBaseTypeName(Action::Type t) {
     switch (t) {
         case Action::Type::Move: return "move";
         case Action::Type::Attack: return "attack";
@@ -65,6 +65,49 @@ static std::string actionTypeName(Action::Type t) {
         case Action::Type::UnitUpgrade: return "unit_upgrade";
     }
     return "unknown";
+}
+
+static std::string tileActionName(Action::TileActionKind kind) {
+    switch (kind) {
+        case Action::TileActionKind::Hunt: return "hunt";
+        case Action::TileActionKind::Organization: return "organization";
+        case Action::TileActionKind::Fishing: return "fishing";
+        case Action::TileActionKind::ClearForest: return "clear_forest";
+        case Action::TileActionKind::BurnForest: return "burn_forest";
+        case Action::TileActionKind::GrowForest: return "grow_forest";
+        case Action::TileActionKind::DestroyTile: return "destroy_tile";
+        case Action::TileActionKind::BuildRoad: return "build_road";
+        case Action::TileActionKind::BuildBridge: return "build_bridge";
+        case Action::TileActionKind::Explorer: return "explorer";
+        case Action::TileActionKind::FoundCity: return "found_city";
+        case Action::TileActionKind::Ruin: return "ruin";
+        case Action::TileActionKind::Starfish: return "starfish";
+        case Action::TileActionKind::CaptureCity: return "capture_city";
+        case Action::TileActionKind::None: return "none";
+    }
+    return "none";
+}
+
+static std::string unitUpgradeName(Action::UnitUpgradeKind kind) {
+    switch (kind) {
+        case Action::UnitUpgradeKind::RaftToScout: return "raft_to_scout";
+        case Action::UnitUpgradeKind::RaftToRammer: return "raft_to_rammer";
+        case Action::UnitUpgradeKind::RaftToBomber: return "raft_to_bomber";
+        case Action::UnitUpgradeKind::BecomeVeteran: return "become_veteran";
+        case Action::UnitUpgradeKind::None: return "none";
+    }
+    return "none";
+}
+
+static std::string actionFullTypeName(const Action& a) {
+    switch (a.type) {
+        case Action::Type::TileAction:
+            return "tile_action:" + tileActionName(a.tileAction);
+        case Action::Type::UnitUpgrade:
+            return "unit_upgrade:" + unitUpgradeName(a.unitUpgrade);
+        default:
+            return actionBaseTypeName(a.type);
+    }
 }
 
 static TechId requiredTechForTileAction(Action::TileActionKind kind) {
@@ -874,6 +917,10 @@ public:
         const Map& m = g.getMap();
         py::dict spec;
         spec["type_vocab_size"] = kActionTypeCount;
+        spec["type_fullname_format"] = "base_type or base_type:subtype";
+        spec["type_fullname_examples"] = std::vector<std::string>{
+            "move", "attack", "heal", "end_turn", "buy_tech", "upgrade_city", "build", "spawn_unit",
+            "tile_action:hunt", "unit_upgrade:raft_to_scout"};
         spec["tile_vocab_size"] = m.getWidth() * m.getHeight();
         spec["tech_vocab_size"] = kTechVocabSize;
         spec["building_vocab_size"] = kBuildingVocabSize;
@@ -906,8 +953,9 @@ public:
             const ActionModelFields f = buildActionModelFields(g, *a);
             py::dict d;
             d["action_id"] = aid;
-            d["type"] = actionTypeName(a->type);
+            d["type"] = actionBaseTypeName(a->type);
             d["type_id"] = f.typeId;
+            d["type_fullname"] = actionFullTypeName(*a);
             d["source_index"] = f.sourceIndex;
             d["target_index"] = f.targetIndex;
             d["city"] = f.city;
@@ -1174,8 +1222,9 @@ public:
 
         py::dict out;
         out["action_id"] = actionId;
-        out["type"] = actionTypeName(a->type);
+        out["type"] = actionBaseTypeName(a->type);
         out["type_id"] = f.typeId;
+        out["type_fullname"] = actionFullTypeName(*a);
         out["pid"] = static_cast<int>(a->pid);
         out["unit"] = (a->unit == kNoUnit) ? -1 : static_cast<int>(a->unit);
         out["city"] = f.city;
