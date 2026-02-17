@@ -283,6 +283,43 @@ static ActionModelFields buildActionModelFields(const Game& g, const Action& a) 
     return f;
 }
 
+static std::pair<int, int> predictAttackDamage(const Game& g, const Action& a) {
+    if (a.type != Action::Type::Attack) return {-1, -1};
+    if (a.unit == kNoUnit) return {-1, -1};
+    if (!g.getMap().inBounds(a.target)) return {-1, -1};
+
+    const Unit* attackerBefore = g.getUnit(a.unit);
+    if (!attackerBefore) return {-1, -1};
+    const int attackerHpBefore = std::max(0, attackerBefore->getHealth());
+
+    const UnitId defenderId = g.getMap().unitOn(a.target);
+    int defenderHpBefore = 0;
+    if (defenderId != Map::kNoUnit) {
+        if (const Unit* defenderBefore = g.getUnit(defenderId)) {
+            defenderHpBefore = std::max(0, defenderBefore->getHealth());
+        }
+    }
+
+    Game simulated = g;
+    if (!simulated.attack(a.pid, a.unit, a.target)) return {-1, -1};
+
+    int attackerHpAfter = 0;
+    if (const Unit* attackerAfter = simulated.getUnit(a.unit)) {
+        attackerHpAfter = std::max(0, attackerAfter->getHealth());
+    }
+
+    int defenderHpAfter = 0;
+    if (defenderId != Map::kNoUnit) {
+        if (const Unit* defenderAfter = simulated.getUnit(defenderId)) {
+            defenderHpAfter = std::max(0, defenderAfter->getHealth());
+        }
+    }
+
+    const int damageDealt = (defenderId == Map::kNoUnit) ? 0 : std::max(0, defenderHpBefore - defenderHpAfter);
+    const int damageReceived = std::max(0, attackerHpBefore - attackerHpAfter);
+    return {damageDealt, damageReceived};
+}
+
 static std::vector<uint8_t> actionArgMaskForType(Action::Type t) {
     // [source, target, tech, building, spawn_type, city_upgrade, tile_action, unit_upgrade]
     std::vector<uint8_t> mask(8, 0);
@@ -615,7 +652,13 @@ public:
             playerCityCounts.push_back(static_cast<int>(p.getCities().size()));
             playerUnitCounts.push_back(static_cast<int>(p.getUnits().size()));
         }
-        obs["player_stars"] = std::move(playerStars);
+        int perspectiveStars = -1;
+        if (perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size()) {
+            perspectiveStars = g.getPlayer(static_cast<PlayerId>(perspective)).getStars();
+        }
+        obs["player_stars"] = perspectiveStars;
+        obs["stars"] = playerStars;
+        obs["player_stars_by_player"] = std::move(playerStars);
         obs["player_city_counts"] = std::move(playerCityCounts);
         obs["player_unit_counts"] = std::move(playerUnitCounts);
         const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(g.getCurrentPlayerId());
@@ -658,6 +701,11 @@ public:
             obs["lighthouse_discovered_by_masks"] = std::move(knownMasks);
             obs["lighthouse_discovered_by_players"] = std::move(knownPlayers);
         }
+        obs["map_size"] = w;
+        obs["actions"] = legalParamActions();
+        obs["tokenized_map"] = tokenizedMap();
+        obs["techs"] = getTechs(playerId);
+        obs["seen_lighthouses"] = seenLighthouses(playerId);
         return obs;
     }
 
@@ -725,6 +773,8 @@ public:
                 int unitOwner = -1;
                 int unitId = static_cast<int>(Map::kNoUnit);
                 int isCloakAround = 0;
+                int capitalLayer = -1;
+                int ownUnitKills = -1;
                 int resourceToken = static_cast<int>(t.getResource());
                 int settlementTypeToken = static_cast<int>(t.getSettlementType());
                 int settlementIdToken =
@@ -742,6 +792,21 @@ public:
                     settlementTypeToken = static_cast<int>(SettlementTypeEnum::None);
                     settlementIdToken = -1;
                 }
+                if (t.getSettlementType() == SettlementTypeEnum::City) {
+                    capitalLayer = 0;
+                    const CityId cityId = static_cast<CityId>(t.getSettlementId());
+                    if (cityId != kNoCity) {
+                        const City* city = g.getCity(cityId);
+                        if (city) {
+                            const PlayerId owner = city->getOwnerId();
+                            if (owner != kNoPlayer &&
+                                static_cast<size_t>(owner) < g.getPlayers().size() &&
+                                g.getPlayer(owner).getCapitalId() == city->getCityId()) {
+                                capitalLayer = 1;
+                            }
+                        }
+                    }
+                }
 
                 const UnitId uid = m.unitOn(p);
                 if (uid != Map::kNoUnit) {
@@ -752,6 +817,10 @@ public:
                             unitId = static_cast<int>(uid);
                             unitHp = u->getHealth();
                             unitOwner = static_cast<int>(u->getOwnerId());
+                            if (perspective >= 0 &&
+                                static_cast<int>(u->getOwnerId()) == perspective) {
+                                ownUnitKills = u->getKillCounter();
+                            }
                         }
                         if (perspective >= 0 && perspective < 16 &&
                             static_cast<int>(u->getOwnerId()) == perspective &&
@@ -763,18 +832,20 @@ public:
 
                 out.push_back({
                     visibility,
+                    isCloakAround,
                     unitHp,
                     unitOwner,
                     (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
+                    ownUnitKills,
                     (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
+                    capitalLayer,
                     settlementTypeToken,
                     settlementIdToken,
                     resourceToken,
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
-                    isCloakAround,
                 });
             }
         }
@@ -908,6 +979,9 @@ public:
             d["cost_stars"] = f.costStars;
             d["stars_before"] = currentStars;
             d["affordable"] = (f.costStars <= currentStars) ? 1 : 0;
+            const auto [damageDealt, damageReceived] = predictAttackDamage(g, *a);
+            d["damage_dealt"] = damageDealt;
+            d["damage_received"] = damageReceived;
             d["arg_mask"] = actionArgMaskForType(a->type);
             out.push_back(std::move(d));
         }
@@ -1190,6 +1264,38 @@ public:
         return static_cast<int>(state_->currentPlayer());
     }
 
+    std::vector<int> getTechs(std::optional<int> playerId) const {
+        ensureState();
+        const Game& g = state_->getGame();
+        const int pid = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
+        if (pid < 0 || static_cast<size_t>(pid) >= g.getPlayers().size()) return {};
+
+        const Player& p = g.getPlayer(static_cast<PlayerId>(pid));
+        std::vector<int> out;
+        out.reserve(p.getTechs().size());
+        for (const TechId tech : p.getTechs()) {
+            out.push_back(static_cast<int>(tech));
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    std::vector<int> seenLighthouses(std::optional<int> playerId) const {
+        ensureState();
+        const Game& g = state_->getGame();
+        const int pid = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
+        if (pid < 0 || pid >= 16) return {};
+
+        std::vector<int> out;
+        out.reserve(4);
+        for (uint8_t i = 0; i < 4; ++i) {
+            if (g.hasPlayerDiscoveredLighthouse(i, static_cast<PlayerId>(pid))) {
+                out.push_back(static_cast<int>(i));
+            }
+        }
+        return out;
+    }
+
     GameEnv clone() const {
         ensureState();
         return *this;
@@ -1411,6 +1517,8 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("decode_action", &GameEnv::decodeAction, py::arg("action_id"))
         .def("action_space_size", &GameEnv::actionSpaceSize)
         .def("current_player", &GameEnv::currentPlayer)
+        .def("get_techs", &GameEnv::getTechs,
+             py::arg("player_id") = std::nullopt)
         .def("is_done", &GameEnv::isDone)
         .def("clone", &GameEnv::clone)
         .def("save_state", &GameEnv::saveState)
