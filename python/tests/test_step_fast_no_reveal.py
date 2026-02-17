@@ -5,16 +5,7 @@ from typing import Any
 from game_engine import GameEnv, tribes
 
 
-TILE_FEATURE_KEYS = (
-    "terrain",
-    "resources",
-    "buildings",
-    "settlements",
-    "territory_owner",
-    "unit_owner",
-    "unit_type",
-    "unit_hp",
-)
+TOKEN_VISIBILITY_LAYER = 0
 
 
 def _new_env(seed: int = 7) -> GameEnv:
@@ -28,14 +19,15 @@ def _new_env(seed: int = 7) -> GameEnv:
 def _find_revealing_action(env: GameEnv, hidden_value: int) -> tuple[int, int]:
     actor = env.current_player()
     before = env.observation(player_id=actor, visible_only=True, hidden_value=hidden_value)
-    before_vis = before["visibility"]
+    before_vis = [tile[TOKEN_VISIBILITY_LAYER] for tile in before["tokenized_map"]]
 
     for action_id in env.legal_action_ids_fast():
         probe = env.clone()
         ok, *_ = probe.step_fast_no_reveal(action_id)
         if not ok:
             continue
-        after_vis = probe.observation(player_id=actor, visible_only=True, hidden_value=hidden_value)["visibility"]
+        after_obs = probe.observation(player_id=actor, visible_only=True, hidden_value=hidden_value)
+        after_vis = [tile[TOKEN_VISIBILITY_LAYER] for tile in after_obs["tokenized_map"]]
         for idx, (v0, v1) in enumerate(zip(before_vis, after_vis)):
             if v0 == 0 and v1 == 1:
                 return action_id, idx
@@ -64,10 +56,10 @@ def test_step_fast_no_reveal_keeps_newly_visible_tile_hidden_in_visible_observat
     visible_obs = env.observation(player_id=actor, visible_only=True, hidden_value=hidden_value)
     full_obs = env.observation(player_id=actor, visible_only=False, hidden_value=hidden_value)
 
-    assert visible_obs["visibility"][new_idx] == 1
-    for key in TILE_FEATURE_KEYS:
-        assert visible_obs[key][new_idx] == hidden_value
-    assert full_obs["terrain"][new_idx] != hidden_value
+    assert visible_obs["tokenized_map"][new_idx][TOKEN_VISIBILITY_LAYER] == 1
+    for layer_value in visible_obs["tokenized_map"][new_idx][1:]:
+        assert layer_value == hidden_value
+    assert any(v != hidden_value for v in full_obs["tokenized_map"][new_idx][1:])
 
 
 def test_step_fast_no_reveal_matches_step_fast_game_mechanics() -> None:

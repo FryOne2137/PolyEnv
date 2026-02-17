@@ -555,93 +555,13 @@ public:
                          bool visibleOnly,
                          int hiddenValue) const {
         ensureState();
-        ensureObservationKnowledgeLayout();
         const Game& g = state_->getGame();
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
-        const int n = w * h;
-
         const int perspective = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
 
-        std::vector<int> terrain(n, 0);
-        std::vector<int> resources(n, 0);
-        std::vector<int> buildings(n, 0);
-        std::vector<int> settlements(n, 0);
-        std::vector<int> territoryOwner(n, -1);
-        std::vector<int> visibility(n, 0);
-        std::vector<int> unitOwner(n, -1);
-        std::vector<int> unitType(n, 0);
-        std::vector<int> unitHp(n, 0);
-        const std::vector<uint8_t>* knownObs = nullptr;
-        if (perspective >= 0) {
-            const size_t perspectiveIdx = static_cast<size_t>(perspective);
-            if (perspectiveIdx < observationKnownByPlayer_.size()) {
-                knownObs = &observationKnownByPlayer_[perspectiveIdx];
-            }
-        }
-
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                const Pos p{x, y};
-                const int idx = y * w + x;
-                const Tile& t = m.at(p);
-
-                terrain[idx] = static_cast<int>(t.getBaseTerrain());
-                resources[idx] = static_cast<int>(t.getResource());
-                buildings[idx] = static_cast<int>(t.getBuildingType());
-                settlements[idx] = static_cast<int>(t.getSettlementType());
-
-                const CityId cid = t.getTerritoryCityId();
-                if (cid != kNoCity) {
-                    const City* c = g.getCity(cid);
-                    if (c) territoryOwner[idx] = static_cast<int>(c->getOwnerId());
-                }
-
-                const uint16_t visMask = static_cast<uint16_t>(t.getVisibility());
-                bool isVisible = false;
-                if (perspective >= 0 && perspective < 16) {
-                    isVisible = ((visMask & (uint16_t(1) << perspective)) != 0);
-                    visibility[idx] = isVisible ? 1 : 0;
-                }
-
-                bool knownToObservation = true;
-                if (visibleOnly) {
-                    knownToObservation = isVisible;
-                    if (knownToObservation && knownObs && static_cast<size_t>(idx) < knownObs->size()) {
-                        knownToObservation = ((*knownObs)[static_cast<size_t>(idx)] != 0);
-                    }
-                }
-
-                if (visibleOnly && !knownToObservation) {
-                    terrain[idx] = hiddenValue;
-                    resources[idx] = hiddenValue;
-                    buildings[idx] = hiddenValue;
-                    settlements[idx] = hiddenValue;
-                    territoryOwner[idx] = hiddenValue;
-                    unitOwner[idx] = hiddenValue;
-                    unitType[idx] = hiddenValue;
-                    unitHp[idx] = hiddenValue;
-                    continue;
-                }
-
-                const UnitId uid = m.unitOn(p);
-                if (uid != Map::kNoUnit) {
-                    const Unit* u = g.getUnit(uid);
-                    if (u) {
-                        unitOwner[idx] = static_cast<int>(u->getOwnerId());
-                        unitType[idx] = static_cast<int>(u->getType());
-                        unitHp[idx] = u->getHealth();
-                    }
-                }
-            }
-        }
-
         py::dict obs;
-        obs["width"] = w;
-        obs["height"] = h;
-        obs["map_width"] = w;
-        obs["map_height"] = h;
         obs["turn"] = g.getTurnNumber();
         obs["current_player"] = static_cast<int>(g.getCurrentPlayerId());
         obs["game_over"] = g.isGameOver();
@@ -669,7 +589,7 @@ public:
         const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(g.getCurrentPlayerId());
         obs["pending_city_upgrade"] = (pending != nullptr);
         if (pending) {
-            obs["pending_city_id"] = static_cast<int>(pending->cityId);
+        obs["pending_city_id"] = static_cast<int>(pending->cityId);
             obs["pending_upgrade_a"] = static_cast<int>(pending->opts.a);
             obs["pending_upgrade_b"] = static_cast<int>(pending->opts.b);
         } else {
@@ -677,15 +597,6 @@ public:
             obs["pending_upgrade_a"] = static_cast<int>(CityUpgradeChoice::None);
             obs["pending_upgrade_b"] = static_cast<int>(CityUpgradeChoice::None);
         }
-        obs["terrain"] = std::move(terrain);
-        obs["resources"] = std::move(resources);
-        obs["buildings"] = std::move(buildings);
-        obs["settlements"] = std::move(settlements);
-        obs["territory_owner"] = std::move(territoryOwner);
-        obs["visibility"] = std::move(visibility);
-        obs["unit_owner"] = std::move(unitOwner);
-        obs["unit_type"] = std::move(unitType);
-        obs["unit_hp"] = std::move(unitHp);
         obs["visible_only"] = visibleOnly;
         obs["hidden_value"] = hiddenValue;
         if (!visibleOnly) {
@@ -708,19 +619,31 @@ public:
         }
         obs["map_size"] = w;
         obs["actions"] = legalParamActions();
-        obs["tokenized_map"] = tokenizedMap();
+        obs["tokenized_map"] = tokenizedMap(playerId, visibleOnly, hiddenValue);
         obs["techs"] = getTechs(playerId);
         obs["seen_lighthouses"] = seenLighthouses(playerId);
         return obs;
     }
 
-    std::vector<std::vector<int>> tokenizedMap() const {
+    std::vector<std::vector<int>> tokenizedMap(std::optional<int> playerId = std::nullopt,
+                                               bool visibleOnly = false,
+                                               int hiddenValue = -1) const {
         ensureState();
+        if (visibleOnly) {
+            ensureObservationKnowledgeLayout();
+        }
         const Game& g = state_->getGame();
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
-        const int perspective = static_cast<int>(g.getCurrentPlayerId());
+        const int perspective = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
+        const std::vector<uint8_t>* knownObs = nullptr;
+        if (visibleOnly && perspective >= 0) {
+            const size_t perspectiveIdx = static_cast<size_t>(perspective);
+            if (perspectiveIdx < observationKnownByPlayer_.size()) {
+                knownObs = &observationKnownByPlayer_[perspectiveIdx];
+            }
+        }
         bool hasClimbing = false;
         bool hasOrganization = false;
         bool hasFishing = false;
@@ -773,6 +696,14 @@ public:
                                         ((visMask & (uint16_t(1) << perspective)) != 0))
                                            ? 1
                                            : 0;
+                const int idx = y * w + x;
+                bool knownToObservation = true;
+                if (visibleOnly) {
+                    knownToObservation = (visibility == 1);
+                    if (knownToObservation && knownObs && static_cast<size_t>(idx) < knownObs->size()) {
+                        knownToObservation = ((*knownObs)[static_cast<size_t>(idx)] != 0);
+                    }
+                }
 
                 int unitHp = -1;
                 int unitOwner = -1;
@@ -835,7 +766,7 @@ public:
                     }
                 }
 
-                out.push_back({
+                std::vector<int> tileToken{
                     visibility,
                     isCloakAround,
                     unitHp,
@@ -851,7 +782,13 @@ public:
                     resourceToken,
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
-                });
+                };
+                if (visibleOnly && !knownToObservation) {
+                    for (size_t i = 1; i < tileToken.size(); ++i) {
+                        tileToken[i] = hiddenValue;
+                    }
+                }
+                out.push_back(std::move(tileToken));
             }
         }
 
@@ -1503,7 +1440,10 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("player_id") = std::nullopt,
              py::arg("visible_only") = false,
              py::arg("hidden_value") = -1)
-        .def("tokenized_map", &GameEnv::tokenizedMap)
+        .def("tokenized_map", &GameEnv::tokenizedMap,
+             py::arg("player_id") = std::nullopt,
+             py::arg("visible_only") = false,
+             py::arg("hidden_value") = -1)
         .def("lighthouse_discovered_by_masks", &GameEnv::lighthouseDiscoveredByMasks)
         .def("lighthouse_discovered_by_players", &GameEnv::lighthouseDiscoveredByPlayers)
         .def("lighthouse_visibility", &GameEnv::lighthouseVisibility,
