@@ -321,13 +321,18 @@ static std::pair<int, int> predictAttackDamage(const Game& g, const Action& a) {
 }
 
 static std::vector<uint8_t> actionArgMaskForType(Action::Type t) {
-    // [source, target, tech, building, spawn_type, city_upgrade, tile_action, unit_upgrade]
-    std::vector<uint8_t> mask(8, 0);
+    // [source, target, tech, building, spawn_type, city_upgrade, tile_action, unit_upgrade, damage_dealt, damage_received]
+    std::vector<uint8_t> mask(10, 0);
     switch (t) {
         case Action::Type::Move:
+            mask[0] = 1;
+            mask[1] = 1;
+            break;
         case Action::Type::Attack:
             mask[0] = 1;
             mask[1] = 1;
+            mask[8] = 1;
+            mask[9] = 1;
             break;
         case Action::Type::Heal:
             mask[0] = 1;
@@ -948,7 +953,8 @@ public:
         spec["map_width"] = m.getWidth();
         spec["map_height"] = m.getHeight();
         spec["arg_order"] = std::vector<std::string>{
-            "source_index", "target_index", "tech", "building", "spawn_type", "upgrade", "tile_action", "unit_upgrade"};
+            "source_index", "target_index", "tech", "building", "spawn_type", "upgrade", "tile_action", "unit_upgrade",
+            "damage_dealt", "damage_received"};
         return spec;
     }
 
