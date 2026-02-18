@@ -99,8 +99,147 @@ static std::string unitUpgradeName(Action::UnitUpgradeKind kind) {
     return "none";
 }
 
+static std::string buildingTypeName(BuildingTypeEnum b) {
+    switch (b) {
+        case BuildingTypeEnum::Farm: return "farm";
+        case BuildingTypeEnum::Forge: return "forge";
+        case BuildingTypeEnum::LumberHut: return "lumber_hut";
+        case BuildingTypeEnum::Market: return "market";
+        case BuildingTypeEnum::Mine: return "mine";
+        case BuildingTypeEnum::Port: return "port";
+        case BuildingTypeEnum::Sawmill: return "sawmill";
+        case BuildingTypeEnum::Windmill: return "windmill";
+        case BuildingTypeEnum::AltarOfPeace: return "altar_of_peace";
+        case BuildingTypeEnum::EmperorsTomb: return "emperors_tomb";
+        case BuildingTypeEnum::EyeOfGod: return "eye_of_god";
+        case BuildingTypeEnum::GateOfPower: return "gate_of_power";
+        case BuildingTypeEnum::GrandBazaar: return "grand_bazaar";
+        case BuildingTypeEnum::ParkOfFortune: return "park_of_fortune";
+        case BuildingTypeEnum::TowerOfWisdom: return "tower_of_wisdom";
+        case BuildingTypeEnum::Lighthouse: return "lighthouse";
+        case BuildingTypeEnum::None: return "none";
+    }
+    return "none";
+}
+
+static std::string techIdName(TechId t) {
+    switch (t) {
+        case TechId::Climbing: return "climbing";
+        case TechId::Fishing: return "fishing";
+        case TechId::Hunting: return "hunting";
+        case TechId::Organization: return "organization";
+        case TechId::Riding: return "riding";
+        case TechId::Archery: return "archery";
+        case TechId::Ramming: return "ramming";
+        case TechId::Farming: return "farming";
+        case TechId::Forestry: return "forestry";
+        case TechId::FreeSpirit: return "free_spirit";
+        case TechId::Meditation: return "meditation";
+        case TechId::Mining: return "mining";
+        case TechId::Roads: return "roads";
+        case TechId::Sailing: return "sailing";
+        case TechId::Strategy: return "strategy";
+        case TechId::Aquatism: return "aquatism";
+        case TechId::Chivalry: return "chivalry";
+        case TechId::Construction: return "construction";
+        case TechId::Diplomacy: return "diplomacy";
+        case TechId::Mathematics: return "mathematics";
+        case TechId::Navigation: return "navigation";
+        case TechId::Philosophy: return "philosophy";
+        case TechId::Smithery: return "smithery";
+        case TechId::Spiritualism: return "spiritualism";
+        case TechId::Trade: return "trade";
+        case TechId::Count: return "none";
+    }
+    return "none";
+}
+
+static std::string cityUpgradeChoiceName(CityUpgradeChoice c) {
+    switch (c) {
+        case CityUpgradeChoice::Workshop: return "workshop";
+        case CityUpgradeChoice::Explorer: return "explorer";
+        case CityUpgradeChoice::CityWall: return "city_wall";
+        case CityUpgradeChoice::Resources: return "resources";
+        case CityUpgradeChoice::PopulationGrowth: return "population_growth";
+        case CityUpgradeChoice::BorderGrowth: return "border_growth";
+        case CityUpgradeChoice::Park: return "park";
+        case CityUpgradeChoice::SuperUnit: return "super_unit";
+        case CityUpgradeChoice::None: return "none";
+    }
+    return "none";
+}
+
+static std::string unitTypeName(UnitType u) {
+    switch (u) {
+        case UnitType::Warrior: return "warrior";
+        case UnitType::Archer: return "archer";
+        case UnitType::Defender: return "defender";
+        case UnitType::Rider: return "rider";
+        case UnitType::MindBender: return "mind_bender";
+        case UnitType::Swordsman: return "swordsman";
+        case UnitType::Catapult: return "catapult";
+        case UnitType::Cloak: return "cloak";
+        case UnitType::Knight: return "knight";
+        case UnitType::Dagger: return "dagger";
+        case UnitType::Giant: return "giant";
+        case UnitType::Bunny: return "bunny";
+        case UnitType::Bunta: return "bunta";
+        case UnitType::Raft: return "raft";
+        case UnitType::Scout: return "scout";
+        case UnitType::Rammer: return "rammer";
+        case UnitType::Bomber: return "bomber";
+        case UnitType::Dinghy: return "dinghy";
+        case UnitType::Pirate: return "pirate";
+        case UnitType::Juggernaut: return "juggernaut";
+        case UnitType::Mermaid: return "mermaid";
+        case UnitType::AquaticAmphibian: return "aquatic_amphibian";
+        case UnitType::MermaidArcher: return "mermaid_archer";
+        case UnitType::MermaidDefender: return "mermaid_defender";
+        case UnitType::Swordsmaid: return "swordsmaid";
+        case UnitType::Scuba: return "scuba";
+        case UnitType::Siren: return "siren";
+        case UnitType::Shark: return "shark";
+        case UnitType::YellyBelly: return "yelly_belly";
+        case UnitType::Puffer: return "puffer";
+        case UnitType::TridentionAq: return "tridention_aq";
+        case UnitType::CrabAq: return "crab_aq";
+        case UnitType::Polytaur: return "polytaur";
+        case UnitType::DragonEgg: return "dragon_egg";
+        case UnitType::BabyDragon: return "baby_dragon";
+        case UnitType::FireDragon: return "fire_dragon";
+        case UnitType::IceArcher: return "ice_archer";
+        case UnitType::BattleSled: return "battle_sled";
+        case UnitType::Mooni: return "mooni";
+        case UnitType::IceFortress: return "ice_fortress";
+        case UnitType::Gaami: return "gaami";
+        case UnitType::Hexapod: return "hexapod";
+        case UnitType::Kiton: return "kiton";
+        case UnitType::Phychi: return "phychi";
+        case UnitType::Shaman: return "shaman";
+        case UnitType::Raychi: return "raychi";
+        case UnitType::Exida: return "exida";
+        case UnitType::Doomux: return "doomux";
+        case UnitType::MothC: return "moth_c";
+        case UnitType::LarvaC: return "larva_c";
+        case UnitType::InsectEgg: return "insect_egg";
+        case UnitType::Boomchi: return "boomchi";
+        case UnitType::LivingIsland: return "living_island";
+        case UnitType::GiantSuper: return "giant_super";
+        case UnitType::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
 static std::string actionFullTypeName(const Action& a) {
     switch (a.type) {
+        case Action::Type::BuyTech:
+            return "buy_tech:" + techIdName(a.tech);
+        case Action::Type::UpgradeCity:
+            return "upgrade_city:" + cityUpgradeChoiceName(a.upgrade);
+        case Action::Type::Build:
+            return "build:" + buildingTypeName(a.building);
+        case Action::Type::SpawnUnit:
+            return "spawn_unit:" + unitTypeName(a.spawnType);
         case Action::Type::TileAction:
             return "tile_action:" + tileActionName(a.tileAction);
         case Action::Type::UnitUpgrade:
@@ -919,7 +1058,7 @@ public:
         spec["type_vocab_size"] = kActionTypeCount;
         spec["type_fullname_format"] = "base_type or base_type:subtype";
         spec["type_fullname_examples"] = std::vector<std::string>{
-            "move", "attack", "heal", "end_turn", "buy_tech", "upgrade_city", "build", "spawn_unit",
+            "move", "attack", "heal", "end_turn", "buy_tech:fishing", "upgrade_city:super_unit", "build:farm", "spawn_unit:warrior",
             "tile_action:hunt", "unit_upgrade:raft_to_scout"};
         spec["tile_vocab_size"] = m.getWidth() * m.getHeight();
         spec["tech_vocab_size"] = kTechVocabSize;
