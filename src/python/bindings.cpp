@@ -763,6 +763,17 @@ public:
         if (perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size()) {
             perspectiveStars = g.getPlayer(static_cast<PlayerId>(perspective)).getStars();
         }
+        if (visibleOnly) {
+            const bool validPerspective =
+                perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size();
+            for (size_t i = 0; i < g.getPlayers().size(); ++i) {
+                if (!validPerspective || static_cast<int>(i) != perspective) {
+                    playerStars[i] = -1;
+                    playerCityCounts[i] = -1;
+                    playerUnitCounts[i] = -1;
+                }
+            }
+        }
         obs["player_stars"] = perspectiveStars;
         obs["stars"] = std::move(playerStars);
         obs["player_city_counts"] = std::move(playerCityCounts);
