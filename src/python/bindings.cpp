@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <pybind11/pybind11.h>
@@ -15,7 +16,9 @@
 #include "content/tribes/Tribe.h"
 #include "content/units/UnitFactory.h"
 #include "game/Game.h"
+#include "systems/CitySystem.h"
 #include "systems/GameDataSystem.h"
+#include "systems/StarsSystem.h"
 #include "world/Tile.h"
 
 namespace py = pybind11;
@@ -748,36 +751,46 @@ public:
         obs["current_player"] = static_cast<int>(g.getCurrentPlayerId());
         obs["game_over"] = g.isGameOver();
         obs["winner"] = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
-        std::vector<int> playerStars;
-        std::vector<int> playerCityCounts;
-        std::vector<int> playerUnitCounts;
-        playerStars.reserve(g.getPlayers().size());
-        playerCityCounts.reserve(g.getPlayers().size());
-        playerUnitCounts.reserve(g.getPlayers().size());
-        for (const Player& p : g.getPlayers()) {
-            playerStars.push_back(p.getStars());
-            playerCityCounts.push_back(static_cast<int>(p.getCities().size()));
-            playerUnitCounts.push_back(static_cast<int>(p.getUnits().size()));
-        }
         int perspectiveStars = -1;
         if (perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size()) {
             perspectiveStars = g.getPlayer(static_cast<PlayerId>(perspective)).getStars();
         }
-        if (visibleOnly) {
-            const bool validPerspective =
-                perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size();
-            for (size_t i = 0; i < g.getPlayers().size(); ++i) {
-                if (!validPerspective || static_cast<int>(i) != perspective) {
-                    playerStars[i] = -1;
-                    playerCityCounts[i] = -1;
-                    playerUnitCounts[i] = -1;
-                }
+        obs["player_stars"] = perspectiveStars;
+
+        auto tokenized = tokenizedMap(playerId, visibleOnly, hiddenValue);
+        int ownUnits = 0;
+        std::unordered_set<int> ownCityIds;
+        ownCityIds.reserve(16);
+        for (const auto& tile : tokenized) {
+            if (tile.size() < 12) continue;
+            if (tile[3] == perspective) {
+                ++ownUnits;
+            }
+            if (tile[10] != static_cast<int>(SettlementTypeEnum::City)) continue;
+            const int cityIdRaw = tile[11];
+            if (cityIdRaw < 0) continue;
+            const CityId cid = static_cast<CityId>(cityIdRaw);
+            const City* city = g.getCity(cid);
+            if (!city) continue;
+            if (static_cast<int>(city->getOwnerId()) == perspective) {
+                ownCityIds.insert(cityIdRaw);
             }
         }
-        obs["player_stars"] = perspectiveStars;
-        obs["stars"] = std::move(playerStars);
-        obs["player_city_counts"] = std::move(playerCityCounts);
-        obs["player_unit_counts"] = std::move(playerUnitCounts);
+        obs["owns_units"] = ownUnits;
+        obs["own_cities"] = static_cast<int>(ownCityIds.size());
+
+        int nextTurnStarIncome = 0;
+        if (perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size()) {
+            const PlayerId pid = static_cast<PlayerId>(perspective);
+            for (CityId cid : g.getPlayer(pid).getCities()) {
+                if (!CitySystem::cityExists(g, cid)) continue;
+                if (CitySystem::isCityUnderSiege(g, cid)) continue;
+                if (CitySystem::getCityIsInfiltrated(g, cid)) continue;
+                nextTurnStarIncome += static_cast<int>(CitySystem::getCityStarsPerRound(g, cid));
+                nextTurnStarIncome += StarsSystem::marketIncomeForCity(g, pid, cid);
+            }
+        }
+        obs["next_turn_star_income"] = std::max(0, nextTurnStarIncome);
         const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(g.getCurrentPlayerId());
         obs["pending_city_upgrade"] = (pending != nullptr);
         if (pending) {
@@ -810,7 +823,7 @@ public:
             obs["lighthouse_discovered_by_players"] = std::move(knownPlayers);
         }
         obs["map_size"] = w;
-        obs["tokenized_map"] = tokenizedMap(playerId, visibleOnly, hiddenValue);
+        obs["tokenized_map"] = std::move(tokenized);
         obs["techs"] = getTechs(playerId);
         obs["seen_lighthouses"] = seenLighthouses(playerId);
         return obs;
