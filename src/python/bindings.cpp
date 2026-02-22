@@ -962,6 +962,7 @@ public:
                     (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement))
                         ? -1
                         : static_cast<int>(t.getSettlementId());
+                int cityOwnerToken = -1;
                 int cityUnitsOccupiedToken = -1;
 
                 if (!hasClimbing && resourceToken == static_cast<int>(ResourcesEnum::Metal)) {
@@ -981,6 +982,9 @@ public:
                         const City* city = g.getCity(cityId);
                         if (city) {
                             const PlayerId owner = city->getOwnerId();
+                            if (owner != kNoPlayer) {
+                                cityOwnerToken = static_cast<int>(owner);
+                            }
                             if (owner != kNoPlayer && static_cast<int>(owner) == perspective) {
                                 cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
                             }
@@ -1028,6 +1032,7 @@ public:
                     capitalLayer,
                     settlementTypeToken,
                     settlementIdToken,
+                    cityOwnerToken,
                     cityUnitsOccupiedToken,
                     resourceToken,
                     static_cast<int>(t.getBaseTerrain()),
