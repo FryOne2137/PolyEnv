@@ -14,6 +14,7 @@ class BuildingSystem {
 public:
     static bool canBuild(const Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type);
     static bool build(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type);
+    static int estimatePopulationGainForCity(const Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type);
     static uint8_t getBuildingLevel(const Game& game, PlayerId pid, Pos pos);
     static uint8_t getBuildingLevelForTypeAt(const Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type);
 

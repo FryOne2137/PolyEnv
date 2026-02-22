@@ -286,6 +286,45 @@ bool BuildingSystem::buildMonument(Game& game, PlayerId pid, Pos pos, BuildingTy
     return build(game, pid, pos, type);
 }
 
+int BuildingSystem::estimatePopulationGainForCity(const Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type) {
+    const Map& map = game.getMap();
+    if (!map.inBounds(pos)) return 0;
+    if (!BuildingDB::isDefined(type)) return 0;
+
+    const Tile& tile = map.at(pos);
+    const CityId cid = tile.getTerritoryCityId();
+    if (cid == kNoCity) return 0;
+    if (!sameOwnerCityTerritory(game, pid, cid)) return 0;
+
+    const auto& bi = BuildingDB::info(type);
+    int gain = static_cast<int>(bi.populationGain);
+
+    if (type == BuildingTypeEnum::Forge || type == BuildingTypeEnum::Sawmill || type == BuildingTypeEnum::Windmill) {
+        gain += polytopiaPopGainForBuilding(game, pid, pos, type);
+    }
+
+    if (type == BuildingTypeEnum::Mine || type == BuildingTypeEnum::Farm || type == BuildingTypeEnum::LumberHut) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0) continue;
+                const Pos ap{pos.x + dx, pos.y + dy};
+                if (!map.inBounds(ap)) continue;
+                const Tile& at = map.at(ap);
+                const CityId ac = at.getTerritoryCityId();
+                if (ac != cid) continue;
+                if (!sameOwnerCityTerritory(game, pid, ac)) continue;
+
+                const BuildingTypeEnum ab = at.getBuildingType();
+                if (type == BuildingTypeEnum::Mine && ab == BuildingTypeEnum::Forge) gain += 2;
+                if (type == BuildingTypeEnum::Farm && ab == BuildingTypeEnum::Windmill) gain += 1;
+                if (type == BuildingTypeEnum::LumberHut && ab == BuildingTypeEnum::Sawmill) gain += 1;
+            }
+        }
+    }
+
+    return std::max(0, gain);
+}
+
 
 uint8_t BuildingSystem::getBuildingLevel(const Game& game, PlayerId pid, Pos pos) {
     const Map& map = game.getMap();

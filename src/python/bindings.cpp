@@ -16,6 +16,7 @@
 #include "content/tribes/Tribe.h"
 #include "content/units/UnitFactory.h"
 #include "game/Game.h"
+#include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
 #include "systems/GameDataSystem.h"
 #include "systems/StarsSystem.h"
@@ -341,6 +342,7 @@ static constexpr int kSpawnTypeVocabSize = static_cast<int>(UnitType::GiantSuper
 static constexpr int kCityUpgradeVocabSize = static_cast<int>(CityUpgradeChoice::SuperUnit) + 1;
 static constexpr int kTileActionVocabSize = static_cast<int>(Action::TileActionKind::CaptureCity) + 1;
 static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgradeKind::BecomeVeteran) + 1;
+static constexpr int kPopulationGainVocabSize = 256;
 
 struct ActionModelFields {
     int typeId = -1;
@@ -354,6 +356,7 @@ struct ActionModelFields {
     int tileAction = 0;
     int unitUpgrade = 0;
     int unitId = -1;
+    int populationGain = 0;
     int costStars = 0;
     int starsBefore = 0;
     int affordable = 1;
@@ -396,6 +399,7 @@ static ActionModelFields buildActionModelFields(const Game& g, const Action& a) 
             hasTarget = true;
             f.tech = static_cast<int>(BuildingDB::getRequiredTech(a.building));
             f.building = static_cast<int>(a.building);
+            f.populationGain = BuildingSystem::estimatePopulationGainForCity(g, a.pid, a.pos, a.building);
             f.costStars = BuildingDB::getCost(a.building);
             if (m.inBounds(a.pos)) {
                 const Tile& t = m.at(a.pos);
@@ -534,8 +538,8 @@ static std::pair<int, int> predictAttackDamage(const Game& g, const Action& a) {
 }
 
 static std::vector<uint8_t> actionArgMaskForType(const Action& a) {
-    // [source, target, tech, building, spawn_type, city_upgrade, tile_action, unit_upgrade, unit_id, damage_dealt, damage_received]
-    std::vector<uint8_t> mask(11, 0);
+    // [source, target, tech, building, spawn_type, city_upgrade, tile_action, unit_upgrade, unit_id, damage_dealt, damage_received, population_gain]
+    std::vector<uint8_t> mask(12, 0);
     switch (a.type) {
         case Action::Type::Move:
             mask[0] = 1;
@@ -567,6 +571,7 @@ static std::vector<uint8_t> actionArgMaskForType(const Action& a) {
             mask[1] = 1;
             mask[2] = 1;
             mask[3] = 1;
+            mask[11] = 1;
             break;
         case Action::Type::SpawnUnit:
             mask[0] = 1;
@@ -719,6 +724,7 @@ public:
         out["delta_stars"] = starsAfter - starsBefore;
         out["action_cost_stars"] = actionFeatures.costStars;
         out["action_affordable"] = actionFeatures.affordable;
+        out["action_population_gain"] = actionFeatures.populationGain;
         out["observation"] = observation(std::nullopt, false, -1);
         return out;
     }
@@ -1126,6 +1132,7 @@ public:
         spec["city_upgrade_vocab_size"] = kCityUpgradeVocabSize;
         spec["tile_action_vocab_size"] = kTileActionVocabSize;
         spec["unit_upgrade_vocab_size"] = kUnitUpgradeVocabSize;
+        spec["population_gain_vocab_size"] = kPopulationGainVocabSize;
         spec["unit_id_vocab_size"] = static_cast<int>(g.getUnits().size());
         spec["tech_none_id"] = static_cast<int>(TechId::Count);
         spec["source_none_id"] = -1;
@@ -1136,7 +1143,7 @@ public:
         spec["map_height"] = m.getHeight();
         spec["arg_order"] = std::vector<std::string>{
             "source_index", "target_index", "tech", "building", "spawn_type", "upgrade", "tile_action", "unit_upgrade",
-            "unit_id", "damage_dealt", "damage_received"};
+            "unit_id", "damage_dealt", "damage_received", "population_gain"};
         return spec;
     }
 
@@ -1167,6 +1174,7 @@ public:
             d["unit_upgrade"] = f.unitUpgrade;
             d["unit_id"] = f.unitId;
             d["unit"] = f.unitId;
+            d["population_gain"] = f.populationGain;
             d["cost_stars"] = f.costStars;
             d["stars_before"] = currentStars;
             d["affordable"] = (f.costStars <= currentStars) ? 1 : 0;
@@ -1200,6 +1208,7 @@ public:
         std::vector<uint8_t> upgradeMask(kCityUpgradeVocabSize, 0);
         std::vector<uint8_t> tileActionMask(kTileActionVocabSize, 0);
         std::vector<uint8_t> unitUpgradeMask(kUnitUpgradeVocabSize, 0);
+        std::vector<uint8_t> populationGainMask(kPopulationGainVocabSize, 0);
         std::vector<uint8_t> unitIdMask(std::max(0, unitIdVocabSize), 0);
 
         std::vector<std::vector<uint8_t>> sourceMaskByType(kActionTypeCount, std::vector<uint8_t>(std::max(0, tileCount), 0));
@@ -1210,6 +1219,7 @@ public:
         std::vector<std::vector<uint8_t>> upgradeMaskByType(kActionTypeCount, std::vector<uint8_t>(kCityUpgradeVocabSize, 0));
         std::vector<std::vector<uint8_t>> tileActionMaskByType(kActionTypeCount, std::vector<uint8_t>(kTileActionVocabSize, 0));
         std::vector<std::vector<uint8_t>> unitUpgradeMaskByType(kActionTypeCount, std::vector<uint8_t>(kUnitUpgradeVocabSize, 0));
+        std::vector<std::vector<uint8_t>> populationGainMaskByType(kActionTypeCount, std::vector<uint8_t>(kPopulationGainVocabSize, 0));
         std::vector<std::vector<uint8_t>> unitIdMaskByType(kActionTypeCount, std::vector<uint8_t>(std::max(0, unitIdVocabSize), 0));
         std::unordered_map<long long, std::vector<uint8_t>> targetMaskByTypeSource;
 
@@ -1260,6 +1270,11 @@ public:
                 unitUpgradeMask[static_cast<size_t>(f.unitUpgrade)] = 1;
                 unitUpgradeMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.unitUpgrade)] = 1;
             }
+            {
+                const int pg = std::clamp(f.populationGain, 0, kPopulationGainVocabSize - 1);
+                populationGainMask[static_cast<size_t>(pg)] = 1;
+                populationGainMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(pg)] = 1;
+            }
             if (f.unitId >= 0 && f.unitId < unitIdVocabSize) {
                 unitIdMask[static_cast<size_t>(f.unitId)] = 1;
                 unitIdMaskByType[static_cast<size_t>(f.typeId)][static_cast<size_t>(f.unitId)] = 1;
@@ -1278,6 +1293,7 @@ public:
         py::dict upgradeByType;
         py::dict tileActionByType;
         py::dict unitUpgradeByType;
+        py::dict populationGainByType;
         py::dict unitIdByType;
         for (int t = 0; t < kActionTypeCount; ++t) {
             if (!typeMask[static_cast<size_t>(t)]) continue;
@@ -1289,6 +1305,7 @@ public:
             upgradeByType[py::int_(t)] = upgradeMaskByType[static_cast<size_t>(t)];
             tileActionByType[py::int_(t)] = tileActionMaskByType[static_cast<size_t>(t)];
             unitUpgradeByType[py::int_(t)] = unitUpgradeMaskByType[static_cast<size_t>(t)];
+            populationGainByType[py::int_(t)] = populationGainMaskByType[static_cast<size_t>(t)];
             unitIdByType[py::int_(t)] = unitIdMaskByType[static_cast<size_t>(t)];
         }
 
@@ -1309,6 +1326,7 @@ public:
         out["upgrade_mask"] = std::move(upgradeMask);
         out["tile_action_mask"] = std::move(tileActionMask);
         out["unit_upgrade_mask"] = std::move(unitUpgradeMask);
+        out["population_gain_mask"] = std::move(populationGainMask);
         out["unit_id_mask"] = std::move(unitIdMask);
         out["source_mask_by_type"] = std::move(sourceByType);
         out["target_mask_by_type"] = std::move(targetByType);
@@ -1319,6 +1337,7 @@ public:
         out["upgrade_mask_by_type"] = std::move(upgradeByType);
         out["tile_action_mask_by_type"] = std::move(tileActionByType);
         out["unit_upgrade_mask_by_type"] = std::move(unitUpgradeByType);
+        out["population_gain_mask_by_type"] = std::move(populationGainByType);
         out["unit_id_mask_by_type"] = std::move(unitIdByType);
         out["legal_count"] = static_cast<int>(legalIdsCache_.size());
         out["current_player"] = static_cast<int>(g.getCurrentPlayerId());
@@ -1371,6 +1390,7 @@ public:
             if (has("tile_action") && f.tileAction != getInt("tile_action")) continue;
             if (has("unit_upgrade") && f.unitUpgrade != getInt("unit_upgrade")) continue;
             if (has("unit_id") && f.unitId != getInt("unit_id")) continue;
+            if (has("population_gain") && f.populationGain != getInt("population_gain")) continue;
             if (has("city") && f.city != getInt("city")) continue;
             selected = static_cast<int>(aid);
             break;
@@ -1404,12 +1424,12 @@ public:
             return out;
         }
 
-        // [type_id, source_index, target_index, tech, building, spawn_type, upgrade, tile_action, unit_upgrade, unit_id, city]
+        // [type_id, source_index, target_index, tech, building, spawn_type, upgrade, tile_action, unit_upgrade, unit_id, population_gain, city]
         py::dict param;
         param["type_id"] = vec[0];
         const std::vector<std::string> keys = {
             "source_index", "target_index", "tech", "building", "spawn_type",
-            "upgrade", "tile_action", "unit_upgrade", "unit_id", "city"};
+            "upgrade", "tile_action", "unit_upgrade", "unit_id", "population_gain", "city"};
         for (size_t i = 1; i < vec.size() && i <= keys.size(); ++i) {
             if (vec[i] < 0) continue;
             param[py::str(keys[i - 1])] = vec[i];
@@ -1459,6 +1479,7 @@ public:
         out["upgrade"] = static_cast<int>(a->upgrade);
         out["tile_action"] = static_cast<int>(a->tileAction);
         out["unit_upgrade"] = static_cast<int>(a->unitUpgrade);
+        out["population_gain"] = f.populationGain;
         out["arg_mask"] = actionArgMaskForType(*a);
         return out;
     }
