@@ -980,8 +980,10 @@ public:
                     if (cityId != kNoCity) {
                         const City* city = g.getCity(cityId);
                         if (city) {
-                            cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
                             const PlayerId owner = city->getOwnerId();
+                            if (owner != kNoPlayer && static_cast<int>(owner) == perspective) {
+                                cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
+                            }
                             if (owner != kNoPlayer &&
                                 static_cast<size_t>(owner) < g.getPlayers().size() &&
                                 g.getPlayer(owner).getCapitalId() == city->getCityId()) {
