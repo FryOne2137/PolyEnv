@@ -172,6 +172,7 @@ std::optional<Action> ActionSpace::decode(const Game& game, size_t actionId) con
         a.type = Action::Type::TileAction;
         a.tileAction = tileActionFromIdx(kind);
         a.pos = indexToPos(pos);
+        a.unit = game.getMap().unitOn(a.pos);
         return a;
     }
 

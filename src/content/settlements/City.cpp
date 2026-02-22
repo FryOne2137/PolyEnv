@@ -1,5 +1,7 @@
 #include "City.h"
 
+#include <algorithm>
+
 // City is currently a data-only type with inline accessors in City.h.
 // Keep this translation unit for future non-inline logic (constructors, helpers, etc.).
 
@@ -50,15 +52,15 @@ uint8_t City::getUnitsCount() const {
 }
 
 uint8_t City::getStarsPerRound() const {
-    uint8_t perRound = starsPerRound;
+    int perRound = static_cast<int>(getLevel()) + static_cast<int>(starsPerRound);
     if (isCapitalCity()) {
-        perRound = static_cast<uint8_t>(perRound + 1);
+        perRound += 1;
     }
     if (hasWorkshopEnabled()) {
-        perRound = static_cast<uint8_t>(perRound + 1);
+        perRound += 1;
     }
-    perRound=perRound+parkCount;
-    return perRound;
+    perRound += static_cast<int>(parkCount);
+    return static_cast<uint8_t>(std::clamp(perRound, 0, 255));
 }
 
 bool City::addPopulation(uint16_t v) {

@@ -436,7 +436,7 @@ bool CitySystem::foundCityFromVillage(Game& game, PlayerId owner, Pos pos) {
     (void)CitySystem::setCityOwner(game, cid, static_cast<uint8_t>(owner));
     (void)CitySystem::setCityLevel(game, cid, 1);
     (void)CitySystem::setCityPopulation(game, cid, 0);
-    (void)CitySystem::setCityStarsPerRound(game, cid, 1);
+    (void)CitySystem::setCityStarsPerRound(game, cid, 0);
     (void)CitySystem::setCityCapital(game, cid, false);
 
     if (CitySystem::getCityName(game, cid).empty()) {

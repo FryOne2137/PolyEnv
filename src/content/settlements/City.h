@@ -61,7 +61,7 @@ private:
     uint8_t ownerId = 0;
     uint8_t level = 1;
     int16_t population = 0;
-    uint8_t starsPerRound = 1;
+    uint8_t starsPerRound = 0;
     uint8_t parkCount = 0;
 
     bool isCapital = false;

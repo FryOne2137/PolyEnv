@@ -153,7 +153,7 @@ void Game::newGame(const NewGameConfig& cfg) {
         (void)CitySystem::setCityOwner(*this, cid, static_cast<uint8_t>(i));
         (void)CitySystem::setCityLevel(*this, cid, 1);
         (void)CitySystem::setCityPopulation(*this, cid, 0);
-        (void)CitySystem::setCityStarsPerRound(*this, cid, 1);
+        (void)CitySystem::setCityStarsPerRound(*this, cid, 0);
         (void)CitySystem::setCityName(*this, cid, std::string("City ") + std::to_string(i));
 
         // IMPORTANT: store the city position (used by movement/connection systems).
@@ -166,8 +166,8 @@ void Game::newGame(const NewGameConfig& cfg) {
 
         // Special tribe rule: Luxidoor starts with a strong capital
         if (cfg.tribes[i] == TribeType::Luxidoor) {
-            (void)CitySystem::setCityLevel(*this, cid, 3);
-            (void)CitySystem::setCityStarsPerRound(*this, cid, 4);
+            (void)CitySystem::setCityLevel(*this, cid, 2);
+            (void)CitySystem::setCityStarsPerRound(*this, cid, 0);
             (void)CitySystem::setCityPopulation(*this, cid, 0);
         }
     }

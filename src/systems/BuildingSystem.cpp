@@ -4,6 +4,7 @@
 #include "CitiesConnectionSystem.h"
 #include "systems/CitySystem.h"
 #include "systems/PlayerSystem.h"
+#include "systems/UnitSystem.h"
 #include "world/Tile.h"
 #include "BuildingDB.h"
 #include "terrain/BuildingTypeEnum.h"
@@ -148,6 +149,11 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
     const auto& bi = BuildingDB::info(type);
 
     if (tile.getBuildingType() != BuildingTypeEnum::None) return false;
+    const UnitId occupant = map.unitOn(pos);
+    if (occupant != kNoUnit && UnitSystem::unitExists(game, occupant)) {
+        const PlayerId occupantOwner = UnitSystem::getOwnerId(game, occupant);
+        if (occupantOwner != kNoPlayer && occupantOwner != pid) return false;
+    }
 
     // --- Polytopia special placement rules ---
     // Forge / Sawmill / Windmill / Market are Field-only in Polytopia.
