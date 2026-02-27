@@ -803,12 +803,12 @@ public:
         std::unordered_set<int> ownCityIds;
         ownCityIds.reserve(16);
         for (const auto& tile : tokenized) {
-            if (tile.size() < 12) continue;
+            if (tile.size() < 13) continue;
             if (tile[3] == perspective) {
                 ++ownUnits;
             }
-            if (tile[10] != static_cast<int>(SettlementTypeEnum::City)) continue;
-            const int cityIdRaw = tile[11];
+            if (tile[11] != static_cast<int>(SettlementTypeEnum::City)) continue;
+            const int cityIdRaw = tile[12];
             if (cityIdRaw < 0) continue;
             const CityId cid = static_cast<CityId>(cityIdRaw);
             const City* city = g.getCity(cid);
@@ -955,6 +955,8 @@ public:
                 int unitId = static_cast<int>(Map::kNoUnit);
                 int isCloakAround = 0;
                 int capitalLayer = -1;
+                //city level
+                int cityLevel = -1;
                 int ownUnitKills = -1;
                 int resourceToken = static_cast<int>(t.getResource());
                 int settlementTypeToken = static_cast<int>(t.getSettlementType());
@@ -981,6 +983,7 @@ public:
                     if (cityId != kNoCity) {
                         const City* city = g.getCity(cityId);
                         if (city) {
+                            cityLevel = static_cast<int>(city->getLevel());
                             const PlayerId owner = city->getOwnerId();
                             if (owner != kNoPlayer) {
                                 cityOwnerToken = static_cast<int>(owner);
@@ -1030,6 +1033,7 @@ public:
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
                     capitalLayer,
+                    cityLevel,
                     settlementTypeToken,
                     settlementIdToken,
                     cityOwnerToken,
