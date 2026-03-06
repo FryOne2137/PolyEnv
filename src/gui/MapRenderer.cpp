@@ -125,10 +125,19 @@ static inline bool unitHasActivatedHide(const Unit& u) {
     return !(d.x == 0 && d.y == 0);
 }
 
-// Resolve city object using the tile's settlement id (works for enemy cities too).
+// Resolve city object for a city-type tile.
+// Uses territoryCityId first (guaranteed set by claimFreeTerritoryRadius for every city
+// center, including villages converted to cities), then falls back to the settlementId
+// cast (works reliably for capitals).
 static const City* resolveCityForTile(const Game* game, const Tile& tile) {
     if (!game) return nullptr;
     if (tile.getSettlementType() != SettlementTypeEnum::City) return nullptr;
+    // Primary: territoryCityId is set by claimFreeTerritoryRadius for every city center.
+    const CityId cid = tile.getTerritoryCityId();
+    if (cid != kNoCity) {
+        if (const City* c = game->getCity(cid)) return c;
+    }
+    // Fallback: cast settlementId (reliable for capitals).
     return CitySystem::getCityBySettlementId(*game, tile.getSettlementId());
 }
 
@@ -1019,6 +1028,29 @@ const char* MapRenderer::tribeDisplayName(TribeType t) {
         case TribeType::Polaris:  return "Polaris";
         case TribeType::Cymanti:  return "Cymanti";
         default: return "Unknown";
+    }
+}
+
+// Accent colour for each tribe — used in city / capital info panel headers.
+static sf::Color tribeColor(TribeType t) {
+    switch (t) {
+        case TribeType::XinXi:    return sf::Color( 93, 184,  96);
+        case TribeType::Imperius: return sf::Color( 92, 136, 218);
+        case TribeType::Bardur:   return sf::Color(148,  82,  48);
+        case TribeType::Oumaji:   return sf::Color(224, 172,  49);
+        case TribeType::Kickoo:   return sf::Color( 46, 176, 175);
+        case TribeType::Hoodrick: return sf::Color(130,  92,  46);
+        case TribeType::Luxidoor: return sf::Color(147,  64, 168);
+        case TribeType::Vengir:   return sf::Color( 60,  60,  60);
+        case TribeType::Zebasi:   return sf::Color(224,  96,  48);
+        case TribeType::AiMo:     return sf::Color(200, 200, 200);
+        case TribeType::Quetzali: return sf::Color( 67, 160,  71);
+        case TribeType::Yadakk:   return sf::Color(200, 144,  32);
+        case TribeType::Aquarion: return sf::Color( 32, 144, 200);
+        case TribeType::Elyrion:  return sf::Color(148,  72, 200);
+        case TribeType::Polaris:  return sf::Color(140, 200, 220);
+        case TribeType::Cymanti:  return sf::Color( 80, 160,  80);
+        default:                  return sf::Color(100, 100, 100);
     }
 }
 
@@ -2461,7 +2493,12 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     }
                     // Tile actions
                     pushBtn(ActionKind::Organization, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::Heal,         "Heal",         UnitType::Unknown, BuildingTypeEnum::None);
+                    {
+                        const UnitId healUid = m0.unitOn(p0);
+                        const Unit* healUnit = (healUid != Map::kNoUnit) ? game->getUnit(healUid) : nullptr;
+                        if (healUnit && healUnit->hasSkill(UnitSkill::Heal))
+                            pushBtn(ActionKind::Heal, "Heal", UnitType::Unknown, BuildingTypeEnum::None);
+                    }
                     pushBtn(ActionKind::Hunt,         "Hunt",         UnitType::Unknown, BuildingTypeEnum::None);
                     pushBtn(ActionKind::Fishing,      "Fishing",      UnitType::Unknown, BuildingTypeEnum::None);
                     pushBtn(ActionKind::ClearForest,  "Clear Forest", UnitType::Unknown, BuildingTypeEnum::None);
@@ -2782,21 +2819,50 @@ if (!showOverview) {
                         addLine(ty, rline, 14);
                     }
                     if (st.getSettlementType() == SettlementTypeEnum::City) {
-                        addLine(ty, "===== CITY =====", 18);
                         const City* cObj = resolveCityForTile(game, st);
                         if (cObj) {
-                            addLine(ty, "City name: " + cObj->getName(), 14);
-                            addLine(ty, "CityId: " + std::to_string(int(cObj->getCityId())), 14);
-                            addLine(ty, "OwnerId: " + std::to_string(int(cObj->getOwnerId())), 14);
-                            addLine(ty, std::string("Is capital: ") + (cObj->isCapitalCity() ? "yes" : "no"), 14);
+                            const PlayerId ownerId = static_cast<PlayerId>(cObj->getOwnerId());
+                            const TribeType ownerTribe =
+                                (ownerId < static_cast<PlayerId>(game->getPlayers().size()))
+                                ? game->getPlayer(ownerId).getTribeType()
+                                : TribeType::Unknown;
+                            const sf::Color tc = tribeColor(ownerTribe);
+
+                            // Coloured tribe header bar
+                            const float barH = 26.f;
+                            sf::RectangleShape bar;
+                            bar.setPosition(panelRect.left, ty);
+                            bar.setSize({panelRect.width, barH});
+                            bar.setFillColor(sf::Color(tc.r, tc.g, tc.b, 210));
+                            rt.draw(bar);
+                            if (hasFont) {
+                                const std::string hdr =
+                                    (cObj->isCapitalCity() ? "* CAPITAL" : "CITY")
+                                    + std::string("  ") + tribeDisplayName(ownerTribe);
+                                sf::Text ht;
+                                ht.setFont(uiFont);
+                                ht.setString(hdr);
+                                ht.setCharacterSize(15);
+                                ht.setFillColor(sf::Color(255, 255, 255, 255));
+                                ht.setPosition(panelRect.left + panelPad, ty + 4.f);
+                                rt.draw(ht);
+                            }
+                            ty += barH + 4.f;
+
+                            addLine(ty, "Name: " + cObj->getName(), 14);
                             addLine(ty, "Level: " + std::to_string(int(cObj->getLevel())), 14);
-                            addLine(ty, "Population: " + std::to_string(int(cObj->getPopulation())) + "/" + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
+                            addLine(ty, "Population: "
+                                + std::to_string(int(cObj->getPopulation())) + "/"
+                                + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
                             addLine(ty, "Stars/round: " + std::to_string(int(cObj->getStarsPerRound())), 14);
-                            addLine(ty, "Units in city: " + std::to_string(int(cObj->getUnitsCount())) + "/" + std::to_string(int(cObj->maxUnitCapacity())), 14);
-                            addLine(ty, std::string("Has workshop: ") + (cObj->hasWorkshopEnabled() ? "yes" : "no"), 14);
-                            addLine(ty, std::string("Has city wall: ") + (cObj->hasCityWallEnabled() ? "yes" : "no"), 14);
+                            addLine(ty, "Units: "
+                                + std::to_string(int(cObj->getUnitsCount())) + "/"
+                                + std::to_string(int(cObj->maxUnitCapacity())), 14);
+                            if (cObj->hasWorkshopEnabled()) addLine(ty, "Workshop: yes", 14);
+                            if (cObj->hasCityWallEnabled()) addLine(ty, "City wall: yes", 14);
                         } else {
-                            addLine(ty, "(City object not resolved)", 14);
+                            addLine(ty, "===== CITY =====", 18);
+                            addLine(ty, "(city not resolved)", 14);
                         }
                     }
 
@@ -3449,21 +3515,50 @@ if (!showOverview) {
                          }
 
                         if (st.getSettlementType() == SettlementTypeEnum::City) {
-                            addLine(ty, "===== CITY =====", 18);
                             const City* cObj = resolveCityForTile(game, st);
                             if (cObj) {
-                                addLine(ty, "City name: " + cObj->getName(), 14);
-                                addLine(ty, "CityId: " + std::to_string(int(cObj->getCityId())), 14);
-                                addLine(ty, "OwnerId: " + std::to_string(int(cObj->getOwnerId())), 14);
-                                addLine(ty, std::string("Is capital: ") + (cObj->isCapitalCity() ? "yes" : "no"), 14);
+                                const PlayerId ownerId = static_cast<PlayerId>(cObj->getOwnerId());
+                                const TribeType ownerTribe =
+                                    (ownerId < static_cast<PlayerId>(game->getPlayers().size()))
+                                    ? game->getPlayer(ownerId).getTribeType()
+                                    : TribeType::Unknown;
+                                const sf::Color tc = tribeColor(ownerTribe);
+
+                                // Coloured tribe header bar
+                                const float barH = 26.f;
+                                sf::RectangleShape bar;
+                                bar.setPosition(panelRect.left, ty);
+                                bar.setSize({panelRect.width, barH});
+                                bar.setFillColor(sf::Color(tc.r, tc.g, tc.b, 210));
+                                rt.draw(bar);
+                                if (hasFont) {
+                                    const std::string hdr =
+                                        (cObj->isCapitalCity() ? "* CAPITAL" : "CITY")
+                                        + std::string("  ") + tribeDisplayName(ownerTribe);
+                                    sf::Text ht;
+                                    ht.setFont(uiFont);
+                                    ht.setString(hdr);
+                                    ht.setCharacterSize(15);
+                                    ht.setFillColor(sf::Color(255, 255, 255, 255));
+                                    ht.setPosition(panelRect.left + panelPad, ty + 4.f);
+                                    rt.draw(ht);
+                                }
+                                ty += barH + 4.f;
+
+                                addLine(ty, "Name: " + cObj->getName(), 14);
                                 addLine(ty, "Level: " + std::to_string(int(cObj->getLevel())), 14);
-                                addLine(ty, "Population: " + std::to_string(int(cObj->getPopulation())) + "/" + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
+                                addLine(ty, "Population: "
+                                    + std::to_string(int(cObj->getPopulation())) + "/"
+                                    + std::to_string(int(cObj->populationNeededToLevelUp())), 14);
                                 addLine(ty, "Stars/round: " + std::to_string(int(cObj->getStarsPerRound())), 14);
-                                addLine(ty, "Units in city: " + std::to_string(int(cObj->getUnitsCount())) + "/" + std::to_string(int(cObj->maxUnitCapacity())), 14);
-                                addLine(ty, std::string("Has workshop: ") + (cObj->hasWorkshopEnabled() ? "yes" : "no"), 14);
-                                addLine(ty, std::string("Has city wall: ") + (cObj->hasCityWallEnabled() ? "yes" : "no"), 14);
+                                addLine(ty, "Units: "
+                                    + std::to_string(int(cObj->getUnitsCount())) + "/"
+                                    + std::to_string(int(cObj->maxUnitCapacity())), 14);
+                                if (cObj->hasWorkshopEnabled()) addLine(ty, "Workshop: yes", 14);
+                                if (cObj->hasCityWallEnabled()) addLine(ty, "City wall: yes", 14);
                             } else {
-                                addLine(ty, "(City object not resolved)", 14);
+                                addLine(ty, "===== CITY =====", 18);
+                                addLine(ty, "(city not resolved)", 14);
                             }
                         }
 

@@ -86,6 +86,11 @@ public:
     static City* getCityBySettlementId(Game& game, SettlementId sid);
     static const City* getCityBySettlementId(const Game& game, SettlementId sid);
 
+    // Resolves the CityId for a city-center tile robustly:
+    // tries territoryCityId first, then falls back to settlementId cast.
+    // Returns kNoCity if the city cannot be found.
+    static CityId resolveCityIdForTile(const Game& game, const Tile& tile);
+
 private:
 };
 

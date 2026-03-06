@@ -20,6 +20,18 @@
 #include <algorithm>
 #include <array>
 
+// Resolve the CityId for a city-center tile.
+// Uses territoryCityId first (always set by claimFreeTerritoryRadius for every city center),
+// then falls back to casting settlementId (reliable for capitals).
+// Returns kNoCity if the city cannot be found.
+CityId CitySystem::resolveCityIdForTile(const Game& game, const Tile& tile) {
+    const CityId byCid = tile.getTerritoryCityId();
+    if (byCid != kNoCity && CitySystem::cityExists(game, byCid)) return byCid;
+    const CityId bySid = static_cast<CityId>(tile.getSettlementId());
+    if (CitySystem::cityExists(game, bySid)) return bySid;
+    return kNoCity;
+}
+
 
 bool CitySystem::cityExists(const Game& game, CityId cityId) {
     if (cityId == kNoCity) return false;
@@ -477,8 +489,8 @@ bool CitySystem::canCaptureCityAt(const Game& game, PlayerId newOwner, Pos pos) 
     const Tile& tile = map.at(pos);
     if (tile.getSettlementType() != SettlementTypeEnum::City) return false;
 
-    const CityId cid = static_cast<CityId>(tile.getSettlementId());
-    if (!CitySystem::cityExists(game, cid)) return false;
+    const CityId cid = resolveCityIdForTile(game, tile);
+    if (cid == kNoCity) return false;
 
     const PlayerId oldOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
     if (oldOwner == newOwner) return false;
@@ -491,7 +503,7 @@ bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
     Map& map = game.getMap();
 
     Tile& tile = map.at(pos);
-    const CityId cid = static_cast<CityId>(tile.getSettlementId());
+    const CityId cid = resolveCityIdForTile(game, tile);
     const PlayerId oldOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
 
     (void)CitySystem::setCityOwner(game, cid, static_cast<uint8_t>(newOwner));

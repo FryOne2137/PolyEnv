@@ -73,9 +73,12 @@ static double computeDefenceBonus(const Game& game, UnitId defenderId) {
             cityBonus = 1.5;
 
             // City wall adds +2.5 => total 4.0
-            if (const City* c = CitySystem::getCityBySettlementId(game, t.getSettlementId())) {
-                if (c->hasCityWallEnabled()) {
-                    cityBonus += 2.5; // 1.5 + 2.5 = 4.0
+            {
+                const CityId wallCid = CitySystem::resolveCityIdForTile(game, t);
+                if (const City* c = (wallCid != kNoCity) ? game.getCity(wallCid) : nullptr) {
+                    if (c->hasCityWallEnabled()) {
+                        cityBonus += 2.5; // 1.5 + 2.5 = 4.0
+                    }
                 }
             }
         }
@@ -142,8 +145,9 @@ static void killUnit(Game& game, UnitId uid) {
     if (game.getMap().inBounds(p)) {
         const Tile& t = game.getMap().at(p);
         if (t.getSettlementType() == SettlementTypeEnum::City) {
-            if (City* c = CitySystem::getCityBySettlementId(game, t.getSettlementId())) {
-                CitySystem::removeUnitFromCity(game, uid, c->getCityId());
+            const CityId killCid = CitySystem::resolveCityIdForTile(game, t);
+            if (killCid != kNoCity) {
+                CitySystem::removeUnitFromCity(game, uid, killCid);
             }
         }
     }
@@ -178,7 +182,7 @@ std::vector<Pos> CombatSystem::attackable(const Game& game, UnitId attackerId) {
                 if (!game.getMap().inBounds(p)) continue;
                 const Tile& t = game.getMap().at(p);
                 if (t.getSettlementType() != SettlementTypeEnum::City) continue;
-                const CityId cityId = static_cast<CityId>(t.getSettlementId());
+                const CityId cityId = CitySystem::resolveCityIdForTile(game, t);
                 if (!CitySystem::cityExists(game, cityId)) continue;
                 const PlayerId cityOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));
                 if (cityOwner == kNoPlayer || cityOwner == attackerOwner) continue;
@@ -230,7 +234,7 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
         const Tile& tt = game.getMap().at(targetPos);
         if (tt.getSettlementType() != SettlementTypeEnum::City) return false;
 
-        const CityId cityId = static_cast<CityId>(tt.getSettlementId());
+        const CityId cityId = CitySystem::resolveCityIdForTile(game, tt);
         if (!CitySystem::cityExists(game, cityId)) return false;
 
         const PlayerId cityOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId));

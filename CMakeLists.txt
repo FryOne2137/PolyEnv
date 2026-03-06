@@ -29,6 +29,23 @@ if(GAME_ENGINE_BUILD_GUI)
         GIT_TAG        2.6.x
     )
     FetchContent_MakeAvailable(sfml)
+
+    # ---- ZeroMQ (libzmq system dependency, C API used directly via zmq.h) ----
+    # Install:  brew install zeromq   /   apt install libzmq3-dev
+    find_library(LIBZMQ_LIB NAMES zmq libzmq
+        HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
+    find_path(LIBZMQ_INCLUDE NAMES zmq.h
+        HINTS /opt/homebrew/include /usr/local/include /usr/include)
+
+    if(LIBZMQ_LIB AND LIBZMQ_INCLUDE)
+        message(STATUS "Found libzmq: ${LIBZMQ_LIB}  (include: ${LIBZMQ_INCLUDE})")
+        set(GAME_ENGINE_HAS_ZMQ TRUE)
+    else()
+        message(WARNING
+            "libzmq not found — bot client will be disabled.\n"
+            "Install with:  brew install zeromq   or   apt install libzmq3-dev")
+        set(GAME_ENGINE_HAS_ZMQ FALSE)
+    endif()
 endif()
 
 # ---- nlohmann/json (header-only) ----
@@ -43,6 +60,8 @@ if(NOT nlohmann_json_FOUND)
 endif()
 
 set(ENGINE_SOURCES
+        src/ai/GameStateSerializer.cpp
+        src/ai/GameStateSerializer.h
         src/content/units/Unit.cpp
         src/content/units/Unit.h
         src/world/Map.cpp
@@ -183,6 +202,8 @@ if(GAME_ENGINE_BUILD_GUI)
             src/gui/TribeSelectScreen.h
             src/gui/MapRenderer.cpp
             src/gui/MapRenderer.h
+            src/ai/ModelClient.cpp
+            src/ai/ModelClient.h
     )
 
     target_link_libraries(game_engine_gui
@@ -192,6 +213,15 @@ if(GAME_ENGINE_BUILD_GUI)
             sfml-window
             sfml-system
     )
+
+    if(GAME_ENGINE_HAS_ZMQ)
+        target_include_directories(game_engine_gui PRIVATE ${LIBZMQ_INCLUDE})
+        target_link_libraries(game_engine_gui PRIVATE ${LIBZMQ_LIB})
+        target_compile_definitions(game_engine_gui PRIVATE GAME_ENGINE_HAS_ZMQ=1)
+    else()
+        target_compile_definitions(game_engine_gui PRIVATE GAME_ENGINE_HAS_ZMQ=0)
+    endif()
+
     target_compile_features(game_engine_gui PRIVATE cxx_std_20)
 endif()
 

@@ -8,18 +8,44 @@
 #include <cmath>
 #include "TextureStore.h"
 
-static bool mapSizeActive = false;
+// ── file-static input-box state ──────────────────────────────────────────────
+static bool mapSizeActive  = false;
 static std::string mapSizeBuffer = "16";
 
-static bool seedActive = false;
-static std::string seedBuffer = "0";
+static bool seedActive     = false;
+static std::string seedBuffer    = "0";
 
 static int clampInt(int v, int lo, int hi) {
     return std::max(lo, std::min(hi, v));
 }
 
+// ── Layout constants ──────────────────────────────────────────────────────────
+// Left tribe list
+static constexpr float kListX   = 40.f;
+static constexpr float kListY   = 100.f;
+static constexpr float kRowH    = 28.f;
+
+// Selected panel
+static constexpr float kSelX    = 420.f;
+static constexpr float kSelY    = 130.f;
+static constexpr float kSelNameW = 280.f;  // name portion of each row
+static constexpr float kBtnW    = 44.f;    // width of [P] / [B] button
+static constexpr float kBtnGap  = 4.f;
+
+// Port input box — same row as "Count:", to the right of it
+static constexpr float kPortLabelX = 960.f;
+static constexpr float kPortLabelY = 610.f;
+static constexpr float kPortBoxX   = 1010.f;
+static constexpr float kPortBoxY   = 603.f;
+static constexpr float kPortBoxW   = 120.f;
+static constexpr float kPortBoxH   = 28.f;
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+static bool inside(const sf::FloatRect& r, sf::Vector2f p) { return r.contains(p); }
+
+// ── TribeSelectScreen implementation ──────────────────────────────────────────
+
 const char* TribeSelectScreen::tribeFolder(TribeType t) {
-    // Folder names in assets/Polytopia_game_engine_textures/tribes/
     switch (t) {
         case TribeType::XinXi:    return "XinXi";
         case TribeType::Imperius: return "Imperius";
@@ -53,15 +79,14 @@ TribeSelectScreen::TribeSelectScreen() {
     popBtn   = { sf::FloatRect(300, 600, 240, 50), "Remove last" };
     clearBtn = { sf::FloatRect(560, 600, 240, 50), "Clear" };
 
-    // domyślnie 2 graczy (możesz usunąć)
-    selected = { TribeType::XinXi, TribeType::Kickoo, TribeType::Luxidoor, TribeType::Oumaji, };
+    // default 4 players (all human)
+    selected     = { TribeType::XinXi, TribeType::Kickoo, TribeType::Luxidoor, TribeType::Oumaji };
+    selectedBots = { false, false, false, false };
 
     textureStore = &TextureStore::instance();
 
-    mapSize = 16; // default map size
-    mapSeed = 0; // default seed
-
-    // Map gen sliders (0..100) like in the original repo
+    mapSize = 16;
+    mapSeed = 0;
     initialLand  = 50;
     smoothing    = 50;
     relief       = 50;
@@ -71,12 +96,17 @@ TribeSelectScreen::TribeSelectScreen() {
 void TribeSelectScreen::setFont(sf::Font* f) { font = f; }
 
 const std::vector<TribeType>& TribeSelectScreen::getSelectedTribes() const { return selected; }
-
-int TribeSelectScreen::getMapSize() const { return mapSize; }
-int TribeSelectScreen::getMapSeed() const { return mapSeed; }
+const std::vector<bool>&      TribeSelectScreen::getSelectedBots()   const { return selectedBots; }
+int TribeSelectScreen::getMapSize()    const { return mapSize; }
+int TribeSelectScreen::getMapSeed()    const { return mapSeed; }
 int TribeSelectScreen::getInitialLand() const { return initialLand; }
-int TribeSelectScreen::getSmoothing() const { return smoothing; }
-int TribeSelectScreen::getRelief() const { return relief; }
+int TribeSelectScreen::getSmoothing()  const { return smoothing; }
+int TribeSelectScreen::getRelief()     const { return relief; }
+
+int TribeSelectScreen::getServerPort() const {
+    if (portBuffer.empty()) return 5555;
+    try { return std::stoi(portBuffer); } catch (...) { return 5555; }
+}
 
 bool TribeSelectScreen::consumeStartClicked() {
     const bool v = startClicked;
@@ -84,181 +114,172 @@ bool TribeSelectScreen::consumeStartClicked() {
     return v;
 }
 
-static bool inside(const sf::FloatRect& r, sf::Vector2f p) { return r.contains(p); }
+// ── Event handling ────────────────────────────────────────────────────────────
 
 void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow& window) {
-    // Slider geometry (shared for press/drag)
+    // Slider geometry
     const float sliderX = 840.f;
     const float sliderW = 360.f;
     const float sliderH = 18.f;
-
     const sf::FloatRect initialLandTrack(sliderX, 140.f, sliderW, sliderH);
     const sf::FloatRect smoothingTrack  (sliderX, 210.f, sliderW, sliderH);
     const sf::FloatRect reliefTrack     (sliderX, 280.f, sliderW, sliderH);
 
     auto sliderValueFromMouse = [&](const sf::FloatRect& track, sf::Vector2f mp) -> int {
         const float t = (mp.x - track.left) / track.width;
-        const int v = (int)std::round(t * 100.f);
-        return clampInt(v, 0, 100);
+        return clampInt(static_cast<int>(std::round(t * 100.f)), 0, 100);
     };
 
+    // ── MouseMoved ────────────────────────────────────────────────────────────
     if (ev.type == sf::Event::MouseMoved) {
-        const sf::Vector2f mp =
-            window.mapPixelToCoords({ev.mouseMove.x, ev.mouseMove.y});
+        const sf::Vector2f mp = window.mapPixelToCoords({ev.mouseMove.x, ev.mouseMove.y});
         hoverIndex = -1;
 
         // Drag active slider
         if (sf::Mouse::isButtonPressed(sf::Mouse::Left) && activeSlider != ActiveSlider::None) {
-            if (activeSlider == ActiveSlider::InitialLand) {
+            if (activeSlider == ActiveSlider::InitialLand)
                 initialLand = sliderValueFromMouse(initialLandTrack, mp);
-            } else if (activeSlider == ActiveSlider::Smoothing) {
+            else if (activeSlider == ActiveSlider::Smoothing)
                 smoothing = sliderValueFromMouse(smoothingTrack, mp);
-            } else if (activeSlider == ActiveSlider::Relief) {
+            else if (activeSlider == ActiveSlider::Relief)
                 relief = sliderValueFromMouse(reliefTrack, mp);
-            }
         }
 
-        // list of tribes area
-        const float leftX = 40.f;
-        const float topY  = 100.f;
-        const float rowH  = 28.f;
+        // Tribe list hover
         for (int i = 0; i < (int)allTribes.size(); ++i) {
-            sf::FloatRect rr(leftX, topY + i * rowH, 300.f, rowH);
+            sf::FloatRect rr(kListX, kListY + i * kRowH, 300.f, kRowH);
             if (inside(rr, mp)) hoverIndex = i;
         }
     }
 
+    // ── MouseButtonPressed ────────────────────────────────────────────────────
     if (ev.type == sf::Event::MouseButtonPressed &&
         ev.mouseButton.button == sf::Mouse::Left) {
 
         const sf::Vector2f mp =
-            window.mapPixelToCoords(
-                {ev.mouseButton.x, ev.mouseButton.y}
-            );
+            window.mapPixelToCoords({ev.mouseButton.x, ev.mouseButton.y});
 
-        if (inside(startBtn.rect, mp)) {
-            startClicked = true;
-            return;
-        }
-
+        // Action buttons
+        if (inside(startBtn.rect, mp)) { startClicked = true; return; }
         if (inside(popBtn.rect, mp)) {
-            if (!selected.empty())
-                selected.pop_back();
+            if (!selected.empty()) { selected.pop_back(); selectedBots.pop_back(); }
             return;
         }
+        if (inside(clearBtn.rect, mp)) { selected.clear(); selectedBots.clear(); return; }
 
-        if (inside(clearBtn.rect, mp)) {
-            selected.clear();
-            return;
-        }
-
-        // Slider focus (click on track to set value, and enable dragging)
+        // Sliders
         if (inside(initialLandTrack, mp)) {
             activeSlider = ActiveSlider::InitialLand;
-            initialLand = sliderValueFromMouse(initialLandTrack, mp);
+            initialLand  = sliderValueFromMouse(initialLandTrack, mp);
             return;
         }
         if (inside(smoothingTrack, mp)) {
             activeSlider = ActiveSlider::Smoothing;
-            smoothing = sliderValueFromMouse(smoothingTrack, mp);
+            smoothing    = sliderValueFromMouse(smoothingTrack, mp);
             return;
         }
         if (inside(reliefTrack, mp)) {
             activeSlider = ActiveSlider::Relief;
-            relief = sliderValueFromMouse(reliefTrack, mp);
+            relief       = sliderValueFromMouse(reliefTrack, mp);
             return;
         }
         activeSlider = ActiveSlider::None;
 
-        // Map size + seed input box focus
+        // Map size / seed input boxes
         sf::FloatRect mapSizeBox(900.f, 550.f, 140.f, 40.f);
         sf::FloatRect seedBox   (1100.f, 550.f, 140.f, 40.f);
+        sf::FloatRect portBox   (kPortBoxX, kPortBoxY, kPortBoxW, kPortBoxH);
 
-        if (inside(mapSizeBox, mp)) {
-            mapSizeActive = true;
-            seedActive = false;
-            return;
-        }
-        if (inside(seedBox, mp)) {
-            seedActive = true;
-            mapSizeActive = false;
-            return;
-        }
+        if (inside(mapSizeBox, mp)) { mapSizeActive = true; seedActive = false; portActive = false; return; }
+        if (inside(seedBox, mp))    { seedActive = true;    mapSizeActive = false; portActive = false; return; }
+        if (inside(portBox, mp))    { portActive = true;    mapSizeActive = false; seedActive = false; return; }
 
         mapSizeActive = false;
-        seedActive = false;
+        seedActive    = false;
+        portActive    = false;
 
-        // Determine clicked tribe index directly from mouse position
-        const float leftX = 40.f;
-        const float topY  = 100.f;
-        const float rowH  = 28.f;
+        // ── P / B toggle buttons in the selected panel ────────────────────
+        for (int i = 0; i < (int)selected.size(); ++i) {
+            const float rowY = kSelY + i * kRowH;
 
-        if (mp.x >= leftX && mp.x <= leftX + 320.f &&
-            mp.y >= topY) {
+            // [P] button
+            sf::FloatRect pBtn(kSelX + kSelNameW + kBtnGap,
+                               rowY + 1.f, kBtnW, kRowH - 4.f);
+            if (inside(pBtn, mp)) {
+                selectedBots[i] = false;
+                return;
+            }
 
-            int index = int((mp.y - topY) / rowH);
-            if (index >= 0 && index < (int)allTribes.size()) {
-                if (selected.size() < 16) {
-                    selected.push_back(allTribes[index]);
-                }
+            // [B] button
+            sf::FloatRect bBtn(kSelX + kSelNameW + kBtnGap + kBtnW + kBtnGap,
+                               rowY + 1.f, kBtnW, kRowH - 4.f);
+            if (inside(bBtn, mp)) {
+                selectedBots[i] = true;
+                return;
+            }
+        }
+
+        // ── Add tribe to selected list ────────────────────────────────────
+        if (mp.x >= kListX && mp.x <= kListX + 320.f && mp.y >= kListY) {
+            int index = static_cast<int>((mp.y - kListY) / kRowH);
+            if (index >= 0 && index < (int)allTribes.size() && selected.size() < 16) {
+                selected.push_back(allTribes[index]);
+                selectedBots.push_back(false); // default: human
                 return;
             }
         }
     }
 
-    if (ev.type == sf::Event::MouseButtonReleased && ev.mouseButton.button == sf::Mouse::Left) {
+    // ── MouseButtonReleased ───────────────────────────────────────────────────
+    if (ev.type == sf::Event::MouseButtonReleased &&
+        ev.mouseButton.button == sf::Mouse::Left) {
         activeSlider = ActiveSlider::None;
     }
 
-    if (ev.type == sf::Event::TextEntered && (mapSizeActive || seedActive)) {
-        auto& buf = mapSizeActive ? mapSizeBuffer : seedBuffer;
+    // ── TextEntered ───────────────────────────────────────────────────────────
+    if (ev.type == sf::Event::TextEntered) {
+        const bool anyActive = mapSizeActive || seedActive || portActive;
+        if (!anyActive) return;
 
-        // allow digits; for seed also allow leading '-'
+        std::string& buf = mapSizeActive ? mapSizeBuffer
+                         : seedActive    ? seedBuffer
+                                         : portBuffer;
+
         if (ev.text.unicode >= '0' && ev.text.unicode <= '9') {
-            if (buf.size() < 12) // enough for int32 including sign
+            if (buf.size() < 12)
                 buf.push_back(static_cast<char>(ev.text.unicode));
-        } else if (ev.text.unicode == '-' && seedActive) {
-            if (buf.empty())
-                buf.push_back('-');
+        } else if (ev.text.unicode == '-' && seedActive && buf.empty()) {
+            buf.push_back('-');
         } else if (ev.text.unicode == 8 && !buf.empty()) { // backspace
             buf.pop_back();
         }
 
-        // Apply value
-        if (mapSizeActive) {
-            if (!mapSizeBuffer.empty()) {
-                try {
-                    int v = std::stoi(mapSizeBuffer);
-                    if (v >= 11)
-                        mapSize = v;
-                } catch (...) {
-                    // ignore invalid partial input
-                }
-            }
-        } else {
-            if (!seedBuffer.empty() && seedBuffer != "-") {
-                try {
-                    mapSeed = std::stoi(seedBuffer);
-                } catch (...) {
-                    // ignore invalid partial input
-                }
-            }
+        // Apply values
+        if (mapSizeActive && !mapSizeBuffer.empty()) {
+            try {
+                int v = std::stoi(mapSizeBuffer);
+                if (v >= 11) mapSize = v;
+            } catch (...) {}
+        } else if (seedActive && !seedBuffer.empty() && seedBuffer != "-") {
+            try { mapSeed = std::stoi(seedBuffer); } catch (...) {}
         }
+        // portBuffer is read lazily via getServerPort()
     }
 }
 
+// ── Drawing ───────────────────────────────────────────────────────────────────
+
 void TribeSelectScreen::draw(sf::RenderTarget& rt) {
-    // Background panels
+    // Background panel
     sf::RectangleShape panel;
     panel.setFillColor(sf::Color(30, 30, 30));
     panel.setOutlineThickness(1);
     panel.setOutlineColor(sf::Color(60, 60, 60));
-
     panel.setPosition(20, 20);
     panel.setSize({1240, 680});
     rt.draw(panel);
 
-    // Titles
+    // Title
     if (font) {
         sf::Text title("Select tribes (duplicates allowed). Click tribe to add.", *font, 22);
         title.setPosition(40, 35);
@@ -270,61 +291,106 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         rt.draw(hint);
     }
 
-    // Tribe list left
-    const float leftX = 40.f;
-    const float topY  = 100.f;
-    const float rowH  = 28.f;
-
+    // ── Left: tribe list ──────────────────────────────────────────────────────
     for (int i = 0; i < (int)allTribes.size(); ++i) {
         sf::RectangleShape row;
-        row.setPosition(leftX, topY + i * rowH);
-        row.setSize({320.f, rowH - 2.f});
+        row.setPosition(kListX, kListY + i * kRowH);
+        row.setSize({320.f, kRowH - 2.f});
         row.setFillColor(i == hoverIndex ? sf::Color(60, 60, 80) : sf::Color(45, 45, 45));
         rt.draw(row);
 
         if (textureStore) {
             const char* folder = tribeFolder(allTribes[i]);
-            std::string path =
-                std::string("assets/textures/Polytopia_game_engine_textures/tribes/") + folder + "/head.png";
+            std::string path = std::string("assets/textures/Polytopia_game_engine_textures/tribes/")
+                               + folder + "/head.png";
             const sf::Texture& tex = textureStore->get(path);
             sf::Sprite spr(tex);
-
-            float scale = (rowH - 6.f) / tex.getSize().y;
+            float scale = (kRowH - 6.f) / tex.getSize().y;
             spr.setScale(scale, scale);
-            spr.setPosition(leftX + 4.f, topY + i * rowH + 3.f);
+            spr.setPosition(kListX + 4.f, kListY + i * kRowH + 3.f);
             rt.draw(spr);
         }
 
         if (font) {
             sf::Text t(tribeName(allTribes[i]), *font, 16);
-            t.setPosition(leftX + rowH + 8.f, topY + i * rowH + 4.f);
+            t.setPosition(kListX + kRowH + 8.f, kListY + i * kRowH + 4.f);
             rt.draw(t);
         }
     }
 
-    // Selected list right
-    const float rightX = 420.f;
+    // ── Middle: selected list ─────────────────────────────────────────────────
     if (font) {
         sf::Text selTitle("Selected (pick order):", *font, 18);
-        selTitle.setPosition(rightX, 100.f);
+        selTitle.setPosition(kSelX, 100.f);
         rt.draw(selTitle);
+
+        // Column headers for P/B buttons
+        sf::Text ph("P", *font, 13);
+        ph.setFillColor(sf::Color(140, 200, 140));
+        ph.setPosition(kSelX + kSelNameW + kBtnGap + kBtnW * 0.35f, 113.f);
+        rt.draw(ph);
+
+        sf::Text bh("B", *font, 13);
+        bh.setFillColor(sf::Color(200, 140, 140));
+        bh.setPosition(kSelX + kSelNameW + kBtnGap + kBtnW + kBtnGap + kBtnW * 0.35f, 113.f);
+        rt.draw(bh);
     }
 
     for (int i = 0; i < (int)selected.size(); ++i) {
+        const float rowY = kSelY + i * kRowH;
+        const bool isBot = selectedBots[i];
+
+        // Name background
         sf::RectangleShape row;
-        row.setPosition(rightX, 130.f + i * rowH);
-        row.setSize({400.f, rowH - 2.f});
+        row.setPosition(kSelX, rowY);
+        row.setSize({kSelNameW, kRowH - 2.f});
         row.setFillColor(sf::Color(40, 40, 40));
         rt.draw(row);
 
         if (font) {
             sf::Text t(std::to_string(i) + ": " + tribeName(selected[i]), *font, 16);
-            t.setPosition(rightX + 8.f, 130.f + i * rowH + 4.f);
+            t.setPosition(kSelX + 8.f, rowY + 4.f);
             rt.draw(t);
+        }
+
+        // [P] button
+        {
+            const float bx = kSelX + kSelNameW + kBtnGap;
+            sf::RectangleShape btn;
+            btn.setPosition(bx, rowY + 1.f);
+            btn.setSize({kBtnW, kRowH - 4.f});
+            btn.setFillColor(!isBot ? sf::Color(50, 130, 50) : sf::Color(55, 55, 55));
+            btn.setOutlineThickness(1);
+            btn.setOutlineColor(sf::Color(100, 100, 100));
+            rt.draw(btn);
+            if (font) {
+                sf::Text t("P", *font, 14);
+                t.setFillColor(sf::Color(220, 255, 220));
+                t.setPosition(bx + kBtnW * 0.3f, rowY + 4.f);
+                rt.draw(t);
+            }
+        }
+
+        // [B] button
+        {
+            const float bx = kSelX + kSelNameW + kBtnGap + kBtnW + kBtnGap;
+            sf::RectangleShape btn;
+            btn.setPosition(bx, rowY + 1.f);
+            btn.setSize({kBtnW, kRowH - 4.f});
+            btn.setFillColor(isBot ? sf::Color(130, 50, 50) : sf::Color(55, 55, 55));
+            btn.setOutlineThickness(1);
+            btn.setOutlineColor(sf::Color(100, 100, 100));
+            rt.draw(btn);
+            if (font) {
+                sf::Text t("B", *font, 14);
+                t.setFillColor(sf::Color(255, 220, 220));
+                t.setPosition(bx + kBtnW * 0.3f, rowY + 4.f);
+                rt.draw(t);
+            }
         }
     }
 
-    // Buttons
+    // ── Buttons ───────────────────────────────────────────────────────────────
     auto drawButton = [&](const Button& b) {
         sf::RectangleShape r;
         r.setPosition(b.rect.left, b.rect.top);
@@ -333,19 +399,17 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         r.setOutlineThickness(2);
         r.setOutlineColor(sf::Color(120, 120, 120));
         rt.draw(r);
-
         if (font) {
             sf::Text t(b.text, *font, 18);
             t.setPosition(b.rect.left + 14, b.rect.top + 12);
             rt.draw(t);
         }
     };
-
     drawButton(startBtn);
     drawButton(popBtn);
     drawButton(clearBtn);
 
-    // Map size + seed inputs
+    // ── Map size + seed input boxes ───────────────────────────────────────────
     sf::FloatRect mapSizeBox(900.f, 550.f, 140.f, 40.f);
     sf::FloatRect seedBox   (1100.f, 550.f, 140.f, 40.f);
 
@@ -358,7 +422,6 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         b.setOutlineColor(sf::Color(120, 120, 120));
         rt.draw(b);
     };
-
     drawInputBox(mapSizeBox, mapSizeActive);
     drawInputBox(seedBox, seedActive);
 
@@ -380,7 +443,7 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         rt.draw(seedValue);
     }
 
-    // Sliders
+    // ── Sliders ───────────────────────────────────────────────────────────────
     auto drawSlider = [&](const std::string& label, const sf::FloatRect& track, int value) {
         if (font) {
             sf::Text l(label + ": " + std::to_string(value), *font, 18);
@@ -421,6 +484,29 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         sf::Text cnt("Count: " + std::to_string(selected.size()), *font, 18);
         cnt.setPosition(840.f, 610.f);
         rt.draw(cnt);
+
+        // Port label
+        sf::Text portLbl("Port:", *font, 18);
+        portLbl.setPosition(kPortLabelX, kPortLabelY);
+        portLbl.setFillColor(sf::Color(200, 200, 200));
+        rt.draw(portLbl);
+    }
+
+    // Port input box
+    {
+        sf::RectangleShape box;
+        box.setPosition(kPortBoxX, kPortBoxY);
+        box.setSize({kPortBoxW, kPortBoxH});
+        box.setFillColor(portActive ? sf::Color(60, 60, 60) : sf::Color(40, 40, 40));
+        box.setOutlineThickness(2);
+        box.setOutlineColor(portActive ? sf::Color(180, 180, 100) : sf::Color(120, 120, 120));
+        rt.draw(box);
+
+        if (font) {
+            sf::Text val(portBuffer, *font, 16);
+            val.setPosition(kPortBoxX + 6.f, kPortBoxY + 5.f);
+            rt.draw(val);
+        }
     }
 }
 

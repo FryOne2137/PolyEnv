@@ -5,14 +5,12 @@
 #ifndef GAME_ENGINE_TRIBESELECTSCREEN_H
 #define GAME_ENGINE_TRIBESELECTSCREEN_H
 
-
 #pragma once
 
 #include <SFML/Graphics.hpp>
 #include <vector>
 #include <string>
 #include "TextureStore.h"
-
 
 #include "../content/tribes/Tribe.h"
 
@@ -23,8 +21,7 @@ public:
     int getInitialLand() const;
     int getSmoothing() const;
     int getRelief() const;
-    int getMapSeed() const ;
-
+    int getMapSeed() const;
 
     TribeSelectScreen();
 
@@ -34,7 +31,11 @@ public:
     void draw(sf::RenderTarget& rt);
 
     const std::vector<TribeType>& getSelectedTribes() const;
+    // Parallel to getSelectedTribes(): true = bot, false = human player
+    const std::vector<bool>& getSelectedBots() const;
+
     int getMapSize() const;
+    int getServerPort() const;  // port number entered by user (default 5555)
 
     bool consumeStartClicked(); // returns true once
 
@@ -48,6 +49,7 @@ private:
 
     std::vector<TribeType> allTribes;
     std::vector<TribeType> selected;
+    std::vector<bool>      selectedBots; // parallel to selected; true = bot
 
     sf::Font* font = nullptr;
 
@@ -58,7 +60,7 @@ private:
     Button clearBtn;
 
     // Map size controls
-    int mapSize = 16;              // default map size
+    int mapSize = 16;
     Button mapSizeMinusBtn;
     Button mapSizePlusBtn;
 
@@ -74,7 +76,15 @@ private:
     enum class ActiveSlider { None, InitialLand, Smoothing, Relief };
     ActiveSlider activeSlider = ActiveSlider::None;
 
-    int mapSeed=0;
+    int mapSeed = 0;
+
+    // ── bot / port UI state ───────────────────────────────────────────────
+    // Index of the selected-list entry currently being toggled (-1 = none)
+    int botToggleHover = -1;
+
+    // Port input
+    std::string portBuffer = "5555";
+    bool portActive = false;
 };
 
 #endif //GAME_ENGINE_TRIBESELECTSCREEN_H

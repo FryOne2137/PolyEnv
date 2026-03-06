@@ -242,21 +242,19 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
 void InteractionSystem::handleVillage(Game& game, UnitId unitId, Pos pos) {
     if (!UnitSystem::unitExists(game, unitId)) return;
 
-    Tile& tile = game.getMap().at(pos);
+    const Tile& tile = game.getMap().at(pos);
     if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
 
     if (tile.getSettlementType() != SettlementTypeEnum::Village) return;
 
-    // Convert Village -> City on this tile
+    // Convert Village -> City.
+    // foundCityFromVillage handles everything: tile type/id, city registration, territory claim.
+    // DO NOT set the tile settlement before this call — that would cause canFoundCityFromVillage
+    // (which checks st == Village) to fail, producing a zombie city with no City object.
     const PlayerId owner = UnitSystem::getOwnerId(game, unitId);
+    if (!CitySystem::foundCityFromVillage(game, owner, pos)) return;
 
-    // 1) Change tile settlement type (id is assigned in foundCityFromVillage)
-    tile.setSettlement(SettlementTypeEnum::City, kNoSettlement);
-
-    // 2) Create/register City for this tile
-    game.foundCityFromVillage(owner, pos);
-
-    // 3) Consumes the whole turn: unit cannot move anymore this round
+    // Consumes the whole turn: unit cannot move/attack anymore this round.
     UnitSystem::setMovedThisTurn(game, unitId, true);
     UnitSystem::setAttackedThisTurn(game, unitId, true);
 }
