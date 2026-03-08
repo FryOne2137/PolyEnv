@@ -1,1 +1,7 @@
 .idea/
+assets/
+.claude/
+build-core/
+build-gui/
+build-py/
+cmake-build-debug/
