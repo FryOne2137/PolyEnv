@@ -1560,6 +1560,123 @@ public:
         return state_->isTerminal();
     }
 
+    // Returns tile indices revealed by the most recent step for the given player.
+    // The engine updates this automatically during revealObservedTilesForPlayer().
+    // For step_fast_no_reveal the acting player's list is always empty (no leak).
+    std::vector<int> lastRevealedIndices(
+        std::optional<int> perspectiveOpt = std::nullopt) const
+    {
+        ensureState();
+        const int perspective = perspectiveOpt.value_or(
+            static_cast<int>(state_->getGame().getCurrentPlayerId()));
+        if (perspective < 0 ||
+            static_cast<size_t>(perspective) >= lastRevealedByPlayer_.size())
+            return {};
+        return lastRevealedByPlayer_[static_cast<size_t>(perspective)];
+    }
+
+    // Returns tile indices that are hidden (not yet observed) for the given perspective.
+    std::vector<int> hiddenTileIndices(std::optional<int> perspectiveOpt = std::nullopt) const {
+        ensureState();
+        ensureObservationKnowledgeLayout();
+        const Game& g = state_->getGame();
+        const Map& m = g.getMap();
+        const int tileCount = m.getWidth() * m.getHeight();
+        const int perspective = perspectiveOpt.value_or(
+            static_cast<int>(g.getCurrentPlayerId()));
+        std::vector<int> result;
+        if (perspective < 0 ||
+            static_cast<size_t>(perspective) >= observationKnownByPlayer_.size())
+            return result;
+        const auto& known = observationKnownByPlayer_[static_cast<size_t>(perspective)];
+        result.reserve(static_cast<size_t>(tileCount) / 2);
+        for (int i = 0; i < tileCount; ++i) {
+            if (!known[static_cast<size_t>(i)]) result.push_back(i);
+        }
+        return result;
+    }
+
+    // Apply predicted tile features for hidden tiles only.
+    //
+    // Accepts a sparse dict {tile_index → feature_vector_of_18_ints} produced by
+    // the tile-prediction model (same layout as tokenized_map()).
+    // Tiles already visible to `perspective` are silently skipped (guard in C++).
+    //
+    // Features written (safe to patch directly on Tile):
+    //   [7]  roadBridge      : None=0, Road=1, Bridge=2, WaterConnection=3
+    //   [8]  buildingType    : None=0, Farm=1..Windmill=8, monuments=9-15, Lighthouse=16
+    //   [11] settlementType  : None=0, Village=1, Starfish=3, Ruin=4
+    //                          City=2 is intentionally skipped (requires a Game-level City object)
+    //   [15] resource        : None=0 … Metal=6
+    //   [16] baseTerrain     : Ocean=0 … Forest=4
+    //   [17] tribe           : Unknown=0, XinXi=1 … Cymanti=16
+    //
+    // Features NOT written (complex game-level state):
+    //   [0]  visibility, [1] isCloakAround, [2-5] unit state,
+    //   [6]  territoryCityId, [9-10] capitalLayer/cityLevel,
+    //   [12-14] settlementId/cityOwner/cityUnitsOccupied
+    //
+    // Returns the number of tiles actually patched.
+    int applyTilePredictions(
+        const std::unordered_map<int, std::vector<int>>& predictions,
+        std::optional<int> perspectiveOpt = std::nullopt)
+    {
+        ensureState();
+        ensureObservationKnowledgeLayout();
+        Game& g = state_->getGame();
+        Map& m = g.getMap();
+        const int tileCount = m.getWidth() * m.getHeight();
+        const int perspective = perspectiveOpt.value_or(
+            static_cast<int>(g.getCurrentPlayerId()));
+
+        const std::vector<uint8_t>* knownObs = nullptr;
+        if (perspective >= 0 &&
+            static_cast<size_t>(perspective) < observationKnownByPlayer_.size())
+            knownObs = &observationKnownByPlayer_[static_cast<size_t>(perspective)];
+
+        int patched = 0;
+        for (const auto& [idx, features] : predictions) {
+            if (idx < 0 || idx >= tileCount) continue;
+            if (static_cast<int>(features.size()) < 18) continue;
+            // Guard: silently skip tiles already visible to this perspective.
+            if (knownObs && (*knownObs)[static_cast<size_t>(idx)]) continue;
+
+            Tile& tile = m.at(Pos{idx % m.getWidth(), idx / m.getWidth()});
+
+            // [7] roadBridge
+            { const int v = features[7];
+              if (v >= 0 && v <= 3)
+                  tile.setRoadBridge(static_cast<RoadBridgeEnum>(v)); }
+            // [8] buildingType
+            { const int v = features[8];
+              if (v >= 0 && v <= 16)
+                  tile.setBuildingType(static_cast<BuildingTypeEnum>(v)); }
+            // [11] settlementType — City=2 intentionally skipped
+            { const int v = features[11];
+              if (v == 0) {
+                  tile.clearSettlement();
+              } else if (v == 1 || v == 3 || v == 4) {
+                  tile.setSettlement(static_cast<SettlementTypeEnum>(v), kNoSettlement);
+              } }
+            // [15] resource
+            { const int v = features[15];
+              if (v >= 0 && v <= 6)
+                  tile.setResource(static_cast<ResourcesEnum>(v)); }
+            // [16] baseTerrain
+            { const int v = features[16];
+              if (v >= 0 && v <= 4)
+                  tile.setBaseTerrain(static_cast<BaseTerrainEnum>(v)); }
+            // [17] tribe
+            { const int v = features[17];
+              if (v >= 0 && v <= 16)
+                  tile.setTribe(static_cast<TribeType>(v)); }
+
+            ++patched;
+        }
+        invalidateCaches();
+        return patched;
+    }
+
 private:
     void ensureState() const {
         if (!state_) throw std::runtime_error("GameEnv is not initialized.");
@@ -1628,6 +1745,11 @@ private:
         if (pidIdx >= observationKnownByPlayer_.size()) return;
         auto& known = observationKnownByPlayer_[pidIdx];
 
+        // Ensure the per-player revealed list exists for this player.
+        if (lastRevealedByPlayer_.size() <= pidIdx)
+            lastRevealedByPlayer_.resize(pidIdx + 1);
+        auto& revealed = lastRevealedByPlayer_[pidIdx];
+
         const int w = m.getWidth();
         const int h = m.getHeight();
         for (int y = 0; y < h; ++y) {
@@ -1637,7 +1759,11 @@ private:
                 const Tile& t = m.at(p);
                 const uint16_t visMask = static_cast<uint16_t>(t.getVisibility());
                 if ((visMask & (uint16_t(1) << pidIdx)) == 0) continue;
-                known[static_cast<size_t>(idx)] = 1;
+                if (!known[static_cast<size_t>(idx)]) {
+                    // 0 → 1 transition: tile newly revealed by this step.
+                    revealed.push_back(idx);
+                    known[static_cast<size_t>(idx)] = 1;
+                }
             }
         }
     }
@@ -1645,7 +1771,10 @@ private:
     void revealObservedTilesForAllPlayers() {
         ensureObservationKnowledgeLayout();
         const Game& g = state_->getGame();
-        for (size_t pid = 0; pid < g.getPlayers().size(); ++pid) {
+        const size_t playerCount = g.getPlayers().size();
+        // Reset per-player revealed lists for this step before accumulating.
+        lastRevealedByPlayer_.assign(playerCount, {});
+        for (size_t pid = 0; pid < playerCount; ++pid) {
             revealObservedTilesForPlayer(static_cast<PlayerId>(pid));
         }
     }
@@ -1653,8 +1782,11 @@ private:
     void revealObservedTilesForAllPlayersExcept(PlayerId excluded) {
         ensureObservationKnowledgeLayout();
         const Game& g = state_->getGame();
-        for (size_t pid = 0; pid < g.getPlayers().size(); ++pid) {
-            if (pid == excluded) continue;
+        const size_t playerCount = g.getPlayers().size();
+        // Reset per-player revealed lists. The excluded player's list stays empty.
+        lastRevealedByPlayer_.assign(playerCount, {});
+        for (size_t pid = 0; pid < playerCount; ++pid) {
+            if (static_cast<PlayerId>(pid) == excluded) continue;
             revealObservedTilesForPlayer(static_cast<PlayerId>(pid));
         }
     }
@@ -1688,6 +1820,9 @@ private:
     uint32_t seed_ = 1;
     std::string unitsJsonPath_;
     std::vector<std::vector<uint8_t>> observationKnownByPlayer_;
+    // Per-player list of tile indices revealed by the most recent step (0→1 transitions).
+    // Reset at the start of every revealObservedTilesForAll*() call.
+    std::vector<std::vector<int>> lastRevealedByPlayer_;
 
     mutable bool legalIdsCacheValid_ = false;
     mutable PlayerId legalIdsCachePid_ = kNoPlayer;
@@ -1770,5 +1905,16 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("is_done", &GameEnv::isDone)
         .def("clone", &GameEnv::clone)
         .def("save_state", &GameEnv::saveState)
-        .def("load_state", &GameEnv::loadState, py::arg("snapshot"));
+        .def("load_state", &GameEnv::loadState, py::arg("snapshot"))
+        .def("_last_revealed_indices", &GameEnv::lastRevealedIndices,
+             py::arg("perspective") = std::nullopt,
+             "Internal: tile indices revealed by the most recent step. "
+             "Use GameEnv.last_revealed_tiles() instead.")
+        .def("hidden_tile_indices", &GameEnv::hiddenTileIndices,
+             py::arg("perspective") = std::nullopt,
+             "Returns tile indices not yet observed by the given player (defaults to current player).")
+        .def("_apply_tile_predictions", &GameEnv::applyTilePredictions,
+             py::arg("predictions"),
+             py::arg("perspective") = std::nullopt,
+             "Internal. Use clone_with_predictions() instead.");
 }
