@@ -1,6 +1,10 @@
-# game-engine
+# Polytopia like game engine
 
 Polytopia-like game engine with Python bindings.
+This is unofficial implementation ready for ai training. This is part of my university bachelor degree (I will attach a paper)
+
+## How to use
+I will make a documentation
 
 ## Python quick start
 
