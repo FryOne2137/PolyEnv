@@ -3,8 +3,16 @@
 Polytopia-like game engine with Python bindings.
 This is unofficial implementation ready for ai training. This is part of my university bachelor degree (I will attach a paper)
 
+
+
 ## How to use
 I will make a documentation
+
+```bash
+pip install git+https://github.com/FryOne2137/PolyEnv.git
+```
+
+ 
 
 ## Python quick start
 
