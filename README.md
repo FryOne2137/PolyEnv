@@ -1,9 +1,11 @@
 # Polytopia like game engine
 
-Polytopia-like game engine with Python bindings.
+Unofficial Polytopia-like game engine with Python bindings.
 This is unofficial implementation ready for ai training. This is part of my university bachelor degree (I will attach a paper)
 
+## Attribution
 
+The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and has been modified for this engine.
 
 ## How to use
 

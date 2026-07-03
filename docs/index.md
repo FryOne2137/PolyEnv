@@ -2,6 +2,12 @@
 
 PolyEnv is an unofficial Polytopia-like game engine with Python bindings for AI training and inference experiments.
 
+## Attribution
+
+The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and has been modified for this engine.
+
+## Quick Start
+
 The main Python entry point is `GameEnv`. It exposes game state, legal actions, and fast stepping APIs. For model integration, use the canonical model request methods:
 
 ```python
