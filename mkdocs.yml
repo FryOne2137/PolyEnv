@@ -1,0 +1,24 @@
+site_name: PolyEnv Game Engine
+site_description: Polytopia-like game engine with Python bindings for AI training.
+repo_url: https://github.com/FryOne2137/PolyEnv
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.instant
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Model Request API: model_request_api.md
+  - Training Loop: training_loop.md
+  - Read the Docs: readthedocs.md
+
+markdown_extensions:
+  - admonition
+  - fenced_code
+  - tables
+  - toc:
+      permalink: true

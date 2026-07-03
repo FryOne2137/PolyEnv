@@ -6,10 +6,20 @@ This is unofficial implementation ready for ai training. This is part of my univ
 
 
 ## How to use
-I will make a documentation
+
+Documentation lives in `docs/` and can be published with Read the Docs.
+
+Read the Docs configuration is already included in `.readthedocs.yaml`. Import this GitHub repository at [readthedocs.org](https://readthedocs.org/) and it will build the MkDocs site automatically.
 
 ```bash
 pip install git+https://github.com/FryOne2137/PolyEnv.git
+```
+
+Local documentation preview:
+
+```bash
+pip install -r docs/requirements.txt
+mkdocs serve
 ```
 
  

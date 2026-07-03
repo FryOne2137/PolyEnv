@@ -8,10 +8,12 @@
 #include <vector>
 
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
 #include "ai/Action.h"
 #include "ai/GameStateAdapter.h"
+#include "ai/GameStateSerializer.h"
 #include "content/buildings/BuildingDB.h"
 #include "content/tribes/Tribe.h"
 #include "content/units/UnitFactory.h"
@@ -23,8 +25,130 @@
 #include "world/Tile.h"
 
 namespace py = pybind11;
+using json = nlohmann::json;
 
 namespace {
+
+static py::object jsonToPy(const json& value) {
+    if (value.is_null()) return py::none();
+    if (value.is_boolean()) return py::bool_(value.get<bool>());
+    if (value.is_number_integer()) return py::int_(value.get<long long>());
+    if (value.is_number_unsigned()) return py::int_(value.get<unsigned long long>());
+    if (value.is_number_float()) return py::float_(value.get<double>());
+    if (value.is_string()) return py::str(value.get<std::string>());
+    if (value.is_array()) {
+        py::list out;
+        for (const auto& item : value) out.append(jsonToPy(item));
+        return std::move(out);
+    }
+    if (value.is_object()) {
+        py::dict out;
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            out[py::str(it.key())] = jsonToPy(it.value());
+        }
+        return std::move(out);
+    }
+    return py::none();
+}
+
+template <typename T>
+static py::array_t<T> makeArray1D(size_t n) {
+    return py::array_t<T>({static_cast<py::ssize_t>(n)});
+}
+
+template <typename T>
+static py::array_t<T> makeArray2D(size_t rows, size_t cols) {
+    return py::array_t<T>({
+        static_cast<py::ssize_t>(rows),
+        static_cast<py::ssize_t>(cols),
+    });
+}
+
+static py::array_t<int32_t> mapTokensToNumpy(const json& mapTokens) {
+    const size_t rows = mapTokens.is_array() ? mapTokens.size() : 0;
+    const size_t cols = rows > 0 && mapTokens[0].is_array() ? mapTokens[0].size() : 0;
+    py::array_t<int32_t> arr = makeArray2D<int32_t>(rows, cols);
+    auto view = arr.mutable_unchecked<2>();
+    for (size_t r = 0; r < rows; ++r) {
+        const json& row = mapTokens[r];
+        for (size_t c = 0; c < cols; ++c) {
+            view(static_cast<py::ssize_t>(r), static_cast<py::ssize_t>(c)) =
+                row[c].is_number_float()
+                    ? static_cast<int32_t>(row[c].get<double>())
+                    : row[c].get<int32_t>();
+        }
+    }
+    return arr;
+}
+
+static py::array_t<int64_t> actionFieldToNumpy(
+    const json& actions,
+    const char* field,
+    int64_t defaultValue = -1)
+{
+    const size_t n = actions.is_array() ? actions.size() : 0;
+    py::array_t<int64_t> arr = makeArray1D<int64_t>(n);
+    auto view = arr.mutable_unchecked<1>();
+    for (size_t i = 0; i < n; ++i) {
+        const json& a = actions[i];
+        view(static_cast<py::ssize_t>(i)) =
+            a.contains(field) && a[field].is_number_integer()
+                ? a[field].get<int64_t>()
+                : defaultValue;
+    }
+    return arr;
+}
+
+static py::array_t<uint8_t> actionArgMaskToNumpy(const json& actions) {
+    const size_t rows = actions.is_array() ? actions.size() : 0;
+    size_t cols = 0;
+    if (rows > 0 && actions[0].contains("arg_mask") && actions[0]["arg_mask"].is_array()) {
+        cols = actions[0]["arg_mask"].size();
+    }
+    py::array_t<uint8_t> arr = makeArray2D<uint8_t>(rows, cols);
+    auto view = arr.mutable_unchecked<2>();
+    for (size_t r = 0; r < rows; ++r) {
+        const json& mask = actions[r].contains("arg_mask") ? actions[r]["arg_mask"] : json::array();
+        for (size_t c = 0; c < cols; ++c) {
+            view(static_cast<py::ssize_t>(r), static_cast<py::ssize_t>(c)) =
+                c < mask.size() ? static_cast<uint8_t>(mask[c].get<int>()) : 0;
+        }
+    }
+    return arr;
+}
+
+static py::dict actionsToNumpy(const json& actions) {
+    py::dict out;
+    out["action_id"] = actionFieldToNumpy(actions, "action_id");
+    out["type_id"] = actionFieldToNumpy(actions, "type_id");
+    out["source_index"] = actionFieldToNumpy(actions, "source_index");
+    out["target_index"] = actionFieldToNumpy(actions, "target_index");
+    out["city"] = actionFieldToNumpy(actions, "city");
+    out["tech"] = actionFieldToNumpy(actions, "tech");
+    out["building"] = actionFieldToNumpy(actions, "building");
+    out["spawn_type"] = actionFieldToNumpy(actions, "spawn_type");
+    out["upgrade"] = actionFieldToNumpy(actions, "upgrade");
+    out["tile_action"] = actionFieldToNumpy(actions, "tile_action");
+    out["unit_upgrade"] = actionFieldToNumpy(actions, "unit_upgrade");
+    out["unit_id"] = actionFieldToNumpy(actions, "unit_id");
+    out["unit"] = actionFieldToNumpy(actions, "unit");
+    out["cost_stars"] = actionFieldToNumpy(actions, "cost_stars");
+    out["stars_before"] = actionFieldToNumpy(actions, "stars_before");
+    out["affordable"] = actionFieldToNumpy(actions, "affordable", 0);
+    out["damage_dealt"] = actionFieldToNumpy(actions, "damage_dealt");
+    out["damage_received"] = actionFieldToNumpy(actions, "damage_received");
+    out["arg_mask"] = actionArgMaskToNumpy(actions);
+
+    py::list types;
+    py::list typeFullnames;
+    for (const auto& action : actions) {
+        types.append(py::str(action.value("type", "")));
+        typeFullnames.append(py::str(action.value("type_fullname", "")));
+    }
+    out["type"] = std::move(types);
+    out["type_fullname"] = std::move(typeFullnames);
+    return out;
+}
 
 static std::string resolveDefaultUnitsJsonPath() {
     // Prefer package data path regardless of current working directory.
@@ -1205,6 +1329,32 @@ public:
         return legalParamActions();
     }
 
+    py::dict modelRequest() {
+        ensureState();
+        json req = GameStateSerializer::buildRequest(state_->getGame(), *state_);
+        return py::cast<py::dict>(jsonToPy(req));
+    }
+
+    py::dict requestPacket() {
+        return modelRequest();
+    }
+
+    py::dict modelRequestNumpy() {
+        ensureState();
+        json req = GameStateSerializer::buildRequest(state_->getGame(), *state_);
+
+        py::dict out;
+        out["map_tokens"] = mapTokensToNumpy(req["map_tokens"]);
+        out["obs"] = jsonToPy(req["obs"]);
+        out["actions"] = actionsToNumpy(req["actions"]);
+        out["spec"] = jsonToPy(req["spec"]);
+        return out;
+    }
+
+    py::dict requestPacketNumpy() {
+        return modelRequestNumpy();
+    }
+
     py::dict legalParamMasks() const {
         ensureState();
         ensureLegalIdsCache();
@@ -1890,6 +2040,14 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("action_param_spec", &GameEnv::actionParamSpec)
         .def("get_actions", &GameEnv::getActions)
         .def("legal_param_actions", &GameEnv::legalParamActions)
+        .def("model_request", &GameEnv::modelRequest,
+             "Returns the canonical model request packet: map_tokens, obs, actions, spec.")
+        .def("request_packet", &GameEnv::requestPacket,
+             "Alias for model_request().")
+        .def("model_request_numpy", &GameEnv::modelRequestNumpy,
+             "Returns the canonical model request packet with map/actions as NumPy arrays.")
+        .def("request_packet_numpy", &GameEnv::requestPacketNumpy,
+             "Alias for model_request_numpy().")
         .def("legal_param_masks", &GameEnv::legalParamMasks)
         .def("step_param", &GameEnv::stepParam,
              py::arg("param"),
