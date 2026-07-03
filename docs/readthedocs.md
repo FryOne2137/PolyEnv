@@ -55,3 +55,23 @@ mkdocs build --strict
 
 Strict mode fails the build on broken links or invalid documentation configuration.
 
+## Common Read the Docs Failure
+
+If the build log says:
+
+```text
+Could not open requirements file: docs/requirements.txt
+```
+
+then the `docs/requirements.txt` file was not committed or pushed to GitHub. Read the Docs builds from the remote repository, not from your local working tree.
+
+Fix:
+
+```bash
+git add .readthedocs.yaml mkdocs.yml docs/
+git commit -m "Add Read the Docs documentation"
+git push origin main
+```
+
+Then click **Rebuild** in Read the Docs.
+

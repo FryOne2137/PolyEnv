@@ -1,5 +1,7 @@
 # Model Request API
 
+The model request packet is the stable interface between the game engine and model code.
+
 The recommended model input API is:
 
 ```python
@@ -13,6 +15,9 @@ packet = env.model_request_numpy()
 ```
 
 Both methods use the same C++ serializer path as the engine-side model client, so training code and game inference use the same packet contract.
+
+!!! tip
+    Use `model_request()` when reading or logging packets. Use `model_request_numpy()` inside training loops.
 
 ## Packet Shape
 
@@ -36,6 +41,31 @@ packet["actions"]["type_id"]       # np.ndarray[int64], shape [num_actions]
 packet["actions"]["source_index"]  # np.ndarray[int64], shape [num_actions]
 packet["actions"]["target_index"]  # np.ndarray[int64], shape [num_actions]
 packet["actions"]["arg_mask"]      # np.ndarray[uint8], shape [num_actions, 12]
+```
+
+Additional action fields are also arrays in the NumPy packet:
+
+```python
+packet["actions"]["city"]
+packet["actions"]["tech"]
+packet["actions"]["building"]
+packet["actions"]["spawn_type"]
+packet["actions"]["upgrade"]
+packet["actions"]["tile_action"]
+packet["actions"]["unit_upgrade"]
+packet["actions"]["unit_id"]
+packet["actions"]["cost_stars"]
+packet["actions"]["stars_before"]
+packet["actions"]["affordable"]
+packet["actions"]["damage_dealt"]
+packet["actions"]["damage_received"]
+```
+
+String fields stay as Python lists:
+
+```python
+packet["actions"]["type"]
+packet["actions"]["type_fullname"]
 ```
 
 ## Map Tokens
@@ -69,6 +99,16 @@ Each tile has 18 integer features:
 | 16 | `base_terrain` | Base terrain enum id |
 | 17 | `tribe` | Tribe enum id |
 
+Sentinel values:
+
+| Value | Meaning |
+| ---: | --- |
+| `-1` | Missing, not applicable, hidden, or no object |
+| `0` | Usually a valid enum value or false flag |
+| `1` | Usually true flag or first enum value |
+
+Exact enum meanings are engine-defined. For most model code, treat enum features as categorical ids.
+
 ## Observation Fields
 
 `packet["obs"]` contains scalar game and player state:
@@ -95,6 +135,8 @@ Each tile has 18 integer features:
 
 The model must choose one of the legal `action_id` values from `packet["actions"]`.
 
+Action ids are action-space ids, not row indices. In `model_request_numpy()`, `packet["actions"]["action_id"][i]` is the real id to pass to `step_fast`.
+
 Each action in `model_request()` contains:
 
 ```python
@@ -118,6 +160,7 @@ Each action in `model_request()` contains:
     "affordable": int,
     "damage_dealt": int,
     "damage_received": int,
+    "population_gain": int,
     "arg_mask": list[int],
 }
 ```
@@ -153,6 +196,23 @@ ok, done, reward, winner, current_player = env.step_fast(chosen_action_id)
 
 Never invent action ids. Always choose an id from the current legal action list.
 
+## Action Selection Example
+
+If your model scores rows in the action list, convert the selected row back to an `action_id`:
+
+```python
+packet = env.model_request_numpy()
+
+# Example: model returns scores with shape [num_actions].
+scores = policy(packet)
+row = int(scores.argmax())
+
+action_id = int(packet["actions"]["action_id"][row])
+env.step_fast(action_id)
+```
+
+Do not pass `row` to `step_fast`. Pass the corresponding `action_id`.
+
 ## Torch Conversion
 
 NumPy arrays can be wrapped by Torch cheaply on CPU:
@@ -173,3 +233,30 @@ Move batches to GPU after collation:
 map_tokens = map_tokens.to("cuda", non_blocking=True)
 ```
 
+## Spec
+
+`packet["spec"]` contains map size, vocabulary sizes, and action argument order:
+
+```python
+{
+    "tile_vocab_size": int,
+    "type_vocab_size": int,
+    "tech_vocab_size": int,
+    "building_vocab_size": int,
+    "spawn_type_vocab_size": int,
+    "city_upgrade_vocab_size": int,
+    "tile_action_vocab_size": int,
+    "unit_upgrade_vocab_size": int,
+    "population_gain_vocab_size": int,
+    "map_width": int,
+    "map_height": int,
+    "arg_order": list[str],
+}
+```
+
+Use `map_width` when converting tile indices back to `(x, y)`:
+
+```python
+x = tile_index % packet["spec"]["map_width"]
+y = tile_index // packet["spec"]["map_width"]
+```

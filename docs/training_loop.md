@@ -2,6 +2,8 @@
 
 The environment runs on CPU. Keep the model on GPU and send batched tensors to it.
 
+The main performance rule is simple: run many environments on CPU, collate their NumPy packets, then move one batch to GPU.
+
 ## Single Environment Example
 
 ```python
@@ -49,6 +51,8 @@ while True:
         env.step_fast(chosen_action_id)
 ```
 
+This example always picks the first legal action. Replace that part with your policy.
+
 ## Variable Number Of Actions
 
 Every state can have a different number of legal actions. For action-based models, pad action tensors to `[batch, max_actions]` and keep a boolean valid mask.
@@ -73,3 +77,70 @@ action_ids, action_mask = pad_1d([
 
 Mask invalid padded actions before sampling or argmax.
 
+## Collating Action Features
+
+For action-scoring models, pad every per-action feature in the same way:
+
+```python
+feature_names = [
+    "action_id",
+    "type_id",
+    "source_index",
+    "target_index",
+    "tech",
+    "building",
+    "spawn_type",
+    "upgrade",
+    "tile_action",
+    "unit_upgrade",
+    "unit_id",
+    "cost_stars",
+    "affordable",
+    "damage_dealt",
+    "damage_received",
+]
+
+batch_actions = {}
+action_mask = None
+
+for name in feature_names:
+    values, mask = pad_1d([packet["actions"][name] for packet in packets])
+    batch_actions[name] = values
+    action_mask = mask
+```
+
+When your model returns scores with shape `[batch, max_actions]`, mask invalid actions:
+
+```python
+scores = scores.masked_fill(~action_mask.to(scores.device), -1e9)
+chosen_rows = scores.argmax(dim=1).cpu()
+```
+
+Then map rows back to real action ids:
+
+```python
+for i, env in enumerate(envs):
+    row = int(chosen_rows[i])
+    action_id = int(batch_actions["action_id"][i, row])
+    env.step_fast(action_id)
+```
+
+## CPU To GPU Guidance
+
+- Convert NumPy to Torch with `torch.from_numpy`.
+- Batch first, then call `.to("cuda")`.
+- Avoid transferring one environment at a time.
+- Keep the engine state on CPU.
+- Send only model inputs to GPU, not the debug JSON packet.
+
+## Resetting Finished Environments
+
+If an environment is done, reset it before collecting the next packet:
+
+```python
+for i, env in enumerate(envs):
+    if env.is_done():
+        env.reset(seed=1000 + i)
+```
+
+Use your own seed schedule for reproducible training runs.
