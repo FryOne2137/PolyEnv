@@ -109,6 +109,8 @@ Sentinel values:
 
 Exact enum meanings are engine-defined. For most model code, treat enum features as categorical ids.
 
+See [Token Reference](token_reference.md) for the numeric ids used by terrain, resources, buildings, tribes, technologies, actions, and units.
+
 ## Observation Fields
 
 `packet["obs"]` contains scalar game and player state:

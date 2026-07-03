@@ -59,5 +59,6 @@ Do not invent action ids. The legal action set changes after every step.
 - [Installation](installation.md): install from GitHub or a local checkout.
 - [Python API](python_api.md): core `GameEnv` methods.
 - [Model Request API](model_request_api.md): packet schema, map tokens, actions, and NumPy layout.
+- [Token Reference](token_reference.md): numeric ids for terrain, resources, buildings, tribes, techs, actions, and units.
 - [Training Loop](training_loop.md): CPU environments, NumPy packets, Torch tensors, and GPU batching.
 - [Troubleshooting](troubleshooting.md): common install, build, and Read the Docs failures.
