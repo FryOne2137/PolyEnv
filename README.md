@@ -1,43 +1,79 @@
-# Polytopia like game engine
+# PolyEnv
 
-Unofficial Polytopia-like game engine with Python bindings.
-This is unofficial implementation ready for ai training. This is part of my university bachelor degree (I will attach a paper)
+PolyEnv is an unofficial Polytopia-like game engine with a C++ core and Python bindings.
+
+It is built as a game environment for AI experiments, external bots, MCTS rollouts, and training pipelines.
+
+## What PolyEnv Is
+
+- A Python-installable game engine package.
+- A CPU game simulator with legal actions and fast stepping.
+- A source of player-view observations for models.
+- A source of explicit full-map ground truth for debugging or supervised hidden-map prediction.
+- A project created as part of university bachelor degree work.
+
+## What PolyEnv Is Not
+
+- It is not affiliated with or endorsed by The Battle of Polytopia or its creators.
+- It is not a full clone of the official game.
+- It is not a trained bot or model.
+- It does not implement reward shaping; that belongs in the training/model repository.
+- It does not expose hidden map information through the normal model API.
+
+## Installation
+
+Install from GitHub:
+
+```bash
+python -m pip install git+https://github.com/FryOne2137/PolyEnv.git
+```
+
+Install from a local checkout:
+
+```bash
+git clone https://github.com/FryOne2137/PolyEnv.git
+cd PolyEnv
+python -m pip install .
+```
+
+For development:
+
+```bash
+python -m pip install -e .
+```
+
+## Minimal Example
+
+```python
+from game_engine import GameEnv, tribes
+
+env = GameEnv(
+    seed=1234,
+    map_size=11,
+    players=(tribes.Bardur, tribes.Imperius),
+)
+
+packet = env.model_request_numpy()
+action_id = int(packet["actions"]["action_id"][0])
+
+ok, done, reward, winner, current_player = env.step_fast(action_id)
+```
+
+`model_request_numpy()` returns the current player's visible map, player/game metadata, legal actions, and format metadata.
+
+Use `env.full_map_numpy()` only when you explicitly need full ground truth for debugging or training labels.
+
+## Documentation
+
+Documentation lives in `docs/` and can be served locally:
+
+```bash
+python -m pip install -r docs/requirements.txt
+mkdocs serve
+```
+
+Read the Docs configuration is included in `.readthedocs.yaml`.
 
 ## Attribution
 
 The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and has been modified for this engine.
-
-## How to use
-
-Documentation lives in `docs/` and can be published with Read the Docs.
-
-Read the Docs configuration is already included in `.readthedocs.yaml`. Import this GitHub repository at [readthedocs.org](https://readthedocs.org/) and it will build the MkDocs site automatically.
-
-```bash
-pip install git+https://github.com/FryOne2137/PolyEnv.git
-```
-
-Local documentation preview:
-
-```bash
-pip install -r docs/requirements.txt
-mkdocs serve
-```
-
- 
-
-## Python quick start
-
-```python
-from game_engine import GameEnv, Bardur, Kickoo
-
-env = GameEnv(seed=2137, map_size=16, tribes=[Bardur, Kickoo])
-```
-
-You can also pick tribes by name:
-
-```python
-from game_engine import get_tribe
-
-bardur = get_tribe("Bardur")
-```
