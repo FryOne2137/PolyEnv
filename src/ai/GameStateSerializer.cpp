@@ -73,6 +73,7 @@ static TechId requiredTechForTileAction(Action::TileActionKind kind) {
         case Action::TileActionKind::DestroyTile:  return TechId::Chivalry;
         case Action::TileActionKind::BuildRoad:    return TechId::Roads;
         case Action::TileActionKind::BuildBridge:  return TechId::Roads;
+        case Action::TileActionKind::Starfish:     return TechId::Navigation;
         default:                                   return TechId::Count;
     }
 }
@@ -462,12 +463,12 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
 
     bool hasClimbing     = false;
     bool hasOrganization = false;
-    bool hasFishing      = false;
+    bool hasSailing      = false;
     if (perspective != kNoPlayer && static_cast<size_t>(perspective) < game.getPlayers().size()) {
         const Player& p = game.getPlayer(perspective);
         hasClimbing     = p.hasTech(TechId::Climbing);
         hasOrganization = p.hasTech(TechId::Organization);
-        hasFishing      = p.hasTech(TechId::Fishing);
+        hasSailing      = p.hasTech(TechId::Sailing);
     }
 
     // Cloak (hide) detection helpers
@@ -524,7 +525,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                 resourceToken = static_cast<int>(ResourcesEnum::None);
             if (!hasOrganization && resourceToken == static_cast<int>(ResourcesEnum::Crops))
                 resourceToken = static_cast<int>(ResourcesEnum::None);
-            if (!hasFishing && settlementType == static_cast<int>(SettlementTypeEnum::Starfish)) {
+            if (!hasSailing && settlementType == static_cast<int>(SettlementTypeEnum::Starfish)) {
                 settlementType = static_cast<int>(SettlementTypeEnum::None);
                 settlementId_v = -1;
             }

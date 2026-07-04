@@ -69,12 +69,14 @@ void InteractionSystem::handleStarfish(Game& game, UnitId unitId, Pos pos) {
     if (!game.getMap().inBounds(pos)) return;
     if (UnitSystem::getPos(game, unitId) != pos) return;
     if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
+    const PlayerId pid = UnitSystem::getOwnerId(game, unitId);
+    if (!PlayerSystem::hasTech(game, pid, TechId::Navigation)) return;
 
     Tile& tile = game.getMap().at(pos);
 
     if (tile.getSettlementType() != SettlementTypeEnum::Starfish) return;
     // Nagroda
-    PlayerSystem::addStars(game, UnitSystem::getOwnerId(game, unitId), kStarfishReward);
+    PlayerSystem::addStars(game, pid, kStarfishReward);
 
     // Usuń starfish z mapy, żeby nie dało się zebrać drugi raz
     tile.setResource(ResourcesEnum::None);

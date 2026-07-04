@@ -388,10 +388,10 @@ static TechId requiredTechForTileAction(Action::TileActionKind kind) {
         case Action::TileActionKind::DestroyTile: return TechId::Chivalry;
         case Action::TileActionKind::BuildRoad: return TechId::Roads;
         case Action::TileActionKind::BuildBridge: return TechId::Roads;
+        case Action::TileActionKind::Starfish: return TechId::Navigation;
         case Action::TileActionKind::Explorer:
         case Action::TileActionKind::FoundCity:
         case Action::TileActionKind::Ruin:
-        case Action::TileActionKind::Starfish:
         case Action::TileActionKind::CaptureCity:
         case Action::TileActionKind::None:
             return TechId::Count;
@@ -1015,12 +1015,12 @@ public:
         }
         bool hasClimbing = false;
         bool hasOrganization = false;
-        bool hasFishing = false;
+        bool hasSailing = false;
         if (perspective >= 0 && perspective < static_cast<int>(g.getPlayers().size())) {
             const Player& p = g.getPlayer(static_cast<PlayerId>(perspective));
             hasClimbing = p.hasTech(TechId::Climbing);
             hasOrganization = p.hasTech(TechId::Organization);
-            hasFishing = p.hasTech(TechId::Fishing);
+            hasSailing = p.hasTech(TechId::Sailing);
         }
 
         auto hasActivatedHide = [](const Unit* u) -> bool {
@@ -1097,7 +1097,7 @@ public:
                 if (!hasOrganization && resourceToken == static_cast<int>(ResourcesEnum::Crops)) {
                     resourceToken = static_cast<int>(ResourcesEnum::None);
                 }
-                if (!hasFishing && settlementTypeToken == static_cast<int>(SettlementTypeEnum::Starfish)) {
+                if (!hasSailing && settlementTypeToken == static_cast<int>(SettlementTypeEnum::Starfish)) {
                     settlementTypeToken = static_cast<int>(SettlementTypeEnum::None);
                     settlementIdToken = -1;
                 }

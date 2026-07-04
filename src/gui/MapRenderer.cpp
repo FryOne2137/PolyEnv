@@ -11,6 +11,7 @@
 #include "systems/LighthouseSystem.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
+#include "ai/GameStateAdapter.h"
 #include "../game/Game.h"
 #include "../content/tech/TechDB.h"
 #include <SFML/Window/Mouse.hpp>
@@ -189,12 +190,15 @@ static std::vector<RewardHit> g_rewardHits;
 static UnitId g_moveSelectedUnit = kNoUnit;
 static bool g_moveOverlayValid = false;
 static std::unordered_set<uint32_t> g_moveOverlaySet; // key: (y<<16)|x
+static std::unordered_map<uint32_t, Action> g_moveOverlayActions;
 
 // --- Attack click/overlay state (gameplay view only) ---
 static bool g_attackOverlayValid = false;
 static std::unordered_set<uint32_t> g_attackOverlaySet; // key: (y<<16)|x
+static std::unordered_map<uint32_t, Action> g_attackOverlayActions;
 
-static constexpr float kLeftSpawnPanelW = 150.f;
+static constexpr float kLeftSpawnPanelW = 0.f;
+static constexpr bool kShowLegacySpawnPanel = false;
 
 // --- Spawn panel (left side) ---
 static bool g_spawnHitValid = false;
@@ -236,6 +240,8 @@ struct ActionButton {
     ActionKind kind;
     UnitType trainType = UnitType::Unknown;
     BuildingTypeEnum buildType = BuildingTypeEnum::None;
+    Action engineAction{};
+    bool hasEngineAction = false;
 };
 
 static bool g_actionBtnsValid = false;
@@ -250,11 +256,13 @@ static inline uint32_t posKey(Pos p) {
 static void clearMoveOverlay() {
     g_moveOverlayValid = false;
     g_moveOverlaySet.clear();
+    g_moveOverlayActions.clear();
 }
 
 static void clearAttackOverlay() {
     g_attackOverlayValid = false;
     g_attackOverlaySet.clear();
+    g_attackOverlayActions.clear();
 }
 
 static void clearUnitOverlays() {
@@ -272,18 +280,23 @@ static void rebuildMoveOverlay(const Game* game, UnitId uid) {
     // Only current player's units.
     if (u->getOwnerId() != game->getCurrentPlayerId()) return;
 
-    std::vector<Pos> tiles;
+    std::vector<Action> actions;
     {
         const auto t0 = std::chrono::high_resolution_clock::now();
-tiles = game->reachable(game->getCurrentPlayerId(), uid);
+        GameStateAdapter adapter(*game);
+        actions = adapter.legalActions(game->getCurrentPlayerId());
         const auto t1 = std::chrono::high_resolution_clock::now();
         const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-
-        std::cout << "[Perf] reachable took " << us << " us" << std::endl;
+        std::cout << "[Perf] gui legal move actions took " << us << " us" << std::endl;
     }
-    g_moveOverlaySet.reserve(tiles.size() * 2u + 1u);
-    for (const Pos& p : tiles) {
-        g_moveOverlaySet.insert(posKey(p));
+
+    g_moveOverlaySet.reserve(actions.size() * 2u + 1u);
+    g_moveOverlayActions.reserve(actions.size() * 2u + 1u);
+    for (const Action& a : actions) {
+        if (a.type != Action::Type::Move || a.unit != uid) continue;
+        const uint32_t key = posKey(a.target);
+        g_moveOverlaySet.insert(key);
+        g_moveOverlayActions[key] = a;
     }
     g_moveOverlayValid = true; // valid even if empty
 }
@@ -298,12 +311,109 @@ static void rebuildAttackOverlay(const Game* game, UnitId uid) {
     // Only current player's units.
     if (u->getOwnerId() != game->getCurrentPlayerId()) return;
 
-const std::vector<Pos> tiles = game->attackable(game->getCurrentPlayerId(), uid);
-    g_attackOverlaySet.reserve(tiles.size() * 2u + 1u);
-    for (const Pos& p : tiles) {
-        g_attackOverlaySet.insert(posKey(p));
+    GameStateAdapter adapter(*game);
+    const std::vector<Action> actions = adapter.legalActions(game->getCurrentPlayerId());
+    g_attackOverlaySet.reserve(actions.size() * 2u + 1u);
+    g_attackOverlayActions.reserve(actions.size() * 2u + 1u);
+    for (const Action& a : actions) {
+        if (a.type != Action::Type::Attack || a.unit != uid) continue;
+        const uint32_t key = posKey(a.target);
+        g_attackOverlaySet.insert(key);
+        g_attackOverlayActions[key] = a;
     }
     g_attackOverlayValid = true; // valid even if empty
+}
+
+static bool samePos(Pos a, Pos b) {
+    return a.x == b.x && a.y == b.y;
+}
+
+static bool applyEngineAction(Game& game, const Action& a) {
+    switch (a.type) {
+        case Action::Type::Move:
+            return game.moveUnit(a.pid, a.unit, a.target);
+        case Action::Type::Attack:
+            return game.attack(a.pid, a.unit, a.target);
+        case Action::Type::Heal:
+            return game.heal(a.pid, a.unit);
+        case Action::Type::EndTurn:
+            return game.endTurn(a.pid);
+        case Action::Type::BuyTech:
+            return game.buyTech(a.pid, a.tech);
+        case Action::Type::UpgradeCity:
+            return game.upgradeCity(a.pid, a.city, a.upgrade);
+        case Action::Type::Build:
+            return game.buildBuilding(a.pid, a.pos, a.building);
+        case Action::Type::SpawnUnit:
+            return game.spawnUnit(a.spawnType, a.pid, a.pos, false) != kNoUnit;
+        case Action::Type::TileAction:
+            switch (a.tileAction) {
+                case Action::TileActionKind::Hunt: return game.hunt(a.pid, a.pos);
+                case Action::TileActionKind::Organization: return game.organization(a.pid, a.pos);
+                case Action::TileActionKind::Fishing: return game.fishing(a.pid, a.pos);
+                case Action::TileActionKind::ClearForest: return game.clearForest(a.pid, a.pos);
+                case Action::TileActionKind::BurnForest: return game.burnForest(a.pid, a.pos);
+                case Action::TileActionKind::GrowForest: return game.growForest(a.pid, a.pos);
+                case Action::TileActionKind::DestroyTile: return game.destroyTile(a.pid, a.pos);
+                case Action::TileActionKind::BuildRoad: return game.buildRoad(a.pid, a.pos);
+                case Action::TileActionKind::BuildBridge: return game.buildBridge(a.pid, a.pos);
+                case Action::TileActionKind::Explorer: return game.explorer(a.pid, a.pos);
+                case Action::TileActionKind::FoundCity: return game.foundCityFromVillage(a.pid, a.pos);
+                case Action::TileActionKind::Ruin: return game.handleRuin(a.pid, a.unit, a.pos);
+                case Action::TileActionKind::Starfish: return game.handleStarfish(a.pid, a.unit, a.pos);
+                case Action::TileActionKind::CaptureCity: return game.handleCityCapture(a.pid, a.unit, a.pos);
+                case Action::TileActionKind::None: return false;
+            }
+            return false;
+        case Action::Type::UnitUpgrade:
+            switch (a.unitUpgrade) {
+                case Action::UnitUpgradeKind::RaftToScout: return game.upgradeRaftToScout(a.pid, a.unit);
+                case Action::UnitUpgradeKind::RaftToRammer: return game.upgradeRaftToRammer(a.pid, a.unit);
+                case Action::UnitUpgradeKind::RaftToBomber: return game.upgradeRaftToBomber(a.pid, a.unit);
+                case Action::UnitUpgradeKind::BecomeVeteran: return game.becomeVeteran(a.pid, a.unit);
+                case Action::UnitUpgradeKind::None: return false;
+            }
+            return false;
+    }
+    return false;
+}
+
+static bool actionUnitAtSelection(const Game& game, const Action& a, Pos selected) {
+    if (a.unit == kNoUnit) return false;
+    const Unit* u = game.getUnit(a.unit);
+    return u && samePos(u->getPos(), selected);
+}
+
+static bool contextActionMatchesSelection(const Game& game, const Action& a, Pos selected) {
+    switch (a.type) {
+        case Action::Type::Move:
+        case Action::Type::Attack:
+        case Action::Type::BuyTech:
+        case Action::Type::EndTurn:
+            return false;
+        case Action::Type::Heal:
+        case Action::Type::UnitUpgrade:
+            return actionUnitAtSelection(game, a, selected);
+        case Action::Type::Build:
+        case Action::Type::SpawnUnit:
+        case Action::Type::TileAction:
+            return samePos(a.pos, selected);
+        case Action::Type::UpgradeCity:
+            if (const City* c = game.getCity(a.city)) return samePos(c->getPos(), selected);
+            return false;
+    }
+    return false;
+}
+
+static std::vector<Action> legalContextActionsForSelection(const Game& game, Pos selected) {
+    GameStateAdapter adapter(game);
+    std::vector<Action> out;
+    for (const Action& a : adapter.legalActions(game.getCurrentPlayerId())) {
+        if (contextActionMatchesSelection(game, a, selected)) {
+            out.push_back(a);
+        }
+    }
+    return out;
 }
 
 // Fixed Polytopia-like tech layout (hand-tuned to match the screenshot).
@@ -532,6 +642,18 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                     for (int bi = 0; bi < g_actionBtnCount; ++bi) {
                         const ActionButton& ab = g_actionBtns[bi];
                         if (!ab.rect.contains(up)) continue;
+                        if (ab.hasEngineAction) {
+                            perfLog("EngineAction", [&] {
+                                const bool ok = applyEngineAction(*game, ab.engineAction);
+                                (void)ok;
+                            });
+                            g_moveSelectedUnit = kNoUnit;
+                            clearUnitOverlays();
+                            selectedValid = false;
+                            g_actionBtnsValid = false;
+                            g_actionBtnCount = 0;
+                            return; // consume click
+                        }
                         if (ab.kind == ActionKind::CaptureVillage || ab.kind == ActionKind::CaptureCity) {
                             // For capture actions we require a unit on the selected tile.
                             const UnitId uOn = game->getMap().unitOn(g_actionPos);
@@ -805,9 +927,11 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
 
                         // 2) Click on a highlighted attack tile => attack
                         if (g_moveSelectedUnit != kNoUnit && g_attackOverlayValid) {
-                            if (g_attackOverlaySet.find(posKey(hit)) != g_attackOverlaySet.end()) {
+                            const auto attackIt = g_attackOverlayActions.find(posKey(hit));
+                            if (attackIt != g_attackOverlayActions.end()) {
                                 perfLog("Attack", [&] {
-const bool ok = game->attack(game->getCurrentPlayerId(), g_moveSelectedUnit, hit);                                    (void)ok;
+                                    const bool ok = applyEngineAction(*game, attackIt->second);
+                                    (void)ok;
                                 });
                                 // After an attack we clear overlays.
                                 g_moveSelectedUnit = kNoUnit;
@@ -818,9 +942,10 @@ const bool ok = game->attack(game->getCurrentPlayerId(), g_moveSelectedUnit, hit
 
                         // 3) Click on a highlighted reachable tile => move
                         if (g_moveSelectedUnit != kNoUnit && g_moveOverlayValid) {
-                            if (g_moveOverlaySet.find(posKey(hit)) != g_moveOverlaySet.end()) {
+                            const auto moveIt = g_moveOverlayActions.find(posKey(hit));
+                            if (moveIt != g_moveOverlayActions.end()) {
                                 perfLog("MoveUnit", [&] {
-const bool ok = game->moveUnit(game->getCurrentPlayerId(), g_moveSelectedUnit, hit);
+                                    const bool ok = applyEngineAction(*game, moveIt->second);
                                     (void)ok;
                                 });
                                 // After a move we clear the overlay (simple UX). Re-click unit to move again.
@@ -1229,6 +1354,76 @@ static const char* buildingTypeName(BuildingTypeEnum b) {
     }
 }
 
+static const char* cityRewardName(CityUpgradeChoice choice) {
+    switch (choice) {
+        case CityUpgradeChoice::Workshop: return "Workshop";
+        case CityUpgradeChoice::Explorer: return "Explorer";
+        case CityUpgradeChoice::Resources: return "5 stars";
+        case CityUpgradeChoice::CityWall: return "Wall";
+        case CityUpgradeChoice::PopulationGrowth: return "Pop growth";
+        case CityUpgradeChoice::BorderGrowth: return "Border";
+        case CityUpgradeChoice::Park: return "Park";
+        case CityUpgradeChoice::SuperUnit: return "Super unit";
+        case CityUpgradeChoice::None: return "Upgrade";
+    }
+    return "Upgrade";
+}
+
+static const char* tileActionName(Action::TileActionKind kind) {
+    switch (kind) {
+        case Action::TileActionKind::Hunt: return "Hunt";
+        case Action::TileActionKind::Organization: return "Organization";
+        case Action::TileActionKind::Fishing: return "Fishing";
+        case Action::TileActionKind::ClearForest: return "Clear Forest";
+        case Action::TileActionKind::BurnForest: return "Burn Forest";
+        case Action::TileActionKind::GrowForest: return "Grow Forest";
+        case Action::TileActionKind::DestroyTile: return "Destroy";
+        case Action::TileActionKind::BuildRoad: return "Build Road";
+        case Action::TileActionKind::BuildBridge: return "Build Bridge";
+        case Action::TileActionKind::Explorer: return "Explorer";
+        case Action::TileActionKind::FoundCity: return "Capture Village";
+        case Action::TileActionKind::Ruin: return "Explore Ruin";
+        case Action::TileActionKind::Starfish: return "Collect Starfish";
+        case Action::TileActionKind::CaptureCity: return "Capture City";
+        case Action::TileActionKind::None: return "Action";
+    }
+    return "Action";
+}
+
+static const char* unitUpgradeName(Action::UnitUpgradeKind kind) {
+    switch (kind) {
+        case Action::UnitUpgradeKind::RaftToScout: return "Upgrade -> Scout";
+        case Action::UnitUpgradeKind::RaftToRammer: return "Upgrade -> Rammer";
+        case Action::UnitUpgradeKind::RaftToBomber: return "Upgrade -> Bomber";
+        case Action::UnitUpgradeKind::BecomeVeteran: return "Become Veteran";
+        case Action::UnitUpgradeKind::None: return "Upgrade";
+    }
+    return "Upgrade";
+}
+
+static std::string engineActionLabel(const Action& a) {
+    switch (a.type) {
+        case Action::Type::Heal:
+            return "Heal";
+        case Action::Type::UpgradeCity:
+            return std::string("City: ") + cityRewardName(a.upgrade);
+        case Action::Type::Build:
+            return std::string("Build ") + buildingTypeName(a.building);
+        case Action::Type::SpawnUnit:
+            return std::string("Train ") + unitTypeName(a.spawnType);
+        case Action::Type::TileAction:
+            return tileActionName(a.tileAction);
+        case Action::Type::UnitUpgrade:
+            return unitUpgradeName(a.unitUpgrade);
+        case Action::Type::Move:
+        case Action::Type::Attack:
+        case Action::Type::EndTurn:
+        case Action::Type::BuyTech:
+            return "Action";
+    }
+    return "Action";
+}
+
 static inline bool isMonument(BuildingTypeEnum t) {
     switch (t) {
         case BuildingTypeEnum::AltarOfPeace:
@@ -1560,6 +1755,33 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     // --- Fog-of-war (gameplay view only) ---
     // In Map View (overview) we show the full map without fog.
     const PlayerId curPid = game->getCurrentPlayerId();
+    const bool curHasClimbing =
+        curPid != kNoPlayer &&
+        static_cast<size_t>(curPid) < game->getPlayers().size() &&
+        game->getPlayer(curPid).hasTech(TechId::Climbing);
+    const bool curHasOrganization =
+        curPid != kNoPlayer &&
+        static_cast<size_t>(curPid) < game->getPlayers().size() &&
+        game->getPlayer(curPid).hasTech(TechId::Organization);
+    const bool curHasSailing =
+        curPid != kNoPlayer &&
+        static_cast<size_t>(curPid) < game->getPlayers().size() &&
+        game->getPlayer(curPid).hasTech(TechId::Sailing);
+
+    auto displayResourceForTile = [&](const Tile& t) {
+        const ResourcesEnum r = t.getResource();
+        if (showOverview) return r;
+        if (r == ResourcesEnum::Metal && !curHasClimbing) return ResourcesEnum::None;
+        if (r == ResourcesEnum::Crops && !curHasOrganization) return ResourcesEnum::None;
+        return r;
+    };
+
+    auto displaySettlementForTile = [&](const Tile& t) {
+        const SettlementTypeEnum s = t.getSettlementType();
+        if (showOverview) return s;
+        if (s == SettlementTypeEnum::Starfish && !curHasSailing) return SettlementTypeEnum::None;
+        return s;
+    };
 
     // Preload fog texture once per frame (only used in gameplay view).
     const sf::Texture* fogTex = nullptr;
@@ -1723,10 +1945,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             const TribeType tribe = tile.getTribe();
 
             // Convert engine tile state to JS-like "type".
-            const auto res = tile.getResource();
+            const auto res = displayResourceForTile(tile);
             auto hasRes = [&](ResourcesEnum r) {
                 return res == r;
             };
+            const SettlementTypeEnum displaySettlement = displaySettlementForTile(tile);
 
             std::string type;
             switch (tile.getBaseTerrain()) {
@@ -1818,15 +2041,15 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
 
             // capital: a City can be a capital, but not every City is a capital.
             bool isCapital = false;
-            if (tile.getSettlementType() == SettlementTypeEnum::City) {
+            if (displaySettlement == SettlementTypeEnum::City) {
                 if (const City* cObj = resolveCityForTile(game, tile)) {
                     isCapital = cObj->isCapitalCity();
                 }
             }
-            const bool isVillage = (tile.getSettlementType() == SettlementTypeEnum::Village);
-            const bool isRuin = (tile.getSettlementType() == SettlementTypeEnum::Ruin);
+            const bool isVillage = (displaySettlement == SettlementTypeEnum::Village);
+            const bool isRuin = (displaySettlement == SettlementTypeEnum::Ruin);
 
-            if (tile.getSettlementType() == SettlementTypeEnum::City) {
+            if (displaySettlement == SettlementTypeEnum::City) {
                 int cityLevel = 1;
                 TribeType cityTribe = tribe; // default: biome tribe (fallback)
 
@@ -1911,7 +2134,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             }
 
             // Replace whale with starfish (as you requested).
-            if (tile.getSettlementType() == SettlementTypeEnum::Starfish) {                // Draw starfish slightly smaller and lifted
+            if (displaySettlement == SettlementTypeEnum::Starfish) {                // Draw starfish slightly smaller and lifted
                 const sf::Texture& t = pickFirstExisting(globalCandidates("starfish"));
                 const float s = tileSize * 0.75f;
                 aboveDraws.push_back(SpriteDrawCmd{&t,
@@ -2394,194 +2617,76 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         g_actionBtnsValid = false;
         g_actionBtnCount = 0;
 
-        // GUI does NOT validate gameplay rules. It only offers actions.
-        // All validation must happen in Game.cpp / systems.
-        if (game) {
-            if (!showOverview) {
-                const Map& m0 = game->getMap();
-                const Pos p0 = selectedValid ? selectedPos : Pos{0, 0};
-                if (selectedValid && m0.inBounds(p0)) {
-                    const Tile& t0 = m0.at(p0);
-                    // Build a small action bar under the map (left side).
-                    const float mapW = float(mapRt.x);
-                    const float mapH = float(rt.getSize().y);
-                    const float barH = 230.f; // more room: multiple rows of buttons
-                    const float pad = 10.f;
-                    auto pushBtn = [&](ActionKind kind, const char* label, UnitType ut, BuildingTypeEnum bt) {
-                        if (g_actionBtnCount >= int(g_actionBtns.size())) return;
+        if (game && !showOverview && selectedValid && game->getMap().inBounds(selectedPos)) {
+            const std::vector<Action> actions = legalContextActionsForSelection(*game, selectedPos);
+            if (!actions.empty()) {
+                const float mapW = float(mapRt.x);
+                const float mapH = float(rt.getSize().y);
+                const float pad = 10.f;
+                const float bw = 132.f;
+                const float bh = 30.f;
+                const float gap = 6.f;
+                const int maxPerRow = std::max(1, int((mapW - kLeftSpawnPanelW - 2.f * pad) / (bw + gap)));
+                const int rows = std::min(3, (int(actions.size()) + maxPerRow - 1) / maxPerRow);
+                const float barH = pad * 2.f + float(rows) * bh + float(std::max(0, rows - 1)) * gap;
 
-                        const float bw = 110.f; // narrower buttons so more fit
-                        const float bh = 30.f;
-                        const float gap = 6.f;
-                        const int maxPerRow = std::max(1, int((mapW - 2.f * pad) / (bw + gap)));
-                        const int row = g_actionBtnCount / maxPerRow;
-                        const int col = g_actionBtnCount % maxPerRow;
+                sf::RectangleShape bar;
+                bar.setPosition(kLeftSpawnPanelW, mapH - barH);
+                bar.setSize({mapW - kLeftSpawnPanelW, barH});
+                bar.setFillColor(sf::Color(15, 15, 15, 210));
+                bar.setOutlineThickness(1.f);
+                bar.setOutlineColor(sf::Color(70, 70, 70, 220));
+                rt.draw(bar);
 
-                        const float bx = kLeftSpawnPanelW + pad + float(col) * (bw + gap);
-                        const float by = (mapH - barH) + pad + float(row) * (bh + 6.f);
+                auto pushEngineBtn = [&](const Action& action, const std::string& label) {
+                    if (g_actionBtnCount >= int(g_actionBtns.size())) return;
+                    const int row = g_actionBtnCount / maxPerRow;
+                    if (row >= rows) return;
+                    const int col = g_actionBtnCount % maxPerRow;
 
-                        g_actionBtns[g_actionBtnCount] = ActionButton{sf::FloatRect(bx, by, bw, bh), kind, ut, bt};
-                        ++g_actionBtnCount;
+                    const float bx = kLeftSpawnPanelW + pad + float(col) * (bw + gap);
+                    const float by = (mapH - barH) + pad + float(row) * (bh + gap);
 
-                        sf::RectangleShape b;
-                        b.setPosition({bx, by});
-                        b.setSize({bw, bh});
-                        b.setFillColor(sf::Color(35, 35, 35, 235));
-                        b.setOutlineThickness(2.f);
-                        b.setOutlineColor(sf::Color(110, 110, 110, 255));
-                        rt.draw(b);
+                    ActionButton btn{};
+                    btn.rect = sf::FloatRect(bx, by, bw, bh);
+                    btn.kind = ActionKind::None;
+                    btn.engineAction = action;
+                    btn.hasEngineAction = true;
+                    g_actionBtns[g_actionBtnCount] = btn;
+                    ++g_actionBtnCount;
 
-                        if (ensureUIFontLoaded()) {
-                            sf::Text t;
-                            t.setFont(uiFont);
-                            t.setCharacterSize(16);
-                            t.setFillColor(sf::Color(240, 240, 240, 255));
-                            t.setString(label);
-                            const sf::FloatRect lb = t.getLocalBounds();
-                            t.setPosition(
-                                bx + (bw - lb.width) * 0.5f - lb.left,
-                                by + (bh - lb.height) * 0.5f - lb.top - 1.f
-                            );
-                            rt.draw(t);
-                        }
-                    };
+                    sf::RectangleShape b;
+                    b.setPosition({bx, by});
+                    b.setSize({bw, bh});
+                    b.setFillColor(sf::Color(35, 35, 35, 235));
+                    b.setOutlineThickness(2.f);
+                    b.setOutlineColor(sf::Color(110, 110, 110, 255));
+                    rt.draw(b);
 
-                    // Always show ALL buttons so we can test that Game.cpp validates rules.
-                    // (GUI is only a launcher.)
-
-                    // Capture
-                    pushBtn(ActionKind::CaptureVillage, "Capture Village", UnitType::Warrior, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::CaptureCity,    "Capture City",    UnitType::Warrior, BuildingTypeEnum::None);
-
-                    // Training
-
-                    // Upgrades (Raft -> ship variants)
-                    pushBtn(ActionKind::UpgradeRaftToScout,  "Upgrade -> Scout",  UnitType::Raft, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::UpgradeRaftToRammer, "Upgrade -> Rammer", UnitType::Raft, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::UpgradeRaftToBomber, "Upgrade -> Bomber", UnitType::Raft, BuildingTypeEnum::None);
-
-                    // Veteran
-                    pushBtn(ActionKind::BecomeVeteran, "Become Veteran", UnitType::Unknown, BuildingTypeEnum::None);
-
-                    // Buildings
-                    pushBtn(ActionKind::BuildBuilding, "Build Farm",       UnitType::Unknown, BuildingTypeEnum::Farm);
-                    pushBtn(ActionKind::BuildBuilding, "Build Mine",       UnitType::Unknown, BuildingTypeEnum::Mine);
-                    pushBtn(ActionKind::BuildBuilding, "Build Lumber Hut", UnitType::Unknown, BuildingTypeEnum::LumberHut);
-                    pushBtn(ActionKind::BuildBuilding, "Build Port",       UnitType::Unknown, BuildingTypeEnum::Port);
-                    pushBtn(ActionKind::BuildBuilding, "Build Market",     UnitType::Unknown, BuildingTypeEnum::Market);
-                    pushBtn(ActionKind::BuildBuilding, "Build Forge",      UnitType::Unknown, BuildingTypeEnum::Forge);
-                    pushBtn(ActionKind::BuildBuilding, "Build Sawmill",    UnitType::Unknown, BuildingTypeEnum::Sawmill);
-                    pushBtn(ActionKind::BuildBuilding, "Build Windmill",   UnitType::Unknown, BuildingTypeEnum::Windmill);
-
-                    // Monuments (one button per earned monument that is not yet placed)
-                    // Monuments (always show buttons; Game/BuildingSystem validates eligibility)
-                    {
-                        const std::array<BuildingTypeEnum, 7> mons = {
-                            BuildingTypeEnum::AltarOfPeace,
-                            BuildingTypeEnum::EmperorsTomb,
-                            BuildingTypeEnum::EyeOfGod,
-                            BuildingTypeEnum::GateOfPower,
-                            BuildingTypeEnum::GrandBazaar,
-                            BuildingTypeEnum::ParkOfFortune,
-                            BuildingTypeEnum::TowerOfWisdom
-                        };
-
-                        for (BuildingTypeEnum m : mons) {
-                            std::string lbl = std::string("Build ") + buildingTypeName(m);
-                            pushBtn(ActionKind::BuildBuilding, lbl.c_str(), UnitType::Unknown, m);
-                        }
+                    if (ensureUIFontLoaded()) {
+                        sf::Text t;
+                        t.setFont(uiFont);
+                        t.setCharacterSize(14);
+                        t.setFillColor(sf::Color(240, 240, 240, 255));
+                        t.setString(label);
+                        const sf::FloatRect lb = t.getLocalBounds();
+                        t.setPosition(
+                            bx + std::max(6.f, (bw - lb.width) * 0.5f) - lb.left,
+                            by + (bh - lb.height) * 0.5f - lb.top - 1.f
+                        );
+                        rt.draw(t);
                     }
-                    // Tile actions
-                    pushBtn(ActionKind::Organization, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
-                    {
-                        const UnitId healUid = m0.unitOn(p0);
-                        const Unit* healUnit = (healUid != Map::kNoUnit) ? game->getUnit(healUid) : nullptr;
-                        if (healUnit && healUnit->hasSkill(UnitSkill::Heal))
-                            pushBtn(ActionKind::Heal, "Heal", UnitType::Unknown, BuildingTypeEnum::None);
-                    }
-                    pushBtn(ActionKind::Hunt,         "Hunt",         UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::Fishing,      "Fishing",      UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::ClearForest,  "Clear Forest", UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::BurnForest,   "Burn Forest",  UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::GrowForest,   "Grow Forest",  UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::DestroyTile,  "Destroy",      UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::BuildRoad,    "Build Road",   UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::BuildBridge,  "Build Bridge", UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::Explorer,     "Explorer",     UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::ExploreRuin,     "Explore Ruin",     UnitType::Unknown, BuildingTypeEnum::None);
-                    pushBtn(ActionKind::CollectStarfish, "Collect Starfish", UnitType::Unknown, BuildingTypeEnum::None);
+                };
 
-                    if (g_actionBtnCount > 0) {
-                        sf::RectangleShape bar;
-                        bar.setPosition(kLeftSpawnPanelW, mapH - barH);                    bar.setSize({mapW, barH});
-                        bar.setFillColor(sf::Color(15, 15, 15, 210));
-                        bar.setOutlineThickness(1.f);
-                        bar.setOutlineColor(sf::Color(70, 70, 70, 220));
-                        rt.draw(bar);
-
-                        // Re-draw buttons on top of bar
-                        const int want = g_actionBtnCount;
-                        std::vector<ActionButton> saved;
-                        saved.reserve(size_t(want));
-                        for (int i = 0; i < want; ++i) saved.push_back(g_actionBtns[i]);
-
-                        g_actionBtnCount = 0;
-                        for (const ActionButton& sbtn : saved) {
-                            if (sbtn.kind == ActionKind::CaptureVillage) {
-                                pushBtn(sbtn.kind, "Capture Village", sbtn.trainType, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::CaptureCity) {
-                                pushBtn(sbtn.kind, "Capture City", sbtn.trainType, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::TrainUnit) {
-                                pushBtn(sbtn.kind,
-                                        (sbtn.trainType == UnitType::Rider) ? "Train Rider" : "Train Warrior",
-                                        sbtn.trainType,
-                                        BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::BuildBuilding) {
-                                std::string lbl = std::string("Build ") + buildingTypeName(sbtn.buildType);
-                                pushBtn(sbtn.kind, lbl.c_str(), UnitType::Unknown, sbtn.buildType);
-                            } else if (sbtn.kind == ActionKind::ClearForest) {
-                                pushBtn(sbtn.kind, "Clear Forest", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::BurnForest) {
-                                pushBtn(sbtn.kind, "Burn Forest", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::GrowForest) {
-                                pushBtn(sbtn.kind, "Grow Forest", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::Hunt) {
-                                pushBtn(sbtn.kind, "Hunt", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::Fishing) {
-                                pushBtn(sbtn.kind, "Fishing", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::DestroyTile) {
-                                pushBtn(sbtn.kind, "Destroy", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::BuildRoad) {
-                                pushBtn(sbtn.kind, "Build Road", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::Organization) {
-                                pushBtn(sbtn.kind, "Organization", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::Heal) {
-                                pushBtn(sbtn.kind, "Heal", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::UpgradeRaftToScout) {
-                                pushBtn(sbtn.kind, "Upgrade -> Scout", UnitType::Raft, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::UpgradeRaftToRammer) {
-                                pushBtn(sbtn.kind, "Upgrade -> Rammer", UnitType::Raft, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::UpgradeRaftToBomber) {
-                                pushBtn(sbtn.kind, "Upgrade -> Bomber", UnitType::Raft, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::BecomeVeteran) {
-                                pushBtn(sbtn.kind, "Become Veteran", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::BuildBridge) {
-                                pushBtn(sbtn.kind, "Build Bridge", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::Explorer) {
-                                pushBtn(sbtn.kind, "Explorer", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::ExploreRuin) {
-                                pushBtn(sbtn.kind, "Explore Ruin", UnitType::Unknown, BuildingTypeEnum::None);
-                            } else if (sbtn.kind == ActionKind::CollectStarfish) {
-                                pushBtn(sbtn.kind, "Collect Starfish", UnitType::Unknown, BuildingTypeEnum::None);
-                            }
-
-                            g_actionPos = p0;
-                            g_actionBtnsValid = true;
-
-                        }
-                    }
+                for (const Action& action : actions) {
+                    pushEngineBtn(action, engineActionLabel(action));
                 }
+
+                g_actionPos = selectedPos;
+                g_actionBtnsValid = g_actionBtnCount > 0;
             }
+        }
+
             // --- Draw selection highlight (on top) ---
             // --- Draw selection highlight (on top) ---
             if (selectedValid) {
@@ -2785,7 +2890,10 @@ if (!showOverview) {
                     }
                     addLine(ty, std::string("Road: ") + (st.getRoadBridge() == RoadBridgeEnum::Road ? "yes" : "no"), 14);
                     addLine(ty, std::string("Water path: ") + (st.getRoadBridge() == RoadBridgeEnum::WaterConnection ? "yes" : "no"), 14);
-                    addLine(ty, std::string("Settlement: ") + settlementName(st.getSettlementType()), 14);
+                    const SettlementTypeEnum displaySettlement = displaySettlementForTile(st);
+                    const ResourcesEnum displayResource = displayResourceForTile(st);
+
+                    addLine(ty, std::string("Settlement: ") + settlementName(displaySettlement), 14);
                     addLine(ty, std::string("Building: ") + buildingTypeName(st.getBuildingType()), 14);
 
                     // Building level preview (Polytopia-style)
@@ -2807,7 +2915,7 @@ if (!showOverview) {
                     // Resources list (Tile)
                     {
                         std::string rline = "Resources: ";
-                        switch (st.getResource()) {
+                        switch (displayResource) {
                             case ResourcesEnum::Fruit:  rline += "Fruit";  break;
                             case ResourcesEnum::Crops:  rline += "Crops";  break;
                             case ResourcesEnum::Animal: rline += "Animal"; break;
@@ -3657,7 +3765,7 @@ if (!showOverview) {
 
             // --- Left spawn panel (gameplay view only) ---
             // Moved: now rendered after map, context bar, and right panel to always appear on top.
-            if (!showOverview) {
+            if (kShowLegacySpawnPanel && !showOverview) {
                 sf::RectangleShape lp;
                 lp.setPosition({0.f, 0.f});
                 lp.setSize({kLeftSpawnPanelW, float(rtSzPanel.y)});
@@ -3748,4 +3856,3 @@ if (!showOverview) {
                 g_spawnSelectedType = UnitType::Unknown;
             }
         }
-    }

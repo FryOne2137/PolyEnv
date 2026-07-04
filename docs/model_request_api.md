@@ -111,6 +111,16 @@ Exact enum meanings are engine-defined. For most model code, treat enum features
 
 See [Token Reference](token_reference.md) for the numeric ids used by terrain, resources, buildings, tribes, technologies, actions, and units.
 
+Technology-gated visibility in `map_tokens`:
+
+| Feature | Visible when player has |
+| --- | --- |
+| `resource = Metal` | `Climbing` |
+| `resource = Crops` | `Organization` |
+| `settlement_type = Starfish` | `Sailing` |
+
+Collecting a visible `Starfish` requires `Navigation` and grants 8 stars.
+
 ## Observation Fields
 
 `packet["obs"]` contains scalar game and player state:
