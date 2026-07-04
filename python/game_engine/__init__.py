@@ -113,8 +113,13 @@ class GameEnv(_GameEnv):
             units_json_path or _default_units_path(),
         )
 
-    def tokenized_map(self) -> list[list[int]]:
-        return super().tokenized_map()
+    def tokenized_map(
+        self,
+        player_id: int | None = None,
+        visible_only: bool = True,
+        hidden_value: int = -1,
+    ) -> list[list[int]]:
+        return super().tokenized_map(player_id, visible_only, hidden_value)
 
     def last_revealed_tiles(
         self,
