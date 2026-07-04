@@ -76,6 +76,23 @@ action_id = int(packet["actions"]["action_id"][row])
 env.step_fast(action_id)
 ```
 
+## `model_request_numpy()` Does Not Show Hidden Tiles
+
+This is expected. Model request packets are player-view:
+
+```python
+packet = env.model_request_numpy()
+visible = packet["map_tokens"]
+```
+
+Use the explicit full-map API only for ground-truth labels or debugging:
+
+```python
+target = env.full_map_numpy()
+```
+
+Do not use `full_map_numpy()` as normal policy input unless you intentionally want an omniscient/debug baseline.
+
 ## Torch GPU Transfer Is Slow
 
 Batch before moving to GPU:
@@ -96,4 +113,3 @@ for packet in packets:
 ```
 
 Many small CPU-to-GPU transfers are slower than one larger batched transfer.
-

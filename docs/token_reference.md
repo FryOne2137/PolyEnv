@@ -2,6 +2,8 @@
 
 This page lists numeric ids used in `map_tokens`, action fields, and model request packets.
 
+`model_request*`, `player_map*`, and default `tokenized_map()` use player-view tokens. Hidden player-view features are `-1`. `full_map*` uses the same feature layout but returns ground-truth values.
+
 The most important columns in `map_tokens` are:
 
 | Feature index | Field | Uses table |
@@ -294,4 +296,3 @@ Used by action field `upgrade`.
 | 6 | BorderGrowth |
 | 7 | Park |
 | 8 | SuperUnit |
-

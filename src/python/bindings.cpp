@@ -81,6 +81,19 @@ static py::array_t<int32_t> mapTokensToNumpy(const json& mapTokens) {
     return arr;
 }
 
+static py::array_t<int32_t> mapRowsToNumpy(const std::vector<std::vector<int>>& rowsVec) {
+    const size_t rows = rowsVec.size();
+    const size_t cols = rows > 0 ? rowsVec[0].size() : 0;
+    py::array_t<int32_t> arr({rows, cols});
+    auto out = arr.mutable_unchecked<2>();
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+            out(r, c) = (c < rowsVec[r].size()) ? static_cast<int32_t>(rowsVec[r][c]) : int32_t(0);
+        }
+    }
+    return arr;
+}
+
 static py::array_t<int64_t> actionFieldToNumpy(
     const json& actions,
     const char* field,
@@ -798,7 +811,7 @@ public:
         state_ = std::make_unique<GameStateAdapter>(std::move(game));
         initializeObservationKnowledgeFromCurrentVisibility();
         invalidateCaches();
-        return observation(std::nullopt, false, -1);
+        return observation(std::nullopt, true, -1);
     }
 
     py::dict step(size_t actionId, std::optional<int> rewardPlayer) {
@@ -818,7 +831,7 @@ public:
             out["delta_stars"] = 0;
             out["action_cost_stars"] = -1;
             out["action_affordable"] = 0;
-            out["observation"] = observation(std::nullopt, false, -1);
+            out["observation"] = observation(std::nullopt, true, -1);
             return out;
         }
         const ActionModelFields actionFeatures = buildActionModelFields(gBefore, *decoded);
@@ -849,7 +862,7 @@ public:
         out["action_cost_stars"] = actionFeatures.costStars;
         out["action_affordable"] = actionFeatures.affordable;
         out["action_population_gain"] = actionFeatures.populationGain;
-        out["observation"] = observation(std::nullopt, false, -1);
+        out["observation"] = observation(std::nullopt, true, -1);
         return out;
     }
 
@@ -1178,6 +1191,99 @@ public:
         return out;
     }
 
+    std::vector<std::vector<int>> playerMap(std::optional<int> playerId = std::nullopt,
+                                            int hiddenValue = -1) const {
+        return tokenizedMap(playerId, true, hiddenValue);
+    }
+
+    py::array_t<int32_t> playerMapNumpy(std::optional<int> playerId = std::nullopt,
+                                        int hiddenValue = -1) const {
+        return mapRowsToNumpy(playerMap(playerId, hiddenValue));
+    }
+
+    std::vector<std::vector<int>> fullMap() const {
+        ensureState();
+        const Game& g = state_->getGame();
+        const Map& m = g.getMap();
+        const int w = m.getWidth();
+        const int h = m.getHeight();
+
+        std::vector<std::vector<int>> out;
+        out.reserve(static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h)));
+
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const Pos p{x, y};
+                const Tile& t = m.at(p);
+
+                int unitHp = -1;
+                int unitOwner = -1;
+                int unitId = static_cast<int>(Map::kNoUnit);
+                int ownUnitKills = -1;
+                const UnitId uid = m.unitOn(p);
+                if (uid != Map::kNoUnit) {
+                    if (const Unit* u = g.getUnit(uid)) {
+                        unitId = static_cast<int>(uid);
+                        unitHp = u->getHealth();
+                        unitOwner = static_cast<int>(u->getOwnerId());
+                        ownUnitKills = u->getKillCounter();
+                    }
+                }
+
+                int capitalLayer = -1;
+                int cityLevel = -1;
+                int cityOwnerToken = -1;
+                int cityUnitsOccupiedToken = -1;
+                if (t.getSettlementType() == SettlementTypeEnum::City) {
+                    capitalLayer = 0;
+                    const CityId cityId = static_cast<CityId>(t.getSettlementId());
+                    if (cityId != kNoCity) {
+                        if (const City* city = g.getCity(cityId)) {
+                            cityLevel = static_cast<int>(city->getLevel());
+                            const PlayerId owner = city->getOwnerId();
+                            if (owner != kNoPlayer) {
+                                cityOwnerToken = static_cast<int>(owner);
+                                cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
+                            }
+                            if (owner != kNoPlayer &&
+                                static_cast<size_t>(owner) < g.getPlayers().size() &&
+                                g.getPlayer(owner).getCapitalId() == city->getCityId()) {
+                                capitalLayer = 1;
+                            }
+                        }
+                    }
+                }
+
+                out.push_back(std::vector<int>{
+                    1,
+                    0,
+                    unitHp,
+                    unitOwner,
+                    (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
+                    ownUnitKills,
+                    (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
+                    static_cast<int>(t.getRoadBridge()),
+                    static_cast<int>(t.getBuildingType()),
+                    capitalLayer,
+                    cityLevel,
+                    static_cast<int>(t.getSettlementType()),
+                    (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement)) ? -1 : static_cast<int>(t.getSettlementId()),
+                    cityOwnerToken,
+                    cityUnitsOccupiedToken,
+                    static_cast<int>(t.getResource()),
+                    static_cast<int>(t.getBaseTerrain()),
+                    static_cast<int>(t.getTribe()),
+                });
+            }
+        }
+
+        return out;
+    }
+
+    py::array_t<int32_t> fullMapNumpy() const {
+        return mapRowsToNumpy(fullMap());
+    }
+
     std::vector<int> lighthouseDiscoveredByMasks() const {
         ensureState();
         const Game& g = state_->getGame();
@@ -1332,7 +1438,13 @@ public:
     py::dict modelRequest() {
         ensureState();
         json req = GameStateSerializer::buildRequest(state_->getGame(), *state_);
-        return py::cast<py::dict>(jsonToPy(req));
+
+        py::dict out;
+        out["map_tokens"] = playerMap(std::nullopt, -1);
+        out["obs"] = observation(std::nullopt, true, -1);
+        out["actions"] = jsonToPy(req["actions"]);
+        out["spec"] = jsonToPy(req["spec"]);
+        return out;
     }
 
     py::dict requestPacket() {
@@ -1344,8 +1456,8 @@ public:
         json req = GameStateSerializer::buildRequest(state_->getGame(), *state_);
 
         py::dict out;
-        out["map_tokens"] = mapTokensToNumpy(req["map_tokens"]);
-        out["obs"] = jsonToPy(req["obs"]);
+        out["map_tokens"] = playerMapNumpy(std::nullopt, -1);
+        out["obs"] = observation(std::nullopt, true, -1);
         out["actions"] = actionsToNumpy(req["actions"]);
         out["spec"] = jsonToPy(req["spec"]);
         return out;
@@ -1529,7 +1641,7 @@ public:
             out["done"] = state_->isTerminal();
             out["reward"] = 0.0f;
             out["selected_action_id"] = -1;
-            out["observation"] = observation(std::nullopt, false, -1);
+            out["observation"] = observation(std::nullopt, true, -1);
             out["error"] = "Missing required field: type_id";
             return out;
         }
@@ -1566,7 +1678,7 @@ public:
             out["done"] = state_->isTerminal();
             out["reward"] = 0.0f;
             out["selected_action_id"] = -1;
-            out["observation"] = observation(std::nullopt, false, -1);
+            out["observation"] = observation(std::nullopt, true, -1);
             out["error"] = "No legal action matches provided param tuple.";
             return out;
         }
@@ -1583,7 +1695,7 @@ public:
             out["done"] = isDone();
             out["reward"] = 0.0f;
             out["selected_action_id"] = -1;
-            out["observation"] = observation(std::nullopt, false, -1);
+            out["observation"] = observation(std::nullopt, true, -1);
             out["error"] = "Vector must contain at least type_id.";
             return out;
         }
@@ -2024,12 +2136,20 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("reward_player") = std::nullopt)
         .def("observation", &GameEnv::observation,
              py::arg("player_id") = std::nullopt,
-             py::arg("visible_only") = false,
+             py::arg("visible_only") = true,
              py::arg("hidden_value") = -1)
         .def("tokenized_map", &GameEnv::tokenizedMap,
              py::arg("player_id") = std::nullopt,
-             py::arg("visible_only") = false,
+             py::arg("visible_only") = true,
              py::arg("hidden_value") = -1)
+        .def("player_map", &GameEnv::playerMap,
+             py::arg("player_id") = std::nullopt,
+             py::arg("hidden_value") = -1)
+        .def("player_map_numpy", &GameEnv::playerMapNumpy,
+             py::arg("player_id") = std::nullopt,
+             py::arg("hidden_value") = -1)
+        .def("full_map", &GameEnv::fullMap)
+        .def("full_map_numpy", &GameEnv::fullMapNumpy)
         .def("lighthouse_discovered_by_masks", &GameEnv::lighthouseDiscoveredByMasks)
         .def("lighthouse_discovered_by_players", &GameEnv::lighthouseDiscoveredByPlayers)
         .def("lighthouse_visibility", &GameEnv::lighthouseVisibility,
@@ -2062,6 +2182,7 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("player_id") = std::nullopt)
         .def("is_done", &GameEnv::isDone)
         .def("clone", &GameEnv::clone)
+        .def("copy", &GameEnv::clone)
         .def("save_state", &GameEnv::saveState)
         .def("load_state", &GameEnv::loadState, py::arg("snapshot"))
         .def("_last_revealed_indices", &GameEnv::lastRevealedIndices,

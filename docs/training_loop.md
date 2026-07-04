@@ -4,6 +4,8 @@ The environment runs on CPU. Keep the model on GPU and send batched tensors to i
 
 The main performance rule is simple: run many environments on CPU, collate their NumPy packets, then move one batch to GPU.
 
+`model_request_numpy()` returns the current player's visible map. It does not expose hidden tiles. If you train a hidden-map prediction model, use `env.player_map_numpy()` as input and `env.full_map_numpy()` as the supervised target.
+
 ## Single Environment Example
 
 ```python
@@ -16,6 +18,8 @@ action_id = int(packet["actions"]["action_id"][0])
 
 ok, done, reward, winner, current_player = env.step_fast(action_id)
 ```
+
+The returned `reward` is terminal only: win is `1.0`, loss is `-1.0`, non-terminal steps are `0.0`. Reward shaping belongs in your training/model repository, not in the game engine.
 
 ## Batched Inference Pattern
 
@@ -52,6 +56,25 @@ while True:
 ```
 
 This example always picks the first legal action. Replace that part with your policy.
+
+## Map Inputs And Targets
+
+Policy/value model input:
+
+```python
+packet = env.model_request_numpy()
+visible_map = packet["map_tokens"]
+legal_actions = packet["actions"]
+```
+
+Hidden-map prediction dataset:
+
+```python
+visible = env.player_map_numpy()
+target = env.full_map_numpy()
+```
+
+Do not use `full_map_numpy()` as policy input unless you are intentionally running an omniscient/debug baseline.
 
 ## Variable Number Of Actions
 

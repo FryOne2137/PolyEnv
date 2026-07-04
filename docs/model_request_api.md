@@ -14,7 +14,7 @@ For training and inference, prefer the NumPy variant:
 packet = env.model_request_numpy()
 ```
 
-Both methods use the same C++ serializer path as the engine-side model client, so training code and game inference use the same packet contract.
+Both methods return the current player's view of the game. Hidden tiles are masked in `map_tokens`; use `env.full_map()` or `env.full_map_numpy()` only when you explicitly need ground-truth map targets for training/debugging.
 
 !!! tip
     Use `model_request()` when reading or logging packets. Use `model_request_numpy()` inside training loops.
@@ -31,6 +31,8 @@ Both methods use the same C++ serializer path as the engine-side model client, s
     "spec": dict,
 }
 ```
+
+`packet["map_tokens"]` is always player-view. It is not a full map dump.
 
 `env.model_request_numpy()` keeps metadata as Python objects, but returns hot-path model fields as NumPy arrays:
 
@@ -111,7 +113,26 @@ Exact enum meanings are engine-defined. For most model code, treat enum features
 
 See [Token Reference](token_reference.md) for the numeric ids used by terrain, resources, buildings, tribes, technologies, actions, and units.
 
-Technology-gated visibility in `map_tokens`:
+In `model_request()` and `model_request_numpy()`, `map_tokens` is equivalent to:
+
+```python
+env.player_map(hidden_value=-1)
+```
+
+For a hidden tile, feature `0` remains the visibility flag and features `1..17` are set to `-1`.
+
+Ground-truth map access is explicit:
+
+```python
+full = env.full_map()
+full_np = env.full_map_numpy()
+```
+
+`full_map*` is not player-view: it does not apply fog-of-war, hidden-tile masking, technology-gated resource hiding, or hidden-unit masking.
+
+For lower-level debugging, `env.tokenized_map(visible_only=False)` still exists. Prefer `env.full_map()` when you need true ground-truth labels, because `full_map()` is the explicit API for that use case.
+
+Technology-gated visibility in player-view map tokens:
 
 | Feature | Visible when player has |
 | --- | --- |

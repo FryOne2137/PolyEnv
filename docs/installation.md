@@ -43,6 +43,8 @@ packet = env.model_request_numpy()
 
 print(packet["map_tokens"].shape)
 print(packet["actions"]["action_id"])
+print(packet["obs"]["visible_only"])
+print(env.full_map_numpy().shape)
 ```
 
 Expected shape for an 11x11 map:
@@ -50,6 +52,8 @@ Expected shape for an 11x11 map:
 ```text
 (121, 18)
 ```
+
+`packet["map_tokens"]` is the current player's visible map. `env.full_map_numpy()` is the explicit ground-truth map.
 
 ## Local Documentation
 
