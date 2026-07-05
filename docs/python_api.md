@@ -5,7 +5,7 @@ This page lists the core Python API used by training and inference code.
 ## Create An Environment
 
 ```python
-from game_engine import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius
 
 env = GameEnv(
     seed=1234,
@@ -17,7 +17,7 @@ env = GameEnv(
 You can also pass tribe names through `get_tribe` or as strings:
 
 ```python
-from game_engine import GameEnv, get_tribe
+from PolyEnv import GameEnv, get_tribe
 
 env = GameEnv(
     seed=1234,
@@ -113,7 +113,7 @@ env.load_state(snapshot)
 The package also exposes helpers for hidden tile prediction workflows:
 
 ```python
-from game_engine import hidden_action_targets, clone_with_predictions
+from PolyEnv import hidden_action_targets, clone_with_predictions
 
 targets = hidden_action_targets(env)
 predicted_env = clone_with_predictions(env, predictions={})

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-## `ModuleNotFoundError: No module named 'game_engine'`
+## `ModuleNotFoundError: No module named 'PolyEnv'`
 
 The package is not installed in the Python environment you are using.
 
@@ -22,6 +22,8 @@ Check that `python` and `pip` refer to the same environment:
 python -m pip --version
 python -c "import sys; print(sys.executable)"
 ```
+
+The legacy import name `game_engine` is still available for compatibility, but new code should use `PolyEnv`.
 
 ## `model_request_numpy()` Fails Because NumPy Is Missing
 

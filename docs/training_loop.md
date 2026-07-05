@@ -9,7 +9,7 @@ The main performance rule is simple: run many environments on CPU, collate their
 ## Single Environment Example
 
 ```python
-from game_engine import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius
 
 env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 
@@ -27,7 +27,7 @@ Run many environments on CPU, collate their packets, then move one batch to GPU.
 
 ```python
 import torch
-from game_engine import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius
 
 
 def make_env(seed: int) -> GameEnv:

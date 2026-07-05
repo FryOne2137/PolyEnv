@@ -20,3 +20,13 @@ def test_game_env_accepts_direct_tribe_constants_in_players() -> None:
 def test_get_tribe_resolves_by_name() -> None:
     assert get_tribe("Bardur") is Tribe.Bardur
     assert get_tribe("kickoo") is Tribe.Kickoo
+
+
+def test_polyenv_import_alias_exports_public_api() -> None:
+    from PolyEnv import Bardur as PolyBardur
+    from PolyEnv import GameEnv as PolyGameEnv
+    from PolyEnv import Imperius as PolyImperius
+
+    env = PolyGameEnv(seed=1234, map_size=11, players=(PolyBardur, PolyImperius))
+
+    assert env.model_request_numpy()["map_tokens"].shape == (11 * 11, 18)

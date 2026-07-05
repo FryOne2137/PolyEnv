@@ -1,0 +1,610 @@
+{
+  "seed": 42,
+  "map_size": 11,
+  "players": [
+    "Bardur",
+    "Imperius"
+  ],
+  "snapshots": [
+    {
+      "step": 0,
+      "turn": 0,
+      "current_player": 0,
+      "player_stars": 5,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 15,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 1,
+      "turn": 0,
+      "current_player": 1,
+      "player_stars": 5,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 14,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 2,
+      "turn": 1,
+      "current_player": 0,
+      "player_stars": 7,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 3,
+      "turn": 1,
+      "current_player": 1,
+      "player_stars": 7,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 4,
+      "turn": 2,
+      "current_player": 0,
+      "player_stars": 9,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 5,
+      "turn": 2,
+      "current_player": 1,
+      "player_stars": 9,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 6,
+      "turn": 3,
+      "current_player": 0,
+      "player_stars": 11,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 7,
+      "turn": 3,
+      "current_player": 1,
+      "player_stars": 11,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 8,
+      "turn": 4,
+      "current_player": 0,
+      "player_stars": 13,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 9,
+      "turn": 4,
+      "current_player": 1,
+      "player_stars": 13,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 10,
+      "turn": 5,
+      "current_player": 0,
+      "player_stars": 15,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 11,
+      "turn": 5,
+      "current_player": 1,
+      "player_stars": 15,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 12,
+      "turn": 6,
+      "current_player": 0,
+      "player_stars": 17,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 13,
+      "turn": 6,
+      "current_player": 1,
+      "player_stars": 17,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 14,
+      "turn": 7,
+      "current_player": 0,
+      "player_stars": 19,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 15,
+      "turn": 7,
+      "current_player": 1,
+      "player_stars": 19,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 16,
+      "turn": 8,
+      "current_player": 0,
+      "player_stars": 21,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 17,
+      "turn": 8,
+      "current_player": 1,
+      "player_stars": 21,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 18,
+      "turn": 9,
+      "current_player": 0,
+      "player_stars": 23,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 19,
+      "turn": 9,
+      "current_player": 1,
+      "player_stars": 23,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 20,
+      "turn": 10,
+      "current_player": 0,
+      "player_stars": 25,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 21,
+      "turn": 10,
+      "current_player": 1,
+      "player_stars": 25,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 22,
+      "turn": 11,
+      "current_player": 0,
+      "player_stars": 27,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 23,
+      "turn": 11,
+      "current_player": 1,
+      "player_stars": 27,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 24,
+      "turn": 12,
+      "current_player": 0,
+      "player_stars": 29,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 25,
+      "turn": 12,
+      "current_player": 1,
+      "player_stars": 29,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 26,
+      "turn": 13,
+      "current_player": 0,
+      "player_stars": 31,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 27,
+      "turn": 13,
+      "current_player": 1,
+      "player_stars": 31,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 28,
+      "turn": 14,
+      "current_player": 0,
+      "player_stars": 33,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 17,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    },
+    {
+      "step": 29,
+      "turn": 14,
+      "current_player": 1,
+      "player_stars": 33,
+      "own_cities": 1,
+      "owns_units": 1,
+      "next_turn_star_income": 2,
+      "game_over": false,
+      "legal_action_count": 16,
+      "action_types": [
+        "buy_tech",
+        "end_turn",
+        "move",
+        "tile_action"
+      ],
+      "terrain_hash": 14711,
+      "chosen_action_id": 0,
+      "chosen_action_type": "end_turn"
+    }
+  ]
+}

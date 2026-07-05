@@ -36,7 +36,7 @@ pip install -e .
 ## Quick Check
 
 ```python
-from game_engine import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius
 
 env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 packet = env.model_request_numpy()

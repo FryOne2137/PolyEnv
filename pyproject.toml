@@ -30,8 +30,9 @@ cmake.args = [
   "-DGAME_ENGINE_BUILD_GUI=OFF",
   "-DGAME_ENGINE_BUILD_PYTHON_BINDINGS=ON",
 ]
-wheel.packages = ["python/game_engine"]
+wheel.packages = ["python/game_engine", "python/PolyEnv"]
 sdist.include = [
   "python/game_engine/**",
+  "python/PolyEnv/**",
   "data/Units.json",
 ]

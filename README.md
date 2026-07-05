@@ -45,7 +45,7 @@ python -m pip install -e .
 ## Minimal Example
 
 ```python
-from game_engine import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius
 
 env = GameEnv(
     seed=1234,
