@@ -45,12 +45,12 @@ python -m pip install -e .
 ## Minimal Example
 
 ```python
-from game_engine import GameEnv, tribes
+from game_engine import GameEnv, Bardur, Imperius
 
 env = GameEnv(
     seed=1234,
     map_size=11,
-    players=(tribes.Bardur, tribes.Imperius),
+    players=(Bardur, Imperius),
 )
 
 packet = env.model_request_numpy()

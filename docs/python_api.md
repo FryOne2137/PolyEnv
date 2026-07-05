@@ -5,16 +5,16 @@ This page lists the core Python API used by training and inference code.
 ## Create An Environment
 
 ```python
-from game_engine import GameEnv, tribes
+from game_engine import GameEnv, Bardur, Imperius
 
 env = GameEnv(
     seed=1234,
     map_size=11,
-    players=(tribes.Bardur, tribes.Imperius),
+    players=(Bardur, Imperius),
 )
 ```
 
-You can also pass tribe names through `get_tribe`:
+You can also pass tribe names through `get_tribe` or as strings:
 
 ```python
 from game_engine import GameEnv, get_tribe
@@ -24,6 +24,8 @@ env = GameEnv(
     map_size=11,
     players=(get_tribe("Bardur"), get_tribe("Imperius")),
 )
+
+env2 = GameEnv(seed=1234, map_size=11, players=("Bardur", "Imperius"))
 ```
 
 ## State Methods

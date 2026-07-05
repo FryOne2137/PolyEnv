@@ -9,9 +9,9 @@ The main performance rule is simple: run many environments on CPU, collate their
 ## Single Environment Example
 
 ```python
-from game_engine import GameEnv, tribes
+from game_engine import GameEnv, Bardur, Imperius
 
-env = GameEnv(seed=1234, map_size=11, players=(tribes.Bardur, tribes.Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 
 packet = env.model_request_numpy()
 action_id = int(packet["actions"]["action_id"][0])
@@ -27,11 +27,11 @@ Run many environments on CPU, collate their packets, then move one batch to GPU.
 
 ```python
 import torch
-from game_engine import GameEnv, tribes
+from game_engine import GameEnv, Bardur, Imperius
 
 
 def make_env(seed: int) -> GameEnv:
-    return GameEnv(seed=seed, map_size=11, players=(tribes.Bardur, tribes.Imperius))
+    return GameEnv(seed=seed, map_size=11, players=(Bardur, Imperius))
 
 
 envs = [make_env(seed) for seed in range(64)]

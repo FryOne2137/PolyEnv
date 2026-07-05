@@ -11,9 +11,9 @@ The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https
 The main Python entry point is `GameEnv`. It exposes game state, legal actions, and fast stepping APIs. For model integration, use the canonical model request methods:
 
 ```python
-from game_engine import GameEnv, tribes
+from game_engine import GameEnv, Bardur, Imperius
 
-env = GameEnv(seed=1234, map_size=11, players=(tribes.Bardur, tribes.Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 
 packet = env.model_request()
 fast_packet = env.model_request_numpy()
@@ -26,9 +26,9 @@ Use `model_request()` for debugging and JSON-like inspection. Use `model_request
 ## Minimal Rollout
 
 ```python
-from game_engine import GameEnv, tribes
+from game_engine import GameEnv, Bardur, Imperius
 
-env = GameEnv(seed=1234, map_size=11, players=(tribes.Bardur, tribes.Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 
 while not env.is_done():
     packet = env.model_request_numpy()
