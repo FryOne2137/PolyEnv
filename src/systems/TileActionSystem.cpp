@@ -273,12 +273,10 @@ bool TileActionSystem::growForest(Game& game, PlayerId pid, Pos pos) {
 }
 
 bool TileActionSystem::canDestroy(const Game& game, PlayerId pid, Pos pos) {
-    static constexpr TechId kTech = TechId::Chivalry;
     static constexpr int kCost = 0;
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
-    if (!requireTech(game, pid, kTech)) return false;
     if (!canSpendStars(game, pid, kCost)) return false;
 
     const Tile& t = game.getMap().at(pos);
@@ -291,9 +289,12 @@ bool TileActionSystem::canDestroy(const Game& game, PlayerId pid, Pos pos) {
     const bool hasAnyRes = (t.getResource() != ResourcesEnum::None);
     const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
     const bool hasBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
+    if (!hasAnyRes && !hasBuilding && !hasBridge) return false;
 
-    // Roads are intentionally not destroyable; bridges are destroyable.
-    return hasAnyRes || hasBuilding || hasBridge;
+    if (hasBridge && requireTech(game, pid, TechId::Construction)) return true;
+
+    // Roads are intentionally not destroyable; other tile destruction keeps the old Chivalry gate.
+    return requireTech(game, pid, TechId::Chivalry);
 }
 
 bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
@@ -307,9 +308,10 @@ bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
     const bool hasAnyRes = (t.getResource() != ResourcesEnum::None);
     const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
     const bool hasBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
+    const bool canDestroyFullTile = requireTech(game, pid, TechId::Chivalry);
 
-    if (hasAnyRes) t.setResource(ResourcesEnum::None);
-    if (hasBuilding) t.setBuildingType(BuildingTypeEnum::None);
+    if (canDestroyFullTile && hasAnyRes) t.setResource(ResourcesEnum::None);
+    if (canDestroyFullTile && hasBuilding) t.setBuildingType(BuildingTypeEnum::None);
     if (hasBridge) t.setRoadBridge(RoadBridgeEnum::None);
 
     CitiesConnectionSystem::update(game);
@@ -325,7 +327,9 @@ bool TileActionSystem::canBuildRoad(const Game& game, PlayerId pid, Pos pos) {
     if (!canSpendStars(game, pid, kCost)) return false;
 
     const Tile& t = game.getMap().at(pos);
-    if (t.getBaseTerrain() != BaseTerrainEnum::Land) return false;
+    if (t.getBaseTerrain() != BaseTerrainEnum::Land &&
+        t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
+    if (game.getMap().unitOn(pos) != Map::kNoUnit) return false;
 
     const CityId cid = t.getTerritoryCityId();
     if (cid != kNoCity) {
@@ -359,25 +363,22 @@ bool TileActionSystem::canBuildBridge(const Game& game, PlayerId pid, Pos pos) {
 
     const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Water) return false;
-
-    const CityId cid = t.getTerritoryCityId();
-    if (cid != kNoCity) {
-        if (!CitySystem::cityExists(game, cid)) return false;
-        if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != pid) return false;
-    }
+    if (game.getMap().unitOn(pos) != Map::kNoUnit) return false;
 
     if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
 
     auto isLandish = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
         const BaseTerrainEnum bt = game.getMap().at(p).getBaseTerrain();
-        return (bt == BaseTerrainEnum::Land) || (bt == BaseTerrainEnum::Mountain);
+        return bt == BaseTerrainEnum::Land ||
+               bt == BaseTerrainEnum::Forest ||
+               bt == BaseTerrainEnum::Mountain;
     };
 
     const bool ns = isLandish(Pos{pos.x, pos.y - 1}) && isLandish(Pos{pos.x, pos.y + 1});
     const bool ew = isLandish(Pos{pos.x - 1, pos.y}) && isLandish(Pos{pos.x + 1, pos.y});
 
-    return (ns ^ ew);
+    return ns || ew;
 }
 
 bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {

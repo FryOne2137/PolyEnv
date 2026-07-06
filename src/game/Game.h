@@ -93,6 +93,8 @@ public:
     bool endTurn(PlayerId pid); // przechodzi do następnego gracza
     bool handleRuin(PlayerId pid, UnitId unitId, Pos pos);
     bool canHandleRuin(PlayerId pid, UnitId unitId, Pos pos) const;
+    bool handleVillage(PlayerId pid, UnitId unitId, Pos pos);
+    bool canHandleVillage(PlayerId pid, UnitId unitId, Pos pos) const;
     bool handleStarfish(PlayerId pid, UnitId unitId, Pos pos);
     bool canHandleStarfish(PlayerId pid, UnitId unitId, Pos pos) const;
     bool handleCityCapture(PlayerId pid, UnitId unitId, Pos pos);

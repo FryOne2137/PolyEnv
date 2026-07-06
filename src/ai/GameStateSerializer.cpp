@@ -53,6 +53,7 @@ struct ActionModelFields {
 
 static bool tileActionUsesUnit(Action::TileActionKind kind) {
     switch (kind) {
+        case Action::TileActionKind::FoundCity:
         case Action::TileActionKind::Ruin:
         case Action::TileActionKind::Starfish:
         case Action::TileActionKind::CaptureCity:
@@ -76,6 +77,15 @@ static TechId requiredTechForTileAction(Action::TileActionKind kind) {
         case Action::TileActionKind::Starfish:     return TechId::Navigation;
         default:                                   return TechId::Count;
     }
+}
+
+static TechId requiredTechForTileAction(const Game& game, const Action& action) {
+    if (action.tileAction == Action::TileActionKind::DestroyTile &&
+        game.getMap().inBounds(action.pos) &&
+        game.getMap().at(action.pos).getRoadBridge() == RoadBridgeEnum::Bridge) {
+        return TechId::Construction;
+    }
+    return requiredTechForTileAction(action.tileAction);
 }
 
 static int starsCostForTileAction(Action::TileActionKind kind) {
@@ -201,7 +211,7 @@ static ActionModelFields buildActionModelFields(const Game& g, const Action& a) 
             hasSource = true; hasTarget = true;
             expectsUnit  = tileActionUsesUnit(a.tileAction);
             f.tileAction = static_cast<int>(a.tileAction);
-            f.tech       = static_cast<int>(requiredTechForTileAction(a.tileAction));
+            f.tech       = static_cast<int>(requiredTechForTileAction(g, a));
             f.costStars  = starsCostForTileAction(a.tileAction);
             if (a.tileAction == Action::TileActionKind::CaptureCity && m.inBounds(a.pos)) {
                 const Tile& t = m.at(a.pos);

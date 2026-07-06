@@ -134,6 +134,9 @@ void enumerateLegalActions(const Game& game, PlayerId pid, EmitFn&& emit) {
             ix.tileAction = Action::TileActionKind::Starfish;
             if (game.canHandleStarfish(pid, uid, up)) emit(ix);
 
+            ix.tileAction = Action::TileActionKind::FoundCity;
+            if (game.canHandleVillage(pid, uid, up)) emit(ix);
+
             ix.tileAction = Action::TileActionKind::CaptureCity;
             if (game.canHandleCityCapture(pid, uid, up)) emit(ix);
         }
@@ -206,16 +209,6 @@ void enumerateLegalActions(const Game& game, PlayerId pid, EmitFn&& emit) {
         if (game.canBuildRoad(pid, p)) emit(t);
         t.tileAction = Action::TileActionKind::BuildBridge;
         if (game.canBuildBridge(pid, p)) emit(t);
-    }
-
-    // Keep village founding available on visible tiles.
-    for (const Pos p : allVisibleTiles) {
-        Action t{};
-        t.type = Action::Type::TileAction;
-        t.pid = pid;
-        t.pos = p;
-        t.tileAction = Action::TileActionKind::FoundCity;
-        if (game.canFoundCityFromVillage(pid, p)) emit(t);
     }
 
     for (CityId cid : player.getCities()) {
@@ -356,7 +349,7 @@ bool GameStateAdapter::applyAction(const Action& a) {
                 case Action::TileActionKind::BuildRoad: return game_.buildRoad(a.pid, a.pos);
                 case Action::TileActionKind::BuildBridge: return game_.buildBridge(a.pid, a.pos);
                 case Action::TileActionKind::Explorer: return game_.explorer(a.pid, a.pos);
-                case Action::TileActionKind::FoundCity: return game_.foundCityFromVillage(a.pid, a.pos);
+                case Action::TileActionKind::FoundCity: return game_.handleVillage(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::Ruin: return game_.handleRuin(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::Starfish: return game_.handleStarfish(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::CaptureCity: return game_.handleCityCapture(a.pid, a.unit, a.pos);

@@ -8,6 +8,7 @@
 #include "world/Tile.h"
 #include "BuildingDB.h"
 #include "terrain/BuildingTypeEnum.h"
+#include "terrain/SettlementTypeEnum.h"
 
 static inline bool isMonument(BuildingTypeEnum t) {
     switch (t) {
@@ -149,6 +150,7 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
     const auto& bi = BuildingDB::info(type);
 
     if (tile.getBuildingType() != BuildingTypeEnum::None) return false;
+    if (tile.getSettlementType() == SettlementTypeEnum::City) return false;
     const UnitId occupant = map.unitOn(pos);
     if (occupant != kNoUnit && UnitSystem::unitExists(game, occupant)) {
         const PlayerId occupantOwner = UnitSystem::getOwnerId(game, occupant);

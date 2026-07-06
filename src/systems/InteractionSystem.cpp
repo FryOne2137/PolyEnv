@@ -47,6 +47,8 @@ static inline uint32_t ruinRng(uint32_t worldSeed, Pos pos, uint32_t salt) {
 
 static constexpr int kStarfishReward = 8;
 static constexpr int kRuinStarsReward = 10;
+static constexpr int kVeteranBonusHp = 5;
+static constexpr int kRuinRammerHp = 15;
 
 
 void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
@@ -177,6 +179,12 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
                     /*canActImmediately=*/false, // free but cannot act this turn
                     /*makeVeteran=*/true
                 );
+                if (uid != kNoUnit) {
+                    (void)UnitSystem::setEmbarkedBaseType(game, uid, UnitType::Warrior);
+                    (void)UnitSystem::setVeteran(game, uid, true);
+                    (void)UnitSystem::setMaxHealth(game, uid, kRuinRammerHp);
+                    (void)UnitSystem::setHealth(game, uid, kRuinRammerHp);
+                }
 
             } else {
                 uid = UnitSpawnSystem::spawnUnitForced(
@@ -187,6 +195,12 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
                     /*canActImmediately=*/false, // free but cannot act this turn
                     /*makeVeteran=*/true
                 );
+                if (uid != kNoUnit) {
+                    const int veteranMaxHp = UnitSystem::getMaxHealth(game, uid) + kVeteranBonusHp;
+                    (void)UnitSystem::setVeteran(game, uid, true);
+                    (void)UnitSystem::setMaxHealth(game, uid, veteranMaxHp);
+                    (void)UnitSystem::setHealth(game, uid, veteranMaxHp);
+                }
             }
 
             // Removed manual blocking of unit turn; spawnUnitForced already sets flags.

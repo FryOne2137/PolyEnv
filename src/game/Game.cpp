@@ -330,6 +330,24 @@ bool Game::canHandleRuin(PlayerId pid, UnitId unitId, Pos pos) const {
     return t.getSettlementType() == SettlementTypeEnum::Ruin;
 }
 
+bool Game::handleVillage(PlayerId pid, UnitId unitId, Pos pos) {
+    if (!canHandleVillage(pid, unitId, pos)) return false;
+
+    InteractionSystem::handleVillage(*this, unitId, pos);
+    return true;
+}
+
+bool Game::canHandleVillage(PlayerId pid, UnitId unitId, Pos pos) const {
+    if (!canControlUnit(*this, pid, unitId, true)) return false;
+    if (!map.inBounds(pos)) return false;
+    if (UnitSystem::getPos(*this, unitId) != pos) return false;
+    if (UnitSystem::movedThisTurn(*this, unitId) || UnitSystem::attackedThisTurn(*this, unitId)) return false;
+
+    const Tile& t = map.at(pos);
+    return t.getSettlementType() == SettlementTypeEnum::Village &&
+           CitySystem::canFoundCityFromVillage(*this, pid, pos);
+}
+
 int Game::getPlayerScore(PlayerId pid) const {
     return ScoreSystem::getScore(*this, pid);
 }

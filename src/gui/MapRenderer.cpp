@@ -358,7 +358,7 @@ static bool applyEngineAction(Game& game, const Action& a) {
                 case Action::TileActionKind::BuildRoad: return game.buildRoad(a.pid, a.pos);
                 case Action::TileActionKind::BuildBridge: return game.buildBridge(a.pid, a.pos);
                 case Action::TileActionKind::Explorer: return game.explorer(a.pid, a.pos);
-                case Action::TileActionKind::FoundCity: return game.foundCityFromVillage(a.pid, a.pos);
+                case Action::TileActionKind::FoundCity: return game.handleVillage(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::Ruin: return game.handleRuin(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::Starfish: return game.handleStarfish(a.pid, a.unit, a.pos);
                 case Action::TileActionKind::CaptureCity: return game.handleCityCapture(a.pid, a.unit, a.pos);
