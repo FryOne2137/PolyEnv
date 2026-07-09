@@ -270,14 +270,12 @@ static void clearUnitOverlays() {
     clearAttackOverlay();
 }
 
-static void rebuildMoveOverlay(const Game* game, UnitId uid) {
-    clearMoveOverlay();
+static void rebuildUnitOverlays(const Game* game, UnitId uid) {
+    clearUnitOverlays();
     if (!game) return;
 
     const Unit* u = game->getUnit(uid);
     if (!u) return;
-
-    // Only current player's units.
     if (u->getOwnerId() != game->getCurrentPlayerId()) return;
 
     std::vector<Action> actions;
@@ -287,41 +285,29 @@ static void rebuildMoveOverlay(const Game* game, UnitId uid) {
         actions = adapter.legalActions(game->getCurrentPlayerId());
         const auto t1 = std::chrono::high_resolution_clock::now();
         const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-        std::cout << "[Perf] gui legal move actions took " << us << " us" << std::endl;
+        std::cout << "[Perf] gui legal unit actions took " << us << " us" << std::endl;
     }
 
     g_moveOverlaySet.reserve(actions.size() * 2u + 1u);
     g_moveOverlayActions.reserve(actions.size() * 2u + 1u);
-    for (const Action& a : actions) {
-        if (a.type != Action::Type::Move || a.unit != uid) continue;
-        const uint32_t key = posKey(a.target);
-        g_moveOverlaySet.insert(key);
-        g_moveOverlayActions[key] = a;
-    }
-    g_moveOverlayValid = true; // valid even if empty
-}
-
-static void rebuildAttackOverlay(const Game* game, UnitId uid) {
-    clearAttackOverlay();
-    if (!game) return;
-
-    const Unit* u = game->getUnit(uid);
-    if (!u) return;
-
-    // Only current player's units.
-    if (u->getOwnerId() != game->getCurrentPlayerId()) return;
-
-    GameStateAdapter adapter(*game);
-    const std::vector<Action> actions = adapter.legalActions(game->getCurrentPlayerId());
     g_attackOverlaySet.reserve(actions.size() * 2u + 1u);
     g_attackOverlayActions.reserve(actions.size() * 2u + 1u);
+
     for (const Action& a : actions) {
-        if (a.type != Action::Type::Attack || a.unit != uid) continue;
-        const uint32_t key = posKey(a.target);
-        g_attackOverlaySet.insert(key);
-        g_attackOverlayActions[key] = a;
+        if (a.unit != uid) continue;
+        if (a.type == Action::Type::Move) {
+            const uint32_t key = posKey(a.target);
+            g_moveOverlaySet.insert(key);
+            g_moveOverlayActions[key] = a;
+        } else if (a.type == Action::Type::Attack) {
+            const uint32_t key = posKey(a.target);
+            g_attackOverlaySet.insert(key);
+            g_attackOverlayActions[key] = a;
+        }
     }
-    g_attackOverlayValid = true; // valid even if empty
+
+    g_moveOverlayValid = true;
+    g_attackOverlayValid = true;
 }
 
 static bool samePos(Pos a, Pos b) {
@@ -520,7 +506,10 @@ static void buildFixedTechTreeLayout(const std::vector<TechId>& techs,
 
 MapRenderer::MapRenderer(TextureStore& store) : tex(store) {}
 
-void MapRenderer::setGame(Game* g) { game = g; }
+void MapRenderer::setGame(Game* g) {
+    game = g;
+    notifyGameStateChanged();
+}
 
 void MapRenderer::setTileSizePx(int px) { tilePx = px; }
 void MapRenderer::setOrigin(sf::Vector2f o) { origin = o; }
@@ -557,7 +546,59 @@ float MapRenderer::getZoom() const { return zoom; }
 
 bool MapRenderer::hasSelection() const { return selectedValid; }
 Pos MapRenderer::getSelectedPos() const { return selectedPos; }
-void MapRenderer::clearSelection() { selectedValid = false; }
+void MapRenderer::clearSelection() {
+    selectedValid = false;
+    notifyGameStateChanged();
+}
+
+void MapRenderer::invalidateContextActionCache() {
+    contextActionCacheValid = false;
+}
+
+void MapRenderer::notifyGameStateChanged() {
+    invalidateContextActionCache();
+    g_actionBtnsValid = false;
+    g_actionBtnCount = 0;
+    clearUnitOverlays();
+}
+
+const std::vector<Action>& MapRenderer::contextActionsForCurrentSelection() {
+    if (!game || showOverview || !selectedValid || !game->getMap().inBounds(selectedPos)) {
+        if (!contextActionCacheValid || !contextActionCache.empty()) {
+            contextActionCache.clear();
+            contextActionCacheValid = true;
+            contextActionCacheGame = game;
+            contextActionCacheSelectedValid = selectedValid;
+            contextActionCacheSelectedPos = selectedPos;
+            contextActionCachePlayer = game ? game->getCurrentPlayerId() : kNoPlayer;
+            contextActionCacheTurn = game ? game->getTurnNumber() : 0;
+            contextActionCacheOverview = showOverview;
+        }
+        return contextActionCache;
+    }
+
+    const PlayerId player = game->getCurrentPlayerId();
+    const uint32_t turn = game->getTurnNumber();
+    if (contextActionCacheValid
+        && contextActionCacheGame == game
+        && contextActionCacheSelectedValid == selectedValid
+        && samePos(contextActionCacheSelectedPos, selectedPos)
+        && contextActionCachePlayer == player
+        && contextActionCacheTurn == turn
+        && contextActionCacheOverview == showOverview) {
+        return contextActionCache;
+    }
+
+    contextActionCache = legalContextActionsForSelection(*game, selectedPos);
+    contextActionCacheValid = true;
+    contextActionCacheGame = game;
+    contextActionCacheSelectedValid = selectedValid;
+    contextActionCacheSelectedPos = selectedPos;
+    contextActionCachePlayer = player;
+    contextActionCacheTurn = turn;
+    contextActionCacheOverview = showOverview;
+    return contextActionCache;
+}
 
 bool MapRenderer::consumeEndTurnClicked() {
     const bool v = endTurnClicked;
@@ -587,6 +628,7 @@ void MapRenderer::toggleOverview() {
     // Clear movement and attack selection/overlay when switching views.
     g_moveSelectedUnit = kNoUnit;
     clearUnitOverlays();
+    invalidateContextActionCache();
 }
 
 void MapRenderer::handleEvent(const sf::Event& ev) {
@@ -631,6 +673,7 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                                 const UnitId uid = game->spawnUnit(g_spawnSelectedType, pid, selectedPos, /*canActImmediately=*/false);
                                 (void)uid;
                             });
+                            notifyGameStateChanged();
                         }
                         return; // consume
                     }
@@ -648,10 +691,8 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                                 (void)ok;
                             });
                             g_moveSelectedUnit = kNoUnit;
-                            clearUnitOverlays();
                             selectedValid = false;
-                            g_actionBtnsValid = false;
-                            g_actionBtnCount = 0;
+                            notifyGameStateChanged();
                             return; // consume click
                         }
                         if (ab.kind == ActionKind::CaptureVillage || ab.kind == ActionKind::CaptureCity) {
@@ -794,10 +835,8 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                         }
                         // Clear overlays after action.
                         g_moveSelectedUnit = kNoUnit;
-                        clearUnitOverlays();
                         selectedValid = false;
-                        g_actionBtnsValid = false;
-                        g_actionBtnCount = 0;
+                        notifyGameStateChanged();
                         return; // consume click
                     }
                 }
@@ -823,9 +862,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
 
                         // After choosing reward, clear overlays like other actions.
                         g_moveSelectedUnit = kNoUnit;
-                        clearUnitOverlays();
-                        g_actionBtnsValid = false;
-                        g_actionBtnCount = 0;
+                        notifyGameStateChanged();
                         return; // consume click
                     }
                 }
@@ -852,6 +889,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                             const bool ok = game->buyTech(curPid, hit);
                             (void)ok;
                         });
+                        notifyGameStateChanged();
                         return; // consume click (avoid selecting a tile)
                     }
                 }
@@ -881,6 +919,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                 if (screenToTile(up, hit)) {
                     selectedPos = hit;
                     selectedValid = true;
+                    invalidateContextActionCache();
 
                     // Spawn mode: if unit selected, attempt to spawn on clicked tile.
                     // No GUI validation: Game/Systems decide if allowed.
@@ -918,8 +957,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                                     clearUnitOverlays();
                                 } else {
                                     g_moveSelectedUnit = onTile;
-                                    rebuildMoveOverlay(game, g_moveSelectedUnit);
-                                    rebuildAttackOverlay(game, g_moveSelectedUnit);
+                                    rebuildUnitOverlays(game, g_moveSelectedUnit);
                                 }
                                 return;
                             }
@@ -935,7 +973,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                                 });
                                 // After an attack we clear overlays.
                                 g_moveSelectedUnit = kNoUnit;
-                                clearUnitOverlays();
+                                notifyGameStateChanged();
                                 return;
                             }
                         }
@@ -950,7 +988,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                                 });
                                 // After a move we clear the overlay (simple UX). Re-click unit to move again.
                                 g_moveSelectedUnit = kNoUnit;
-                                clearUnitOverlays();
+                                notifyGameStateChanged();
                                 return;
                             }
                         }
@@ -961,6 +999,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                     }
                 } else {
                     selectedValid = false;
+                    invalidateContextActionCache();
                     g_moveSelectedUnit = kNoUnit;
                     clearUnitOverlays();
                 }
@@ -2618,7 +2657,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         g_actionBtnCount = 0;
 
         if (game && !showOverview && selectedValid && game->getMap().inBounds(selectedPos)) {
-            const std::vector<Action> actions = legalContextActionsForSelection(*game, selectedPos);
+            const std::vector<Action>& actions = contextActionsForCurrentSelection();
             if (!actions.empty()) {
                 const float mapW = float(mapRt.x);
                 const float mapH = float(rt.getSize().y);

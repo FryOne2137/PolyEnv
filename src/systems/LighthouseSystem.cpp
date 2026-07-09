@@ -53,7 +53,9 @@ bool LighthouseSystem::onTileRevealed(Game& game, PlayerId pid, Pos p) {
 
         // Prefer capital
         const CityId capId = PlayerSystem::getCapitalId(game, pid);
-        if (capId != kNoCity && CitySystem::cityExists(game, capId)) {
+        if (capId != kNoCity &&
+            CitySystem::cityExists(game, capId) &&
+            static_cast<PlayerId>(CitySystem::getCityOwner(game, capId)) == pid) {
             targetCid = capId;
         }
 

@@ -15,6 +15,7 @@
 
 
 #include "MovementSystem.h"
+#include "UnitSystem.h"
 #include "../content/units/UnitFactory.h"
 #include "UnitSpawnSystem.h"
 #include "VisionSystem.h"
@@ -33,6 +34,68 @@ static inline bool isValidChoiceForLevel(CityUpgradeChoice c, uint8_t newLevel) 
     if (newLevel == 3) return c == CityUpgradeChoice::CityWall || c == CityUpgradeChoice::Resources;
     if (newLevel == 4) return c == CityUpgradeChoice::PopulationGrowth || c == CityUpgradeChoice::BorderGrowth;
     if (newLevel >= 5) return c == CityUpgradeChoice::Park || c == CityUpgradeChoice::SuperUnit;
+    return false;
+}
+
+static inline bool isWaterUnit(UnitType t) {
+    switch (t) {
+        case UnitType::Raft:
+        case UnitType::Scout:
+        case UnitType::Rammer:
+        case UnitType::Bomber:
+        case UnitType::Dinghy:
+        case UnitType::Pirate:
+        case UnitType::Juggernaut:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool fallbackDisplaceUnit(Game& game, UnitId uid, Pos from) {
+    if (!UnitSystem::unitExists(game, uid)) return false;
+
+    Map& map = game.getMap();
+    if (!map.inBounds(from)) return false;
+    if (map.unitOn(from) != uid) return false;
+
+    const bool waterUnit = isWaterUnit(UnitSystem::getType(game, uid));
+    const int maxRadius = std::max(map.getWidth(), map.getHeight());
+
+    auto canPlace = [&](Pos to) {
+        if (!map.inBounds(to)) return false;
+        if (map.unitOn(to) != Map::kNoUnit) return false;
+
+        const Tile& t = map.at(to);
+        const bool landish =
+            t.getBaseTerrain() == BaseTerrainEnum::Land ||
+            t.getBaseTerrain() == BaseTerrainEnum::Forest ||
+            t.getBaseTerrain() == BaseTerrainEnum::Mountain;
+        const bool waterish =
+            t.getBaseTerrain() == BaseTerrainEnum::Water ||
+            t.getBaseTerrain() == BaseTerrainEnum::Ocean;
+        const bool bridge = t.getRoadBridge() == RoadBridgeEnum::Bridge;
+        const bool port = t.getBuildingType() == BuildingTypeEnum::Port;
+
+        return waterUnit ? (waterish || bridge || port) : (landish || bridge || port);
+    };
+
+    for (int radius = 1; radius <= maxRadius; ++radius) {
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                if (std::max(std::abs(dx), std::abs(dy)) != radius) continue;
+                const Pos to{from.x + dx, from.y + dy};
+                if (!canPlace(to)) continue;
+
+                map.setUnitOn(from, Map::kNoUnit);
+                map.setUnitOn(to, uid);
+                UnitSystem::setPos(game, uid, to);
+                VisionSystem::revealFromUnit(game, uid);
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -123,18 +186,30 @@ bool CityRewardSystem::tryUpgrade(Game& game, CityId cityId, CityUpgradeChoice c
         } break;
 
         case CityUpgradeChoice::SuperUnit: {
-            // Super Unit: can only spawn if the city tile is free.
+            // Super Unit is a city reward, not a trainable unit. It must bypass
+            // normal spawn cost/tech/trainable validation.
             Map& map = game.getMap();
 
-            UnitId uid=map.unitOn(pos);
-
+            const UnitId uid = map.unitOn(pos);
             if (uid != Map::kNoUnit) {
-                MovementSystem::forceMove(game,uid,pos);
+                const bool moved = MovementSystem::forceMove(game, uid, pos) ||
+                                   fallbackDisplaceUnit(game, uid, pos);
+                if (!moved) return false;
             }
 
-            UnitSpawnSystem::spawnUnit(game,map,UnitType::Giant,owner,pos,false);
+            if (map.unitOn(pos) != Map::kNoUnit) return false;
 
-
+            const UnitId giant = UnitSpawnSystem::spawnUnitForced(
+                game,
+                map,
+                UnitType::Giant,
+                owner,
+                pos,
+                /*canActImmediately=*/false,
+                /*makeVeteran=*/false
+            );
+            if (giant == kNoUnit) return false;
+            (void)CitySystem::addUnitToCity(game, giant, cityId, /*checkCapacity=*/false);
         } break;
         default:
             return false;

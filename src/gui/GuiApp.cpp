@@ -89,6 +89,7 @@ int GuiApp::run() {
 
                 if (mapRenderer->consumeEndTurnClicked()) {
                     game.endTurn(game.getCurrentPlayerId());
+                    mapRenderer->notifyGameStateChanged();
                     botClock_.restart();
                 }
                 if (mapRenderer->consumeToggleOverviewRequested()) {

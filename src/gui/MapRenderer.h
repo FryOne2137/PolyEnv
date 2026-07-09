@@ -18,6 +18,7 @@
 
 #include "TextureStore.h"
 
+#include "ai/Action.h"
 #include "../game/Game.h"
 #include "world/Map.h"
 #include "world/Pos.h"
@@ -50,6 +51,7 @@ public:
     bool consumeAutoPlayToggleRequested();
     void toggleOverview();
     void setAutoPlayActive(bool active);
+    void notifyGameStateChanged();
 
 private:
     sf::Vector2u lastRtSize{0u, 0u};
@@ -94,6 +96,15 @@ private:
     bool autoPlayToggleRequested = false;
     bool autoPlayActive = false;
 
+    bool contextActionCacheValid = false;
+    Game* contextActionCacheGame = nullptr;
+    bool contextActionCacheSelectedValid = false;
+    Pos contextActionCacheSelectedPos{0, 0};
+    PlayerId contextActionCachePlayer = kNoPlayer;
+    uint32_t contextActionCacheTurn = 0;
+    bool contextActionCacheOverview = false;
+    std::vector<Action> contextActionCache;
+
     // Cached clickable rects (screen coords)
     sf::FloatRect btnEndTurn{};
     sf::FloatRect btnAutoPlay{};
@@ -105,6 +116,8 @@ private:
     mutable sf::Font uiFont;
     mutable bool uiFontLoaded = false;
 
+    void invalidateContextActionCache();
+    const std::vector<Action>& contextActionsForCurrentSelection();
     bool ensureUIFontLoaded() const;
     static const char* tribeDisplayName(TribeType t);
     static const char* baseTerrainName(BaseTerrainEnum t);

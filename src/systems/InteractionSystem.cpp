@@ -131,7 +131,9 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
 
         case RuinReward::Population: {
             const CityId capId = PlayerSystem::getCapitalId(game, pid);
-            if (capId != kNoCity && CitySystem::cityExists(game, capId)) {
+            if (capId != kNoCity &&
+                CitySystem::cityExists(game, capId) &&
+                static_cast<PlayerId>(CitySystem::getCityOwner(game, capId)) == pid) {
                 const uint8_t oldLevel = CitySystem::getCityLevel(game, capId);
 
                 (void)CitySystem::addPopulation(game, capId, 3);
@@ -237,9 +239,14 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
         }
     }
 
-    // population jeśli jest stolica
-    if (PlayerSystem::getCapitalId(game, pid) != kNoCity) {
-        pool.push_back(RuinReward::Population);
+    // population jeśli gracz aktualnie posiada swoją stałą stolicę
+    {
+        const CityId capId = PlayerSystem::getCapitalId(game, pid);
+        if (capId != kNoCity &&
+            CitySystem::cityExists(game, capId) &&
+            static_cast<PlayerId>(CitySystem::getCityOwner(game, capId)) == pid) {
+            pool.push_back(RuinReward::Population);
+        }
     }
 
     // explorer jeśli coś nieodkryte w 5x5

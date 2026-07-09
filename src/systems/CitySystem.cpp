@@ -265,8 +265,10 @@ CityId CitySystem::pickCityForConvertedUnit(const Game& game, PlayerId owner) {
 
     const CityId capital = PlayerSystem::getCapitalId(game, owner);
 
-    // Rule: if we have a capital, assign ONLY to the capital (ignore capacity).
-    if (capital != kNoCity) {
+    // Rule: if we actively own our capital, assign ONLY to the capital (ignore capacity).
+    if (capital != kNoCity &&
+        CitySystem::cityExists(game, capital) &&
+        static_cast<PlayerId>(CitySystem::getCityOwner(game, capital)) == owner) {
         return capital;
     }
 

@@ -1138,9 +1138,7 @@ public:
                             if (owner != kNoPlayer && static_cast<int>(owner) == perspective) {
                                 cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
                             }
-                            if (owner != kNoPlayer &&
-                                static_cast<size_t>(owner) < g.getPlayers().size() &&
-                                g.getPlayer(owner).getCapitalId() == city->getCityId()) {
+                            if (city->isCapitalCity()) {
                                 capitalLayer = 1;
                             }
                         }
@@ -1255,9 +1253,7 @@ public:
                                 cityOwnerToken = static_cast<int>(owner);
                                 cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
                             }
-                            if (owner != kNoPlayer &&
-                                static_cast<size_t>(owner) < g.getPlayers().size() &&
-                                g.getPlayer(owner).getCapitalId() == city->getCityId()) {
+                            if (city->isCapitalCity()) {
                                 capitalLayer = 1;
                             }
                         }

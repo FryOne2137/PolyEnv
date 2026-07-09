@@ -554,9 +554,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                             static_cast<int>(owner) == static_cast<int>(perspective)) {
                             cityUnitsOccupied = static_cast<int>(CitySystem::getCityUnitsCount(game, cid));
                         }
-                        if (owner != kNoPlayer &&
-                            static_cast<size_t>(owner) < game.getPlayers().size() &&
-                            game.getPlayer(owner).getCapitalId() == city->getCityId()) {
+                        if (city->isCapitalCity()) {
                             capitalLayer = 1;
                         }
                     }

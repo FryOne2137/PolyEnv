@@ -146,11 +146,6 @@ void Player::removeCity(CityId id) {
     if (it != cities.end()) {
         cities.erase(it, cities.end());
     }
-
-    // If we lost our capital, clear it (later you can implement capital transfer rules).
-    if (capitalId == id) {
-        capitalId = kNoCity;
-    }
 }
 
 void Player::addUnit(UnitId id) {
@@ -235,5 +230,4 @@ bool Player::markMet(PlayerId other) {
     metPlayersMask |= bit;
     return true;
 }
-
 

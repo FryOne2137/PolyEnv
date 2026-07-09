@@ -35,7 +35,7 @@ static const std::array<BuildingInfo, 256> kInfo = []{
     });
 
     set(BuildingTypeEnum::LumberHut, {
-        2, TechId::Forestry,
+        3, TechId::Forestry,
         TerrainMask(terrainBit(BaseTerrainEnum::Forest)),
         0,
         1,

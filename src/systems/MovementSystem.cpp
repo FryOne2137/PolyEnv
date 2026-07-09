@@ -981,6 +981,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         }
     }
 
+    bool stompAppliedDuringTransform = false;
+
     // ---- Port embark / disembark ----
     // Rule:
     // - When a LAND unit steps onto a PORT tile from a LAND tile, it becomes a Raft (or Juggernaut if Giant).
@@ -1056,6 +1058,13 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
         if (dstIsLandish && UnitSystem::isEmbarked(game, unitId)) {
             const UnitType original = UnitSystem::getEmbarkedBaseType(game, unitId);
             if (original != UnitType::Unknown) {
+                if (UnitSystem::hasSkill(game, unitId, UnitSkill::Stomp)) {
+                    for (size_t i = 1; i < path.size(); ++i) {
+                        CombatSystem::stompAt(game, unitId, path[i]);
+                    }
+                    stompAppliedDuringTransform = true;
+                }
+
                 Unit nu = UnitFactory::create(original, UnitSystem::getOwnerId(game, unitId), to);
                 nu.setId(unitId);
 
@@ -1080,7 +1089,9 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     // --- Stomp ---
     // Deal stomp damage around the unit for every step along the movement path (excluding the starting tile).
     // IMPORTANT: stomp does NOT cause retaliation.
-    if (UnitSystem::unitExists(game, unitId) && UnitSystem::hasSkill(game, unitId, UnitSkill::Stomp)) {
+    if (!stompAppliedDuringTransform &&
+        UnitSystem::unitExists(game, unitId) &&
+        UnitSystem::hasSkill(game, unitId, UnitSkill::Stomp)) {
         for (size_t i = 1; i < path.size(); ++i) {
             CombatSystem::stompAt(game, unitId, path[i]);
         }

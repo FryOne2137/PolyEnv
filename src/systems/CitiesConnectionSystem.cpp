@@ -271,7 +271,9 @@ void CitiesConnectionSystem::update(Game& game) {
     // Determine capitals from Player state (single source of truth).
     for (auto& [pid, info] : owners) {
         const CityId capId = PlayerSystem::getCapitalId(game, pid);
-        if (capId != kNoCity && CitySystem::cityExists(game, capId)) {
+        if (capId != kNoCity &&
+            CitySystem::cityExists(game, capId) &&
+            static_cast<PlayerId>(CitySystem::getCityOwner(game, capId)) == pid) {
             info.capital = capId;
             info.capitalPos = CitySystem::getCityPos(game, capId);
         }
