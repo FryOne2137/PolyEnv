@@ -28,6 +28,8 @@ env = GameEnv(
 env2 = GameEnv(seed=1234, map_size=11, players=("Bardur", "Imperius"))
 ```
 
+Only the 12 regular tribes are supported by the public API. Special tribes are intentionally rejected for this release because their unique mechanics are not implemented to conformance level.
+
 ## State Methods
 
 | Method | Returns | Use |

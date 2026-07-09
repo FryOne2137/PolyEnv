@@ -15,7 +15,7 @@ authors = [
   { name = "Fryderyk Niedzwiecki" }
 ]
 dependencies = [
-  "numpy>=2.23",
+  "numpy>=1.26",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",

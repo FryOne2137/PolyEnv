@@ -10,12 +10,14 @@ It is built as a game environment for AI experiments, external bots, MCTS rollou
 - A CPU game simulator with legal actions and fast stepping.
 - A source of player-view observations for models.
 - A source of explicit full-map ground truth for debugging or supervised hidden-map prediction.
+- A rules engine scoped to the 12 regular Polytopia tribes.
 - A project created as part of university bachelor degree work.
 
 ## What PolyEnv Is Not
 
 - It is not affiliated with or endorsed by The Battle of Polytopia or its creators.
 - It is not a full clone of the official game.
+- It does not support special tribe mechanics such as Aquarion, Elyrion, Polaris, or Cymanti.
 - It is not a trained bot or model.
 - It does not implement reward shaping; that belongs in the training/model repository.
 - It does not expose hidden map information through the normal model API.

@@ -2,6 +2,8 @@
 
 PolyEnv is an unofficial Polytopia-like game engine with Python bindings for AI training and inference experiments.
 
+The supported release scope is the 12 regular tribes: Xin-Xi, Imperius, Bardur, Oumaji, Kickoo, Hoodrick, Luxidoor, Vengir, Zebasi, Ai-Mo, Quetzali, and Yadakk. Special tribes such as Aquarion, Elyrion, Polaris, and Cymanti are not part of the supported ruleset.
+
 ## Attribution
 
 The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and has been modified for this engine.

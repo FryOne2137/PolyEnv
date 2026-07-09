@@ -115,6 +115,8 @@ Used by `map_tokens[*][8]` and action field `building`.
 
 Used by `map_tokens[*][17]` and Python tribe constants.
 
+The supported public ruleset uses ids `1..12`. Ids `13..16` are reserved/internal and are not accepted by `GameEnv` in this release.
+
 | Id | Name |
 | ---: | --- |
 | 0 | Unknown |
@@ -130,10 +132,10 @@ Used by `map_tokens[*][17]` and Python tribe constants.
 | 10 | AiMo |
 | 11 | Quetzali |
 | 12 | Yadakk |
-| 13 | Aquarion |
-| 14 | Elyrion |
-| 15 | Polaris |
-| 16 | Cymanti |
+| 13 | Aquarion (reserved/internal) |
+| 14 | Elyrion (reserved/internal) |
+| 15 | Polaris (reserved/internal) |
+| 16 | Cymanti (reserved/internal) |
 
 ## Technologies
 

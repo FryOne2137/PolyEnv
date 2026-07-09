@@ -18,17 +18,14 @@ _FEAT_TRIBE            = 17
 
 from .tribes import (
     AiMo,
-    Aquarion,
     Bardur,
-    Cymanti,
-    Elyrion,
     Hoodrick,
     Imperius,
     Kickoo,
     Luxidoor,
     Oumaji,
-    Polaris,
     Quetzali,
+    SUPPORTED_TRIBES,
     Tribe,
     Vengir,
     XinXi,
@@ -56,6 +53,11 @@ def _normalize_players(players: list[Any] | tuple[Any, ...]) -> list[int]:
     out: list[int] = []
     for p in players:
         if isinstance(p, tribes.Tribe):
+            if p not in tribes.SUPPORTED_TRIBES:
+                raise ValueError(
+                    f"Unsupported tribe for this release: {p.name}. "
+                    "PolyEnv currently supports only the 12 regular tribes."
+                )
             out.append(int(p))
             continue
         if isinstance(p, str):
@@ -65,7 +67,7 @@ def _normalize_players(players: list[Any] | tuple[Any, ...]) -> list[int]:
             out.append(int(tribes.NAME_TO_TRIBE[key]))
             continue
         if isinstance(p, int):
-            if p < 1 or p > 16:
+            if p < 1 or p > 12:
                 raise ValueError(f"Tribe id out of range: {p}")
             out.append(p)
             continue
@@ -240,6 +242,7 @@ __all__ = [
     "Tribe",
     "get_tribe",
     "NAME_TO_TRIBE",
+    "SUPPORTED_TRIBES",
     "tribes",
     "hidden_action_targets",
     "clone_with_predictions",
@@ -255,8 +258,4 @@ __all__ = [
     "AiMo",
     "Quetzali",
     "Yadakk",
-    "Aquarion",
-    "Elyrion",
-    "Polaris",
-    "Cymanti",
 ]

@@ -16,6 +16,8 @@ class Tribe(IntEnum):
     AiMo = 10
     Quetzali = 11
     Yadakk = 12
+    # Reserved/internal ids. Special tribes are not part of the supported
+    # public ruleset for the current release.
     Aquarion = 13
     Elyrion = 14
     Polaris = 15
@@ -35,10 +37,20 @@ Zebasi = Tribe.Zebasi
 AiMo = Tribe.AiMo
 Quetzali = Tribe.Quetzali
 Yadakk = Tribe.Yadakk
-Aquarion = Tribe.Aquarion
-Elyrion = Tribe.Elyrion
-Polaris = Tribe.Polaris
-Cymanti = Tribe.Cymanti
+SUPPORTED_TRIBES = {
+    Tribe.XinXi,
+    Tribe.Imperius,
+    Tribe.Bardur,
+    Tribe.Oumaji,
+    Tribe.Kickoo,
+    Tribe.Hoodrick,
+    Tribe.Luxidoor,
+    Tribe.Vengir,
+    Tribe.Zebasi,
+    Tribe.AiMo,
+    Tribe.Quetzali,
+    Tribe.Yadakk,
+}
 
 
 NAME_TO_TRIBE = {
@@ -58,10 +70,6 @@ NAME_TO_TRIBE = {
     "ai_mo": Tribe.AiMo,
     "quetzali": Tribe.Quetzali,
     "yadakk": Tribe.Yadakk,
-    "aquarion": Tribe.Aquarion,
-    "elyrion": Tribe.Elyrion,
-    "polaris": Tribe.Polaris,
-    "cymanti": Tribe.Cymanti,
 }
 
 
@@ -79,9 +87,6 @@ __all__ = [
     "AiMo",
     "Quetzali",
     "Yadakk",
-    "Aquarion",
-    "Elyrion",
-    "Polaris",
-    "Cymanti",
+    "SUPPORTED_TRIBES",
     "NAME_TO_TRIBE",
 ]

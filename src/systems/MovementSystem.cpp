@@ -120,13 +120,13 @@ static inline bool unitHasActivatedHide(const Game& game, UnitId uid) {
 
 // Returns true if tile `p` is inside enemy ZoC for `moverUid`.
 // ZoC is projected by enemy units that do NOT have Hide onto their 8-neighborhood.
-// Movers with Hide ignore ZoC completely.
+// Movers with Creep ignore ZoC completely.
 static inline bool inEnemyZoC(const Game& game, Pos p, UnitId moverUid) {
     if (moverUid == Map::kNoUnit) return false;
     if (!UnitSystem::unitExists(game, moverUid)) return false;
 
-    // Hide movers ignore ZoC completely.
-    if (unitHasHide(game, moverUid)) return false;
+    // Creep movers ignore enemy zone-of-control completely.
+    if (unitHasCreep(game, moverUid)) return false;
 
     const PlayerId moverOwner = UnitSystem::getOwnerId(game, moverUid);
 
@@ -797,8 +797,8 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
     auto canStepOn = [&](Pos p) -> bool {
         if (!map.inBounds(p)) return false;
 
-        // Occupied tiles are blocked (no passing through friendly units).
-        // The only exception is the starting tile which is occupied by this moving unit.
+        // Occupied tiles cannot be final destinations, but Creep may pass through them.
+        // The starting tile is occupied by this moving unit.
         const UnitId occ = map.unitOn(p);
         if (occ != Map::kNoUnit) {
             if (p == from) {
@@ -806,9 +806,13 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
             } else {
                 if (!UnitSystem::unitExists(game, occ)) return false; // be conservative
                 if (UnitSystem::getOwnerId(game, occ) != moverOwner) {
-                    // Active-hide enemy is treated as unknown: path may traverse that tile.
-                    if (!unitHasActivatedHide(game, occ)) {
-                        return false; // visible enemy blocks
+                    if (unitHasCreep(game, unitId)) {
+                        // Creep can jump/pass through occupied enemy tiles.
+                    } else {
+                        // Active-hide enemy is treated as unknown: path may traverse that tile.
+                        if (!unitHasActivatedHide(game, occ)) {
+                            return false; // visible enemy blocks
+                        }
                     }
                 }
                 // friendly -> passable (destination is still required to be empty)
@@ -1154,8 +1158,8 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
     auto canStep = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
 
-        // Occupied tiles are blocked (no passing through friendly units).
-        // The only exception is the starting tile which is occupied by this moving unit.
+        // Occupied tiles cannot be final destinations, but Creep may pass through them.
+        // The starting tile is occupied by this moving unit.
         const UnitId occ = game.getMap().unitOn(p);
         if (occ != Map::kNoUnit) {
             if (p == start) {
@@ -1163,10 +1167,14 @@ std::vector<Pos> MovementSystem::reachable(const Game& game, UnitId unitId) {
             } else {
                 if (!UnitSystem::unitExists(game, occ)) return false; // be conservative
                 if (UnitSystem::getOwnerId(game, occ) != moverOwner) {
-                    // Active-hide enemy is treated as "unknown occupant":
-                    // you may target that tile, but movement cannot continue through it.
-                    if (!unitHasActivatedHide(game, occ)) {
-                        return false; // visible enemy blocks
+                    if (unitHasCreep(game, unitId)) {
+                        // Creep can jump/pass through occupied enemy tiles.
+                    } else {
+                        // Active-hide enemy is treated as "unknown occupant":
+                        // you may target that tile, but movement cannot continue through it.
+                        if (!unitHasActivatedHide(game, occ)) {
+                            return false; // visible enemy blocks
+                        }
                     }
                 }
                 // friendly -> passable

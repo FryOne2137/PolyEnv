@@ -2205,6 +2205,10 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("hidden_tile_indices", &GameEnv::hiddenTileIndices,
              py::arg("perspective") = std::nullopt,
              "Returns tile indices not yet observed by the given player (defaults to current player).")
+        .def("apply_tile_predictions", &GameEnv::applyTilePredictions,
+             py::arg("predictions"),
+             py::arg("perspective") = std::nullopt,
+             "Applies sparse predicted tile features to hidden tiles only.")
         .def("_apply_tile_predictions", &GameEnv::applyTilePredictions,
              py::arg("predictions"),
              py::arg("perspective") = std::nullopt,

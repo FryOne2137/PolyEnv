@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from game_engine import Bardur, GameEnv, Imperius, Kickoo, Tribe, get_tribe
 
 
@@ -20,6 +22,17 @@ def test_game_env_accepts_direct_tribe_constants_in_players() -> None:
 def test_get_tribe_resolves_by_name() -> None:
     assert get_tribe("Bardur") is Tribe.Bardur
     assert get_tribe("kickoo") is Tribe.Kickoo
+
+
+def test_special_tribes_are_not_supported_publicly() -> None:
+    with pytest.raises(ValueError, match="Unsupported tribe"):
+        GameEnv(seed=1, map_size=11, players=(Tribe.Aquarion, Imperius))
+
+    with pytest.raises(ValueError, match="Unknown tribe"):
+        get_tribe("Aquarion")
+
+    with pytest.raises(ValueError, match="Tribe id out of range"):
+        GameEnv(seed=1, map_size=11, players=(13, 2))
 
 
 def test_polyenv_import_alias_exports_public_api() -> None:
