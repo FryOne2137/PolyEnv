@@ -119,6 +119,14 @@ void enumerateLegalActions(const Game& game, PlayerId pid, EmitFn&& emit) {
             a.unitUpgrade = Action::UnitUpgradeKind::BecomeVeteran;
             emit(a);
         }
+        if (game.canDisbandUnit(pid, uid)) {
+            Action a{};
+            a.type = Action::Type::UnitUpgrade;
+            a.pid = pid;
+            a.unit = uid;
+            a.unitUpgrade = Action::UnitUpgradeKind::Disband;
+            emit(a);
+        }
 
         const Pos up = UnitSystem::getPos(game, uid);
         if (isTileVisibleToPlayer(game, pid, up)) {
@@ -362,6 +370,7 @@ bool GameStateAdapter::applyAction(const Action& a) {
                 case Action::UnitUpgradeKind::RaftToRammer: return game_.upgradeRaftToRammer(a.pid, a.unit);
                 case Action::UnitUpgradeKind::RaftToBomber: return game_.upgradeRaftToBomber(a.pid, a.unit);
                 case Action::UnitUpgradeKind::BecomeVeteran: return game_.becomeVeteran(a.pid, a.unit);
+                case Action::UnitUpgradeKind::Disband: return game_.disbandUnit(a.pid, a.unit);
                 case Action::UnitUpgradeKind::None: return false;
             }
             return false;

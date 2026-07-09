@@ -150,6 +150,8 @@ set(ENGINE_SOURCES
         src/systems/CityRewardSystem.h
         src/systems/GameDataSystem.cpp
         src/systems/GameDataSystem.h
+        src/systems/DisbandSystem.cpp
+        src/systems/DisbandSystem.h
         src/ai/Action.cpp
         src/ai/Action.h
         src/ai/ActionSpace.cpp

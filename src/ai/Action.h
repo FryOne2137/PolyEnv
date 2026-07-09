@@ -36,7 +36,8 @@ struct Action {
         RaftToScout,
         RaftToRammer,
         RaftToBomber,
-        BecomeVeteran
+        BecomeVeteran,
+        Disband
     };
     Type type;
     PlayerId pid;

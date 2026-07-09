@@ -25,6 +25,7 @@
 #include "../systems/CitySystem.h"
 
 #include "../systems/UnitUpgradeSystem.h"
+#include "../systems/DisbandSystem.h"
 #include "../systems/CityRewardSystem.h"
 #include "../content/skills/UnitSkill.h"
 
@@ -743,6 +744,14 @@ bool Game::canUnitBecomeVeteran(PlayerId pid, UnitId unitId) const {
 bool Game::becomeVeteran(PlayerId pid, UnitId unitId) {
     if (!canControlUnit(*this, pid, unitId, true)) return false;
     return UnitUpgradeSystem::becomeVeteran(*this, unitId);
+}
+
+bool Game::canDisbandUnit(PlayerId pid, UnitId unitId) const {
+    return DisbandSystem::canDisband(*this, pid, unitId);
+}
+
+bool Game::disbandUnit(PlayerId pid, UnitId unitId) {
+    return DisbandSystem::disband(*this, pid, unitId);
 }
 
 

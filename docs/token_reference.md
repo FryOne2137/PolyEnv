@@ -280,6 +280,7 @@ Used by action field `unit_upgrade`.
 | 2 | RaftToRammer |
 | 3 | RaftToBomber |
 | 4 | BecomeVeteran |
+| 5 | Disband |
 
 ## City Upgrade Choices
 

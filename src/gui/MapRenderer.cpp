@@ -357,6 +357,7 @@ static bool applyEngineAction(Game& game, const Action& a) {
                 case Action::UnitUpgradeKind::RaftToRammer: return game.upgradeRaftToRammer(a.pid, a.unit);
                 case Action::UnitUpgradeKind::RaftToBomber: return game.upgradeRaftToBomber(a.pid, a.unit);
                 case Action::UnitUpgradeKind::BecomeVeteran: return game.becomeVeteran(a.pid, a.unit);
+                case Action::UnitUpgradeKind::Disband: return game.disbandUnit(a.pid, a.unit);
                 case Action::UnitUpgradeKind::None: return false;
             }
             return false;
@@ -1435,6 +1436,7 @@ static const char* unitUpgradeName(Action::UnitUpgradeKind kind) {
         case Action::UnitUpgradeKind::RaftToRammer: return "Upgrade -> Rammer";
         case Action::UnitUpgradeKind::RaftToBomber: return "Upgrade -> Bomber";
         case Action::UnitUpgradeKind::BecomeVeteran: return "Become Veteran";
+        case Action::UnitUpgradeKind::Disband: return "Disband";
         case Action::UnitUpgradeKind::None: return "Upgrade";
     }
     return "Upgrade";

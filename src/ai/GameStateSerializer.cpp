@@ -10,6 +10,7 @@
 #include "content/units/UnitFactory.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
+#include "systems/DisbandSystem.h"
 #include "systems/StarsSystem.h"
 #include "systems/UnitSystem.h"
 #include "world/Map.h"
@@ -28,7 +29,7 @@ static constexpr int kBuildingVocabSize = static_cast<int>(BuildingTypeEnum::Lig
 static constexpr int kSpawnTypeVocabSize = static_cast<int>(UnitType::GiantSuper) + 1;
 static constexpr int kCityUpgradeVocabSize = static_cast<int>(CityUpgradeChoice::SuperUnit) + 1;
 static constexpr int kTileActionVocabSize = static_cast<int>(Action::TileActionKind::CaptureCity) + 1;
-static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgradeKind::BecomeVeteran) + 1;
+static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgradeKind::Disband) + 1;
 static constexpr int kPopulationGainVocabSize = 256;
 
 struct ActionModelFields {
@@ -106,6 +107,7 @@ static TechId requiredTechForUnitUpgrade(Action::UnitUpgradeKind kind) {
         case Action::UnitUpgradeKind::RaftToScout:  return TechId::Sailing;
         case Action::UnitUpgradeKind::RaftToRammer: return TechId::Ramming;
         case Action::UnitUpgradeKind::RaftToBomber: return TechId::Navigation;
+        case Action::UnitUpgradeKind::Disband:      return TechId::FreeSpirit;
         default:                                     return TechId::Count;
     }
 }
@@ -118,6 +120,8 @@ static int starsCostForUnitUpgrade(Action::UnitUpgradeKind kind) {
             return std::max(0, UnitFactory::getUnitCost(UnitType::Rammer));
         case Action::UnitUpgradeKind::RaftToBomber:
             return std::max(0, UnitFactory::getUnitCost(UnitType::Bomber));
+        case Action::UnitUpgradeKind::Disband:
+            return 0;
         default:
             return 0;
     }
@@ -246,6 +250,9 @@ static ActionModelFields buildActionModelFields(const Game& g, const Action& a) 
             f.unitUpgrade = static_cast<int>(a.unitUpgrade);
             f.tech        = static_cast<int>(requiredTechForUnitUpgrade(a.unitUpgrade));
             f.costStars   = starsCostForUnitUpgrade(a.unitUpgrade);
+            if (a.unitUpgrade == Action::UnitUpgradeKind::Disband) {
+                f.costStars = -DisbandSystem::refundStars(g, a.unit);
+            }
             break;
         case Action::Type::BuyTech:
             f.tech = static_cast<int>(a.tech);
@@ -394,6 +401,7 @@ static const char* unitUpgradeName(Action::UnitUpgradeKind k) {
         case Action::UnitUpgradeKind::RaftToRammer:  return "raft_to_rammer";
         case Action::UnitUpgradeKind::RaftToBomber:  return "raft_to_bomber";
         case Action::UnitUpgradeKind::BecomeVeteran: return "become_veteran";
+        case Action::UnitUpgradeKind::Disband:       return "disband";
         default:                                     return "none";
     }
 }

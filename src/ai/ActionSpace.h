@@ -63,7 +63,7 @@ private:
 
     static constexpr int kTechCount = static_cast<int>(TechDB::TECH_COUNT);
     static constexpr int kTileActionCount = 14;   // TileActionKind without None
-    static constexpr int kUnitUpgradeCount = 4;   // UnitUpgradeKind without None
+    static constexpr int kUnitUpgradeCount = static_cast<int>(Action::UnitUpgradeKind::Disband); // without None
     static constexpr int kBuildingCount = 16;     // All non-None building ids
     static constexpr int kSpawnUnitCount = static_cast<int>(UnitType::GiantSuper); // UnitType values 1..90
     static constexpr int kCityUpgradeCount = 8;   // CityUpgradeChoice without None

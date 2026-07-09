@@ -195,6 +195,8 @@ public:
 
     bool canUnitBecomeVeteran(PlayerId pid, UnitId unitId) const;
     bool becomeVeteran(PlayerId pid, UnitId unitId);
+    bool canDisbandUnit(PlayerId pid, UnitId unitId) const;
+    bool disbandUnit(PlayerId pid, UnitId unitId);
 
     bool buildRoad(PlayerId pid, Pos pos);
     bool canBuildRoad(PlayerId pid, Pos pos) const;
