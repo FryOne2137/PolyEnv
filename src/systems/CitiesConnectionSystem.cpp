@@ -197,23 +197,17 @@ void CitiesConnectionSystem::update(Game& game) {
     const int H = map.getHeight();
     const int total = W * H;
 
-    // Previous connected cities (excluding capital) per player.
-    static std::unordered_map<int, std::unordered_set<int>> s_connected;
-
-    // Track previous capital per player. If capital changes (e.g. capture), reset connection-diff state
-    // to avoid applying spurious +/- population deltas.
-    static std::unordered_map<int, int> s_prevCapital;
-
-    // Track which water tiles we set for each player so we can clear only those.
-    static std::unordered_map<int, std::vector<int>> s_waterConnTiles;
-
-    // Stamp-based visited set.
-    static std::vector<uint32_t> s_stamp;
-    static uint32_t s_epoch = 1;
-    static std::vector<int> s_queue;
-
-    // Ownership for WaterConnection tiles (255 = none). Tile stores only presence.
-    static std::vector<uint8_t> s_waterOwner;
+    CitiesConnectionRuntime& runtime = game.getCitiesConnectionRuntime();
+    auto& s_connected = runtime.connected;
+    auto& s_prevCapital = runtime.previousCapital;
+    auto& s_waterConnTiles = runtime.waterConnectionTiles;
+    auto& s_stamp = runtime.stamp;
+    auto& s_epoch = runtime.epoch;
+    auto& s_queue = runtime.queue;
+    auto& s_waterOwner = runtime.waterOwner;
+    auto& s_parent = runtime.parent;
+    auto& s_dist = runtime.distance;
+    auto& s_q = runtime.bfsQueue;
 
     if (static_cast<int>(s_stamp.size()) != total) {
         s_stamp.assign(static_cast<size_t>(std::max(0, total)), 0u);
@@ -355,9 +349,6 @@ void CitiesConnectionSystem::update(Game& game) {
         constexpr int kMaxPortSteps = 5;
 
         // Reusable BFS buffers for water routing (bounded by small kMaxPortSteps).
-        static std::vector<int> s_parent;
-        static std::vector<uint16_t> s_dist;
-        static std::vector<int> s_q;
         if (static_cast<int>(s_parent.size()) != total) {
             s_parent.assign(static_cast<size_t>(std::max(0, total)), -1);
             s_dist.assign(static_cast<size_t>(std::max(0, total)), 0xFFFF);

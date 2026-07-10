@@ -18,6 +18,7 @@
 #include "content/tribes/Tribe.h"
 #include "content/units/UnitFactory.h"
 #include "game/Game.h"
+#include "replay/ReplayRecorder.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
 #include "systems/DisbandSystem.h"
@@ -770,6 +771,10 @@ public:
         , tribesRaw_(other.tribesRaw_)
         , seed_(other.seed_)
         , unitsJsonPath_(other.unitsJsonPath_)
+        , initialLand_(other.initialLand_)
+        , smoothing_(other.smoothing_)
+        , relief_(other.relief_)
+        , replayRecorder_(other.replayRecorder_)
         , observationKnownByPlayer_(other.observationKnownByPlayer_)
         , legalIdsCacheValid_(other.legalIdsCacheValid_)
         , legalIdsCachePid_(other.legalIdsCachePid_)
@@ -788,6 +793,10 @@ public:
         tribesRaw_ = other.tribesRaw_;
         seed_ = other.seed_;
         unitsJsonPath_ = other.unitsJsonPath_;
+        initialLand_ = other.initialLand_;
+        smoothing_ = other.smoothing_;
+        relief_ = other.relief_;
+        replayRecorder_ = other.replayRecorder_;
         observationKnownByPlayer_ = other.observationKnownByPlayer_;
         legalIdsCacheValid_ = other.legalIdsCacheValid_;
         legalIdsCachePid_ = other.legalIdsCachePid_;
@@ -822,10 +831,14 @@ public:
         Game::NewGameConfig cfg;
         cfg.mapSize = mapSize_;
         cfg.seed = seed_;
+        cfg.initialLand = initialLand_;
+        cfg.smoothing = smoothing_;
+        cfg.relief = relief_;
         cfg.tribes = parseTribes(tribesRaw_.empty() ? std::vector<int>{3, 2} : tribesRaw_);
         game.newGame(cfg);
 
         state_ = std::make_unique<GameStateAdapter>(std::move(game));
+        replayRecorder_.clear();
         initializeObservationKnowledgeFromCurrentVisibility();
         invalidateCaches();
         return observation(std::nullopt, true, -1);
@@ -854,6 +867,7 @@ public:
         const ActionModelFields actionFeatures = buildActionModelFields(gBefore, *decoded);
 
         state_->apply(*decoded);
+        replayRecorder_.record(actionId);
         revealObservedTilesForAllPlayers();
         invalidateCaches();
 
@@ -892,6 +906,7 @@ public:
         }
 
         state_->apply(*decoded);
+        replayRecorder_.record(actionId);
         revealObservedTilesForAllPlayers();
         invalidateCaches();
 
@@ -915,6 +930,7 @@ public:
         }
 
         state_->apply(*decoded);
+        replayRecorder_.record(actionId);
         // Keep mechanics/FOW updates from the core engine, but do not expose newly visible
         // tile content to the acting player's visible_only observation layers.
         revealObservedTilesForAllPlayersExcept(actor);
@@ -1783,6 +1799,70 @@ public:
         return static_cast<int>(state_->currentPlayer());
     }
 
+    uint32_t worldSeed() const {
+        ensureState();
+        return state_->getGame().getWorldSeed();
+    }
+
+    std::vector<int> playerTribes() const {
+        ensureState();
+        const Game& g = state_->getGame();
+        std::vector<int> out;
+        out.reserve(g.getPlayers().size());
+        for (const Player& player : g.getPlayers()) {
+            out.push_back(static_cast<int>(player.getTribeType()));
+        }
+        return out;
+    }
+
+    std::vector<size_t> replayActionIds() const {
+        return replayRecorder_.actionIds();
+    }
+
+    void saveReplay(const std::string& path) const {
+        ensureState();
+        const Game& game = state_->getGame();
+        ReplayMetadata metadata;
+        metadata.seed = game.getWorldSeed();
+        metadata.mapSize = game.getMap().getWidth();
+        metadata.initialLand = initialLand_;
+        metadata.smoothing = smoothing_;
+        metadata.relief = relief_;
+        for (const Player& player : game.getPlayers()) {
+            metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
+        }
+        std::string error;
+        if (!ReplayRecorder::save(path, metadata, replayRecorder_.actionIds(), error)) {
+            throw std::runtime_error("Could not save .polygame: " + error);
+        }
+    }
+
+    py::dict loadReplay(const std::string& path) {
+        ReplayMetadata metadata;
+        std::vector<size_t> actionIds;
+        std::string error;
+        if (!ReplayRecorder::load(path, metadata, actionIds, error)) {
+            throw std::runtime_error("Could not load .polygame: " + error);
+        }
+
+        GameEnv replayed(metadata.mapSize, metadata.tribes, metadata.seed, unitsJsonPath_);
+        replayed.initialLand_ = metadata.initialLand;
+        replayed.smoothing_ = metadata.smoothing;
+        replayed.relief_ = metadata.relief;
+        replayed.reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        for (size_t index = 0; index < actionIds.size(); ++index) {
+            const py::tuple result = replayed.stepFast(actionIds[index], std::nullopt);
+            if (!py::cast<bool>(result[0])) {
+                throw std::runtime_error(
+                    "Invalid .polygame: action at index " + std::to_string(index) + " is not legal"
+                );
+            }
+        }
+
+        *this = replayed;
+        return observation(std::nullopt, true, -1);
+    }
+
     std::vector<int> getTechs(std::optional<int> playerId) const {
         ensureState();
         const Game& g = state_->getGame();
@@ -2094,6 +2174,10 @@ private:
     std::vector<int> tribesRaw_{3, 2};
     uint32_t seed_ = 1;
     std::string unitsJsonPath_;
+    float initialLand_ = 0.5f;
+    int smoothing_ = 3;
+    int relief_ = 4;
+    ReplayRecorder replayRecorder_;
     std::vector<std::vector<uint8_t>> observationKnownByPlayer_;
     // Per-player list of tile indices revealed by the most recent step (0→1 transitions).
     // Reset at the start of every revealObservedTilesForAll*() call.
@@ -2191,6 +2275,16 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("decode_action", &GameEnv::decodeAction, py::arg("action_id"))
         .def("action_space_size", &GameEnv::actionSpaceSize)
         .def("current_player", &GameEnv::currentPlayer)
+        .def("world_seed", &GameEnv::worldSeed,
+             "Returns the effective seed used to generate the current map.")
+        .def("player_tribes", &GameEnv::playerTribes,
+             "Returns tribe ids in player order for the current game.")
+        .def("replay_action_ids", &GameEnv::replayActionIds,
+             "Returns accepted action ids recorded for the current match.")
+        .def("save_replay", &GameEnv::saveReplay, py::arg("path"),
+             "Writes the current match as a .polygame replay.")
+        .def("load_replay", &GameEnv::loadReplay, py::arg("path"),
+             "Loads a .polygame replay and returns its final observation.")
         .def("get_techs", &GameEnv::getTechs,
              py::arg("player_id") = std::nullopt)
         .def("is_done", &GameEnv::isDone)

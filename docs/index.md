@@ -4,6 +4,13 @@ PolyEnv is an unofficial Polytopia-like game engine with Python bindings for AI 
 
 The supported release scope is the 12 regular tribes: Xin-Xi, Imperius, Bardur, Oumaji, Kickoo, Hoodrick, Luxidoor, Vengir, Zebasi, Ai-Mo, Quetzali, and Yadakk. Special tribes such as Aquarion, Elyrion, Polaris, and Cymanti are not part of the supported ruleset.
 
+## Release Status
+
+PolyEnv is currently beta `0.1`. It is suitable for simulation, AI training,
+external MCTS, and reproducible replay workflows. Replay compatibility is
+guaranteed for the same PolyEnv rules release; do not rely on byte-identical
+results across different engine versions or compiler platforms.
+
 ## Attribution
 
 The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and has been modified for this engine.
@@ -55,6 +62,7 @@ while not env.is_done():
 | Step with a chosen legal action id | `env.step_fast(action_id)` |
 | Debug one action id | `env.decode_action(action_id)` |
 | Read a simple visible observation | `env.observation()` |
+| Save or load an action replay | `env.save(path)` / `env.load(path)` |
 
 ## Important Rule
 
@@ -70,6 +78,8 @@ Do not invent action ids. The legal action set changes after every step.
 
 - [Installation](installation.md): install from GitHub or a local checkout.
 - [Python API](python_api.md): core `GameEnv` methods.
+- [Replays](replays.md): `.polygame` format, Python API, and determinism limits.
+- [GUI](gui.md): normal-game controls and replay viewer.
 - [Map API](map_api.md): player-view maps, full maps, and hidden-tile prediction workflow.
 - [Model Request API](model_request_api.md): packet schema, map tokens, actions, and NumPy layout.
 - [Token Reference](token_reference.md): numeric ids for terrain, resources, buildings, tribes, techs, actions, and units.

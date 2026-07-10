@@ -13,6 +13,8 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Python API: python_api.md
+  - Replays: replays.md
+  - GUI: gui.md
   - Map API: map_api.md
   - Model Request API: model_request_api.md
   - Token Reference: token_reference.md

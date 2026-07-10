@@ -15,6 +15,8 @@
 #include <SFML/System/Vector2.hpp>
 #include <string>
 #include <vector>
+#include <functional>
+#include <optional>
 
 #include "TextureStore.h"
 
@@ -49,8 +51,16 @@ public:
     bool consumeEndTurnClicked();
     bool consumeToggleOverviewRequested();
     bool consumeAutoPlayToggleRequested();
+    bool consumeReplayNextMoveRequested();
+    bool consumeReplayAutoPlayToggleRequested();
+    std::optional<size_t> consumeReplaySeekRequested();
     void toggleOverview();
     void setAutoPlayActive(bool active);
+    void setActionAppliedCallback(std::function<void(size_t)> callback);
+    void setReplayViewer(bool active);
+    void setReplayProgress(size_t currentMove, size_t moveCount);
+    void setReplayAutoPlayActive(bool active);
+    float replayIntervalSeconds() const;
     void notifyGameStateChanged();
 
 private:
@@ -95,6 +105,17 @@ private:
     bool toggleOverviewRequested = false;
     bool autoPlayToggleRequested = false;
     bool autoPlayActive = false;
+    std::function<void(size_t)> actionAppliedCallback;
+
+    bool replayViewer = false;
+    bool replayNextMoveRequested = false;
+    bool replayAutoPlayToggleRequested = false;
+    std::optional<size_t> replaySeekRequested;
+    bool replayAutoPlayActive = false;
+    size_t replayCurrentMove = 0;
+    size_t replayMoveCount = 0;
+    std::string replayIntervalText = "0.20";
+    bool replayIntervalInputActive = false;
 
     bool contextActionCacheValid = false;
     Game* contextActionCacheGame = nullptr;
@@ -110,6 +131,10 @@ private:
     sf::FloatRect btnAutoPlay{};
     sf::FloatRect btnOverview{};
     sf::FloatRect btnBack{};
+    sf::FloatRect btnReplayNext{};
+    sf::FloatRect btnReplayAuto{};
+    sf::FloatRect replayTimelineRect{};
+    sf::FloatRect replayIntervalRect{};
 
     bool pointInTileDiamond(const sf::Vector2f& p, float x, float y, float tileSize, float yStep) const;
     bool screenToTile(const sf::Vector2f& screen, Pos& out);
@@ -117,6 +142,7 @@ private:
     mutable bool uiFontLoaded = false;
 
     void invalidateContextActionCache();
+    bool applyRecordedEngineAction(const Action& action);
     const std::vector<Action>& contextActionsForCurrentSelection();
     bool ensureUIFontLoaded() const;
     static const char* tribeDisplayName(TribeType t);

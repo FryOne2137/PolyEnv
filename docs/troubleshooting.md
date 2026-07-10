@@ -1,5 +1,19 @@
 # Troubleshooting
 
+## A `.polygame` Replay Does Not Load
+
+Use the same PolyEnv rules release that created the replay. The loader rejects
+unknown format versions, invalid headers, and actions that are not legal while
+reconstructing the game. Keep the replay together with its PolyEnv version and
+the original seed when reporting an issue.
+
+## GUI Does Not Open A System File Dialog
+
+The current system file-dialog integration is implemented for macOS. Build the
+SFML GUI on macOS and use the `File` menu in the upper-right corner. Other
+platforms currently require a platform dialog implementation before this menu
+can open a native picker.
+
 ## `ModuleNotFoundError: No module named 'PolyEnv'`
 
 The package is not installed in the Python environment you are using.

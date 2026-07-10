@@ -108,12 +108,37 @@ class GameEnv(_GameEnv):
         tribes: list[Any] | tuple[Any, ...] | None = None,
     ) -> dict[str, Any]:
         selected_players = tribes if tribes is not None else players
-        return super().reset(
+        observation = super().reset(
             map_size,
             _normalize_players(selected_players) if selected_players is not None else None,
             seed,
             units_json_path or _default_units_path(),
         )
+        return observation
+
+    def clone(self) -> "GameEnv":
+        """Return an independent Python-level clone, including replay history."""
+        snapshot = super().clone()
+        cloned = GameEnv()
+        cloned.load_state(snapshot)
+        return cloned
+
+    def copy(self) -> "GameEnv":
+        """Alias for :meth:`clone`."""
+        return self.clone()
+
+    def save(self, path: str | Path) -> Path:
+        """Save this match as a deterministic ``.polygame`` action replay."""
+        target = Path(path)
+        super().save_replay(str(target))
+        return target
+
+    def load(self, path: str | Path) -> dict[str, Any]:
+        """Load a ``.polygame`` replay and return its final player observation."""
+        try:
+            return super().load_replay(str(Path(path)))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
 
     def tokenized_map(
         self,

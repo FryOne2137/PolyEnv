@@ -10,12 +10,62 @@
 #include <chrono>
 #include <filesystem>
 #include <array>
+#include <cstdio>
+#include <fstream>
 #include <random>
+#include <sstream>
 #include <SFML/Graphics/Image.hpp>
 
 #include "MapRenderer.h"
 #include "ai/GameStateAdapter.h"
 #include "ai/ModelClient.h"
+
+namespace {
+std::string trimTrailingWhitespace(std::string value) {
+    while (!value.empty() && (value.back() == '\n' || value.back() == '\r' || value.back() == ' ')) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::optional<std::string> openReplayFileDialog() {
+#ifdef __APPLE__
+    const char* command =
+        "osascript -e 'POSIX path of (choose file with prompt \"Load .polygame replay\" "
+        "of type {\"polygame\", \"public.json\"})' 2>/dev/null";
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return std::nullopt;
+    std::string path;
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), pipe)) path += buffer;
+    const int status = pclose(pipe);
+    path = trimTrailingWhitespace(std::move(path));
+    if (status != 0 || path.empty()) return std::nullopt;
+    return path;
+#else
+    return std::nullopt;
+#endif
+}
+
+std::optional<std::string> saveReplayFileDialog() {
+#ifdef __APPLE__
+    const char* command =
+        "osascript -e 'POSIX path of (choose file name with prompt \"Save .polygame replay\" "
+        "default name \"match.polygame\")' 2>/dev/null";
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return std::nullopt;
+    std::string path;
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), pipe)) path += buffer;
+    const int status = pclose(pipe);
+    path = trimTrailingWhitespace(std::move(path));
+    if (status != 0 || path.empty()) return std::nullopt;
+    return path;
+#else
+    return std::nullopt;
+#endif
+}
+} // namespace
 
 static bool existsFile(const std::string& p) {
     std::error_code ec;
@@ -84,29 +134,52 @@ int GuiApp::run() {
     while (window.isOpen()) {
         sf::Event ev{};
         while (window.pollEvent(ev)) {
-            if (mode == Mode::InGame && mapRenderer) {
+            if (ev.type == sf::Event::Closed) window.close();
+            if (handleFileUiEvent(ev)) continue;
+
+            if ((mode == Mode::InGame || mode == Mode::ReplayViewer) && mapRenderer) {
                 mapRenderer->handleEvent(ev);
 
-                if (mapRenderer->consumeEndTurnClicked()) {
-                    game.endTurn(game.getCurrentPlayerId());
+                if (mode == Mode::InGame && mapRenderer->consumeEndTurnClicked()) {
+                    GameStateAdapter adapter(game);
+                    const PlayerId pid = adapter.currentPlayer();
+                    const std::optional<Action> action = adapter.decodeActionId(pid, 0);
+                    const std::vector<uint8_t> legal = adapter.legalActionMask(pid);
+                    if (action && !legal.empty() && legal[0]) {
+                        adapter.apply(*action);
+                        game = adapter.getGame();
+                        recordActionId(0);
+                    }
                     mapRenderer->notifyGameStateChanged();
                     botClock_.restart();
                 }
                 if (mapRenderer->consumeToggleOverviewRequested()) {
                     mapRenderer->toggleOverview();
                 }
-                if (mapRenderer->consumeAutoPlayToggleRequested()) {
+                if (mode == Mode::InGame && mapRenderer->consumeAutoPlayToggleRequested()) {
                     autoRandomEnabled = !autoRandomEnabled;
                     mapRenderer->setAutoPlayActive(autoRandomEnabled);
                     autoRandomClock.restart();
                 }
+                if (mode == Mode::ReplayViewer && mapRenderer->consumeReplayNextMoveRequested()) {
+                    advanceReplayMove();
+                }
+                if (mode == Mode::ReplayViewer && mapRenderer->consumeReplayAutoPlayToggleRequested()) {
+                    replayAutoPlayEnabled_ = !replayAutoPlayEnabled_;
+                    mapRenderer->setReplayAutoPlayActive(replayAutoPlayEnabled_);
+                    replayClock_.restart();
+                }
+                if (mode == Mode::ReplayViewer) {
+                    if (const auto seek = mapRenderer->consumeReplaySeekRequested()) seekReplayMove(*seek);
+                }
             }
-            if (ev.type == sf::Event::Closed) window.close();
             if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Escape) {
-                if (mode == Mode::InGame) {
+                if (mode == Mode::InGame || mode == Mode::ReplayViewer) {
                     mapRenderer.reset();
                     game = Game();
                     autoRandomEnabled = false;
+                    replayAutoPlayEnabled_ = false;
+                    replayFrames_.clear();
                     playerIsBot_.clear();
                     modelClient_.reset();
                     mode = Mode::SelectTribes;
@@ -160,6 +233,17 @@ int GuiApp::run() {
             }
         }
 
+        if (mode == Mode::ReplayViewer && mapRenderer && replayAutoPlayEnabled_) {
+            const float interval = mapRenderer->replayIntervalSeconds();
+            if (replayClock_.getElapsedTime().asSeconds() >= interval) {
+                replayClock_.restart();
+                if (!advanceReplayMove()) {
+                    replayAutoPlayEnabled_ = false;
+                    mapRenderer->setReplayAutoPlayActive(false);
+                }
+            }
+        }
+
         // ── Render ────────────────────────────────────────────────────────────
         window.clear(sf::Color(20, 20, 20));
         if (mode == Mode::SelectTribes) {
@@ -167,6 +251,7 @@ int GuiApp::run() {
         } else {
             if (mapRenderer) mapRenderer->draw(window);
         }
+        drawFileUi();
         window.display();
     }
 
@@ -196,17 +281,14 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
     using clock = std::chrono::high_resolution_clock;
     const auto t0 = clock::now();
     game.newGame(cfg);
+    currentGameConfig_ = cfg;
+    replayRecorder_.clear();
     const auto t1 = clock::now();
     std::cerr << "[mapgen] generation took "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
               << " ms\n";
 
-    mapRenderer = std::make_unique<MapRenderer>(*textures);
-    mapRenderer->setGame(&game);
-    mapRenderer->setAutoPlayActive(false);
-    autoRandomClock.restart();
-    mapRenderer->setTileSizePx(48);
-    mapRenderer->setOrigin({24.f, 24.f});
+    configureRenderer(false);
 
     // ── Bot configuration ─────────────────────────────────────────────────────
     const auto& bots = selectScreen.getSelectedBots();
@@ -235,6 +317,255 @@ GuiApp::GuiApp() {
     rng.seed(std::random_device{}());
 }
 
+void GuiApp::configureRenderer(bool replayViewer) {
+    mapRenderer = std::make_unique<MapRenderer>(*textures);
+    mapRenderer->setGame(&game);
+    mapRenderer->setTileSizePx(48);
+    mapRenderer->setOrigin({24.f, 24.f});
+    mapRenderer->setAutoPlayActive(false);
+    mapRenderer->setReplayViewer(replayViewer);
+    mapRenderer->setReplayProgress(replayMove_, replayFrames_.empty() ? 0 : replayFrames_.size() - 1);
+    mapRenderer->setReplayAutoPlayActive(false);
+    mapRenderer->setActionAppliedCallback([this](size_t actionId) {
+        recordActionId(actionId);
+    });
+    autoRandomClock.restart();
+    replayClock_.restart();
+}
+
+void GuiApp::recordActionId(size_t actionId) {
+    if (mode == Mode::InGame) replayRecorder_.record(actionId);
+}
+
+bool GuiApp::saveReplayFile(const std::string& path) {
+    if (path.empty() || mode != Mode::InGame) return false;
+    ReplayMetadata metadata;
+    metadata.seed = game.getWorldSeed();
+    metadata.mapSize = game.getMap().getWidth();
+    metadata.initialLand = currentGameConfig_.initialLand;
+    metadata.smoothing = currentGameConfig_.smoothing;
+    metadata.relief = currentGameConfig_.relief;
+    for (const Player& player : game.getPlayers()) {
+        metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
+    }
+
+    std::string error;
+    if (ReplayRecorder::save(path, metadata, replayRecorder_.actionIds(), error)) {
+        fileStatus_ = "Saved " + path;
+        return true;
+    }
+    fileStatus_ = "Save failed: " + error;
+    return false;
+}
+
+bool GuiApp::loadReplayFile(const std::string& path) {
+    ReplayMetadata metadata;
+    std::vector<size_t> actionIds;
+    std::string error;
+    if (!ReplayRecorder::load(path, metadata, actionIds, error)) {
+        fileStatus_ = "Load failed: " + error;
+        return false;
+    }
+
+    try {
+        Game::NewGameConfig cfg;
+        cfg.seed = metadata.seed;
+        cfg.mapSize = metadata.mapSize;
+        cfg.initialLand = metadata.initialLand;
+        cfg.smoothing = metadata.smoothing;
+        cfg.relief = metadata.relief;
+        for (const int tribeId : metadata.tribes) {
+            cfg.tribes.push_back(static_cast<TribeType>(tribeId));
+        }
+        Game reconstructed;
+        reconstructed.newGame(cfg);
+        std::vector<Game> frames;
+        frames.reserve(actionIds.size() + 1);
+        frames.push_back(reconstructed);
+
+        for (size_t index = 0; index < actionIds.size(); ++index) {
+            GameStateAdapter adapter(reconstructed);
+            const PlayerId pid = adapter.currentPlayer();
+            const std::optional<Action> action = adapter.decodeActionId(pid, actionIds[index]);
+            if (!action) throw std::runtime_error("invalid action id at move " + std::to_string(index));
+            const std::vector<uint8_t> legal = adapter.legalActionMask(pid);
+            if (actionIds[index] >= legal.size() || !legal[actionIds[index]]) {
+                throw std::runtime_error("illegal action at move " + std::to_string(index));
+            }
+            adapter.apply(*action);
+            reconstructed = adapter.getGame();
+            frames.push_back(reconstructed);
+        }
+
+        replayFrames_ = std::move(frames);
+        replayMove_ = 0;
+        game = replayFrames_.front();
+        replayRecorder_.replace(actionIds);
+        currentGameConfig_ = cfg;
+        autoRandomEnabled = false;
+        replayAutoPlayEnabled_ = false;
+        playerIsBot_.clear();
+        modelClient_.reset();
+        configureRenderer(true);
+        mode = Mode::ReplayViewer;
+        fileStatus_ = "Loaded " + path;
+        return true;
+    } catch (const std::exception& e) {
+        fileStatus_ = std::string("Load failed: ") + e.what();
+        return false;
+    }
+}
+
+bool GuiApp::advanceReplayMove() {
+    if (replayMove_ + 1 >= replayFrames_.size()) return false;
+    seekReplayMove(replayMove_ + 1);
+    return true;
+}
+
+void GuiApp::seekReplayMove(size_t move) {
+    if (replayFrames_.empty()) return;
+    replayMove_ = std::min(move, replayFrames_.size() - 1);
+    game = replayFrames_[replayMove_];
+    if (mapRenderer) {
+        mapRenderer->clearSelection();
+        mapRenderer->notifyGameStateChanged();
+        mapRenderer->setReplayProgress(replayMove_, replayFrames_.size() - 1);
+    }
+}
+
+bool GuiApp::handleFileUiEvent(const sf::Event& ev) {
+    layoutFileUi();
+    if (fileDialogMode_ != FileDialogMode::None) {
+        if (ev.type == sf::Event::TextEntered) {
+            if (ev.text.unicode >= 32 && ev.text.unicode < 127) {
+                filePathBuffer_.push_back(static_cast<char>(ev.text.unicode));
+            } else if (ev.text.unicode == 8 && !filePathBuffer_.empty()) {
+                filePathBuffer_.pop_back();
+            }
+            return true;
+        }
+        if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Return) {
+            const bool load = fileDialogMode_ == FileDialogMode::LoadReplay;
+            if (load) loadReplayFile(filePathBuffer_); else saveReplayFile(filePathBuffer_);
+            fileDialogMode_ = FileDialogMode::None;
+            return true;
+        }
+        if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Escape) {
+            fileDialogMode_ = FileDialogMode::None;
+            return true;
+        }
+        if (ev.type == sf::Event::MouseButtonPressed && ev.mouseButton.button == sf::Mouse::Left) {
+            const sf::Vector2f p(float(ev.mouseButton.x), float(ev.mouseButton.y));
+            const sf::FloatRect confirm(710.f, 414.f, 100.f, 32.f);
+            const sf::FloatRect cancel(820.f, 414.f, 100.f, 32.f);
+            if (confirm.contains(p)) {
+                const bool load = fileDialogMode_ == FileDialogMode::LoadReplay;
+                if (load) loadReplayFile(filePathBuffer_); else saveReplayFile(filePathBuffer_);
+                fileDialogMode_ = FileDialogMode::None;
+            } else if (cancel.contains(p)) {
+                fileDialogMode_ = FileDialogMode::None;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    if (ev.type != sf::Event::MouseButtonPressed || ev.mouseButton.button != sf::Mouse::Left) return false;
+    const sf::Vector2f p(float(ev.mouseButton.x), float(ev.mouseButton.y));
+    if (fileMenuRect_.contains(p)) {
+        fileMenuOpen_ = !fileMenuOpen_;
+        return true;
+    }
+    if (fileMenuOpen_ && fileLoadRect_.contains(p)) {
+        fileMenuOpen_ = false;
+        if (const auto path = openReplayFileDialog()) {
+            loadReplayFile(*path);
+        } else {
+            fileStatus_ = "Load cancelled";
+        }
+        return true;
+    }
+    if (fileMenuOpen_ && mode == Mode::InGame && fileSaveRect_.contains(p)) {
+        fileMenuOpen_ = false;
+        if (const auto path = saveReplayFileDialog()) {
+            saveReplayFile(*path);
+        } else {
+            fileStatus_ = "Save cancelled";
+        }
+        return true;
+    }
+    fileMenuOpen_ = false;
+    return false;
+}
+
+void GuiApp::drawFileUi() {
+    layoutFileUi();
+    auto drawButton = [&](const sf::FloatRect& rect, const std::string& label) {
+        sf::RectangleShape shape({rect.width, rect.height});
+        shape.setPosition({rect.left, rect.top});
+        shape.setFillColor(sf::Color(35, 35, 35, 245));
+        shape.setOutlineThickness(1.f);
+        shape.setOutlineColor(sf::Color(110, 110, 110));
+        window.draw(shape);
+        sf::Text text(label, font, 15);
+        text.setFillColor(sf::Color(240, 240, 240));
+        text.setPosition(rect.left + 9.f, rect.top + 5.f);
+        window.draw(text);
+    };
+
+    drawButton(fileMenuRect_, "File");
+    if (fileMenuOpen_) {
+        drawButton(fileLoadRect_, "Load .polygame");
+        if (mode == Mode::InGame) drawButton(fileSaveRect_, "Save .polygame");
+    }
+
+    if (!fileStatus_.empty() && fileDialogMode_ == FileDialogMode::None) {
+        sf::Text status(fileStatus_, font, 14);
+        status.setFillColor(sf::Color(220, 220, 220));
+        status.setPosition(std::max(8.f, fileMenuRect_.left - 360.f), 11.f);
+        window.draw(status);
+    }
+
+    if (fileDialogMode_ == FileDialogMode::None) return;
+    sf::RectangleShape shade({1280.f, 720.f});
+    shade.setFillColor(sf::Color(0, 0, 0, 150));
+    window.draw(shade);
+    const sf::FloatRect panel(350.f, 285.f, 580.f, 180.f);
+    sf::RectangleShape box({panel.width, panel.height});
+    box.setPosition({panel.left, panel.top});
+    box.setFillColor(sf::Color(28, 28, 28));
+    box.setOutlineThickness(2.f);
+    box.setOutlineColor(sf::Color(110, 110, 110));
+    window.draw(box);
+
+    const bool loading = fileDialogMode_ == FileDialogMode::LoadReplay;
+    sf::Text title(loading ? "Load .polygame replay" : "Save .polygame replay", font, 20);
+    title.setFillColor(sf::Color(245, 245, 245));
+    title.setPosition(375.f, 310.f);
+    window.draw(title);
+    const sf::FloatRect input(375.f, 355.f, 530.f, 34.f);
+    sf::RectangleShape inputBox({input.width, input.height});
+    inputBox.setPosition({input.left, input.top});
+    inputBox.setFillColor(sf::Color(18, 18, 18));
+    inputBox.setOutlineThickness(1.f);
+    inputBox.setOutlineColor(sf::Color(130, 130, 130));
+    window.draw(inputBox);
+    sf::Text path(filePathBuffer_, font, 16);
+    path.setFillColor(sf::Color::White);
+    path.setPosition(383.f, 362.f);
+    window.draw(path);
+    drawButton({710.f, 414.f, 100.f, 32.f}, loading ? "Load" : "Save");
+    drawButton({820.f, 414.f, 100.f, 32.f}, "Cancel");
+}
+
+void GuiApp::layoutFileUi() {
+    const float windowWidth = static_cast<float>(window.getSize().x);
+    const float x = std::max(8.f, windowWidth - 84.f);
+    fileMenuRect_ = sf::FloatRect(x, 8.f, 76.f, 28.f);
+    fileLoadRect_ = sf::FloatRect(x - 154.f, 40.f, 230.f, 30.f);
+    fileSaveRect_ = sf::FloatRect(x - 154.f, 70.f, 230.f, 30.f);
+}
+
 bool GuiApp::runRandomAutoActionStep() {
     if (game.isGameOver()) return false;
 
@@ -254,6 +585,7 @@ bool GuiApp::runRandomAutoActionStep() {
 
     adapter.apply(*action);
     game = adapter.getGame();
+    recordActionId(chosen);
     if (mapRenderer) mapRenderer->clearSelection();
     return true;
 }
@@ -287,6 +619,7 @@ bool GuiApp::runBotActionStep() {
     // 3. Apply and update game state
     adapter.apply(*action);
     game = adapter.getGame();
+    recordActionId(static_cast<size_t>(actionId));
     if (mapRenderer) mapRenderer->clearSelection();
     return true;
     // 4. Loop: called again in 200ms with the new state

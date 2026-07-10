@@ -60,6 +60,8 @@ if(NOT nlohmann_json_FOUND)
 endif()
 
 set(ENGINE_SOURCES
+        src/replay/ReplayRecorder.cpp
+        src/replay/ReplayRecorder.h
         src/ai/GameStateSerializer.cpp
         src/ai/GameStateSerializer.h
         src/content/units/Unit.cpp

@@ -35,7 +35,11 @@ CityId CitySystem::resolveCityIdForTile(const Game& game, const Tile& tile) {
 
 bool CitySystem::cityExists(const Game& game, CityId cityId) {
     if (cityId == kNoCity) return false;
-    return game.getCity(cityId) != nullptr;
+    // The city vector may contain placeholder slots after a village with a
+    // higher settlement id is converted first. A slot is a real city only
+    // after its id has been initialized to its vector index.
+    const City* city = game.getCity(cityId);
+    return city != nullptr && city->getCityId() == cityId;
 }
 
 bool CitySystem::setCityOwner(Game& game, CityId cityId, uint8_t ownerId) {

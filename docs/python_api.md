@@ -75,6 +75,9 @@ target = env.full_map_numpy()
 | `env.action_param_spec()` | `dict` | Vocab sizes and argument order |
 | `env.step_fast(action_id)` | tuple | Fast environment step |
 | `env.step(action_id)` | `dict` | Step with detailed output |
+| `env.save(path)` | `Path` | Write a `.polygame` action replay through the native C++ recorder |
+| `env.load(path)` | `dict` | Recreate a replay through the native C++ loader and return its final observation |
+| `env.replay_action_ids()` | `list[int]` | Accepted action ids recorded for the current match |
 
 ## Step Return Values
 
@@ -109,6 +112,30 @@ branch2 = env.copy()
 # Restore.
 env.load_state(snapshot)
 ```
+
+## Replay Files
+
+Use `save()` to write a portable action replay, and `load()` to recreate its
+final state in any `GameEnv` instance:
+
+```python
+env.save("match.polygame")
+
+replay = GameEnv()
+final_observation = replay.load("match.polygame")
+```
+
+The shared native C++ recorder stores the effective map seed, map size, tribe
+order, map-generation settings, and each accepted `action_id`. `load()` creates
+the initial game again and executes the actions in order; it rejects malformed
+files and actions that are no longer legal. The GUI uses the same recorder and
+file format.
+
+This format is intended for replays made with the same PolyEnv rules release.
+See [Replays](replays.md) for format details and determinism limits.
+
+Use `save_state()` / `load_state()` for in-memory snapshots and MCTS branches;
+they are not persistent replay files.
 
 ## Fog And Tile Prediction Helpers
 

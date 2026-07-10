@@ -16,6 +16,7 @@
 
 #include "player/Player.h"
 #include "systems/CityRewardSystem.h"
+#include "systems/CitiesConnectionSystem.h"
 #include "content/units/Unit.h"
 #include "content/tribes/Tribe.h"
 #include "content/settlements/City.h"
@@ -83,6 +84,8 @@ public:
     const Player &getCurrentPlayer() const { return players[currentPlayer]; }
     uint32_t getTurnNumber() const { return turnNumber; }
     uint32_t getWorldSeed() const { return worldSeed; }
+    CitiesConnectionRuntime& getCitiesConnectionRuntime() { return citiesConnectionRuntime; }
+    const CitiesConnectionRuntime& getCitiesConnectionRuntime() const { return citiesConnectionRuntime; }
     bool isGameOver() const { return winner != kNoPlayer; }
     PlayerId getWinner() const { return winner; }
 
@@ -217,6 +220,7 @@ private:
     std::vector<Player> players;
     std::vector<Unit> units;
     std::vector<City> cities;
+    CitiesConnectionRuntime citiesConnectionRuntime;
 
     PlayerId currentPlayer = 0;
     uint32_t turnNumber = 0;

@@ -619,8 +619,66 @@ bool MapRenderer::consumeAutoPlayToggleRequested() {
     return v;
 }
 
+bool MapRenderer::consumeReplayNextMoveRequested() {
+    const bool value = replayNextMoveRequested;
+    replayNextMoveRequested = false;
+    return value;
+}
+
+bool MapRenderer::consumeReplayAutoPlayToggleRequested() {
+    const bool value = replayAutoPlayToggleRequested;
+    replayAutoPlayToggleRequested = false;
+    return value;
+}
+
+std::optional<size_t> MapRenderer::consumeReplaySeekRequested() {
+    const std::optional<size_t> value = replaySeekRequested;
+    replaySeekRequested.reset();
+    return value;
+}
+
 void MapRenderer::setAutoPlayActive(bool active) {
     autoPlayActive = active;
+}
+
+void MapRenderer::setActionAppliedCallback(std::function<void(size_t)> callback) {
+    actionAppliedCallback = std::move(callback);
+}
+
+void MapRenderer::setReplayViewer(bool active) {
+    replayViewer = active;
+    replayNextMoveRequested = false;
+    replayAutoPlayToggleRequested = false;
+    replaySeekRequested.reset();
+    replayAutoPlayActive = false;
+    replayIntervalInputActive = false;
+    clearSelection();
+}
+
+void MapRenderer::setReplayProgress(size_t currentMove, size_t moveCount) {
+    replayCurrentMove = std::min(currentMove, moveCount);
+    replayMoveCount = moveCount;
+}
+
+void MapRenderer::setReplayAutoPlayActive(bool active) {
+    replayAutoPlayActive = active;
+}
+
+float MapRenderer::replayIntervalSeconds() const {
+    try {
+        return std::clamp(std::stof(replayIntervalText), 0.05f, 10.0f);
+    } catch (...) {
+        return 0.2f;
+    }
+}
+
+bool MapRenderer::applyRecordedEngineAction(const Action& action) {
+    if (!game || replayViewer) return false;
+    GameStateAdapter adapter(*game);
+    const std::optional<size_t> actionId = adapter.encodeActionId(action);
+    const bool ok = applyEngineAction(*game, action);
+    if (ok && actionId && actionAppliedCallback) actionAppliedCallback(*actionId);
+    return ok;
 }
 
 void MapRenderer::toggleOverview() {
@@ -633,6 +691,16 @@ void MapRenderer::toggleOverview() {
 }
 
 void MapRenderer::handleEvent(const sf::Event& ev) {
+    if (replayViewer && replayIntervalInputActive && ev.type == sf::Event::TextEntered) {
+        if (ev.text.unicode >= '0' && ev.text.unicode <= '9') {
+            if (replayIntervalText.size() < 5) replayIntervalText.push_back(static_cast<char>(ev.text.unicode));
+        } else if (ev.text.unicode == '.' && replayIntervalText.find('.') == std::string::npos) {
+            replayIntervalText.push_back('.');
+        } else if (ev.text.unicode == 8 && !replayIntervalText.empty()) {
+            replayIntervalText.pop_back();
+        }
+        return;
+    }
     // Toggle universal view
     if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Tab) {
         toggleOverviewRequested = true;
@@ -657,6 +725,24 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
             const float dist2 = d.x * d.x + d.y * d.y;
 
             if (!dragMoved && dist2 < 25.f) {
+
+                if (replayViewer) {
+                    if (btnReplayNext.contains(up)) {
+                        replayNextMoveRequested = true;
+                    } else if (btnReplayAuto.contains(up)) {
+                        replayAutoPlayToggleRequested = true;
+                    } else if (replayTimelineRect.contains(up)) {
+                        const float t = std::clamp(
+                            (up.x - replayTimelineRect.left) / replayTimelineRect.width,
+                            0.f,
+                            1.f
+                        );
+                        replaySeekRequested = static_cast<size_t>(std::lround(t * float(replayMoveCount)));
+                    } else {
+                        replayIntervalInputActive = replayIntervalRect.contains(up);
+                    }
+                    return;
+                }
 
                 // --- Left spawn panel click (gameplay view only) ---
                 // --- Left spawn panel click (gameplay view only) ---
@@ -688,7 +774,7 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                         if (!ab.rect.contains(up)) continue;
                         if (ab.hasEngineAction) {
                             perfLog("EngineAction", [&] {
-                                const bool ok = applyEngineAction(*game, ab.engineAction);
+                                const bool ok = applyRecordedEngineAction(ab.engineAction);
                                 (void)ok;
                             });
                             g_moveSelectedUnit = kNoUnit;
@@ -846,18 +932,17 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                     for (const RewardHit& rh : g_rewardHits) {
                         if (!rh.rect.contains(up)) continue;
 
-                        // Resolve "current city" from selected tile.
-                        if (!selectedValid || !game->getMap().inBounds(selectedPos)) return; // consume (no city selected)
-
-                        const Tile& st = game->getMap().at(selectedPos);
-                        const City* cObj = resolveCityForTile(game, st);
-                        if (!cObj) return; // consume
-
-                        const CityId cityId = cObj->getCityId();
                         const PlayerId pid = game->getCurrentPlayerId();
+                        const Game::PendingCityUpgrade* pending = game->peekPendingCityUpgrade(pid);
+                        if (!pending) return; // No reward is currently blocking this turn.
 
                         perfLog("ChooseCityReward", [&] {
-                            const bool ok = game->upgradeCity(pid, cityId, rh.choice);
+                            Action action{};
+                            action.type = Action::Type::UpgradeCity;
+                            action.pid = pid;
+                            action.city = pending->cityId;
+                            action.upgrade = rh.choice;
+                            const bool ok = applyRecordedEngineAction(action);
                             (void)ok;
                         });
 
@@ -886,8 +971,11 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
 
                     if (hit != TechId::Count) {
                         perfLog("BuyTechClick", [&] {
-                            const PlayerId curPid = game->getCurrentPlayerId();
-                            const bool ok = game->buyTech(curPid, hit);
+                            Action action{};
+                            action.type = Action::Type::BuyTech;
+                            action.pid = game->getCurrentPlayerId();
+                            action.tech = hit;
+                            const bool ok = applyRecordedEngineAction(action);
                             (void)ok;
                         });
                         notifyGameStateChanged();
@@ -969,7 +1057,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                             const auto attackIt = g_attackOverlayActions.find(posKey(hit));
                             if (attackIt != g_attackOverlayActions.end()) {
                                 perfLog("Attack", [&] {
-                                    const bool ok = applyEngineAction(*game, attackIt->second);
+                                    const bool ok = applyRecordedEngineAction(attackIt->second);
                                     (void)ok;
                                 });
                                 // After an attack we clear overlays.
@@ -984,7 +1072,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                             const auto moveIt = g_moveOverlayActions.find(posKey(hit));
                             if (moveIt != g_moveOverlayActions.end()) {
                                 perfLog("MoveUnit", [&] {
-                                    const bool ok = applyEngineAction(*game, moveIt->second);
+                                    const bool ok = applyRecordedEngineAction(moveIt->second);
                                     (void)ok;
                                 });
                                 // After a move we clear the overlay (simple UX). Re-click unit to move again.
@@ -2444,8 +2532,8 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
                     bool canCaptureVillage = false;
                     if (onTile != Map::kNoUnit) {
                         const Unit* uu = game->getUnit(onTile);
-                        if (uu && uu->getOwnerId() == curPid && !uu->movedThisTurn() && !uu->attackedThisTurn()) {
-                            canCaptureVillage = true;
+                        if (uu && uu->getOwnerId() == curPid) {
+                            canCaptureVillage = game->canHandleVillage(curPid, onTile, p);
                         }
                     }
 
@@ -2658,7 +2746,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
         g_actionBtnsValid = false;
         g_actionBtnCount = 0;
 
-        if (game && !showOverview && selectedValid && game->getMap().inBounds(selectedPos)) {
+        if (game && !replayViewer && !showOverview && selectedValid && game->getMap().inBounds(selectedPos)) {
             const std::vector<Action>& actions = contextActionsForCurrentSelection();
             if (!actions.empty()) {
                 const float mapW = float(mapRt.x);
@@ -3085,6 +3173,10 @@ if (!showOverview) {
                 btnAutoPlay = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
                 btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + 2.f * (bh + 10.f), bw, bh);
                 btnBack     = btnOverview;
+                btnReplayNext = btnEndTurn;
+                btnReplayAuto = btnAutoPlay;
+                replayTimelineRect = sf::FloatRect(panelRect.left + panelPad, baseY - 58.f, bw, 12.f);
+                replayIntervalRect = sf::FloatRect(panelRect.left + panelPad, baseY - 38.f, 86.f, 24.f);
 
                 auto drawBtn = [&](const sf::FloatRect& r, bool active, const char* label) {
                     sf::RectangleShape b;
@@ -3111,9 +3203,60 @@ if (!showOverview) {
                     }
                 };
 
-                drawBtn(btnEndTurn, false, "End Turn");
-                drawBtn(btnAutoPlay, autoPlayActive, autoPlayActive ? "Auto Random: ON" : "Auto Random: OFF");
+                drawBtn(btnEndTurn, false, replayViewer ? "Next move" : "End Turn");
+                drawBtn(
+                    btnAutoPlay,
+                    replayViewer ? replayAutoPlayActive : autoPlayActive,
+                    replayViewer
+                        ? (replayAutoPlayActive ? "Auto replay: ON" : "Auto replay: OFF")
+                        : (autoPlayActive ? "Auto Random: ON" : "Auto Random: OFF")
+                );
                 drawBtn(btnOverview, false, "Map View");
+
+                if (replayViewer) {
+                    sf::RectangleShape track({replayTimelineRect.width, replayTimelineRect.height});
+                    track.setPosition({replayTimelineRect.left, replayTimelineRect.top});
+                    track.setFillColor(sf::Color(55, 55, 55, 255));
+                    track.setOutlineThickness(1.f);
+                    track.setOutlineColor(sf::Color(110, 110, 110, 255));
+                    rt.draw(track);
+
+                    const float progress = replayMoveCount == 0
+                        ? 0.f
+                        : float(replayCurrentMove) / float(replayMoveCount);
+                    sf::RectangleShape fill({replayTimelineRect.width * progress, replayTimelineRect.height});
+                    fill.setPosition({replayTimelineRect.left, replayTimelineRect.top});
+                    fill.setFillColor(sf::Color(90, 180, 110, 255));
+                    rt.draw(fill);
+
+                    sf::RectangleShape input({replayIntervalRect.width, replayIntervalRect.height});
+                    input.setPosition({replayIntervalRect.left, replayIntervalRect.top});
+                    input.setFillColor(sf::Color(30, 30, 30, 255));
+                    input.setOutlineThickness(replayIntervalInputActive ? 2.f : 1.f);
+                    input.setOutlineColor(replayIntervalInputActive ? sf::Color(120, 210, 140) : sf::Color(100, 100, 100));
+                    rt.draw(input);
+
+                    if (hasFont) {
+                        sf::Text label;
+                        label.setFont(uiFont);
+                        label.setCharacterSize(13);
+                        label.setFillColor(sf::Color(225, 225, 225));
+                        label.setString(
+                            "Move " + std::to_string(replayCurrentMove) + "/" + std::to_string(replayMoveCount) +
+                            "   interval"
+                        );
+                        label.setPosition(replayTimelineRect.left, replayTimelineRect.top - 19.f);
+                        rt.draw(label);
+
+                        sf::Text value;
+                        value.setFont(uiFont);
+                        value.setCharacterSize(13);
+                        value.setFillColor(sf::Color(240, 240, 240));
+                        value.setString(replayIntervalText + " s");
+                        value.setPosition(replayIntervalRect.left + 7.f, replayIntervalRect.top + 3.f);
+                        rt.draw(value);
+                    }
+                }
 
                 // Top indicators (turn + current player)
                 {

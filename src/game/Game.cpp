@@ -104,6 +104,8 @@ void Game::resetVisibilityCache(size_t playerCount) {
 }
 
 void Game::newGame(const NewGameConfig& cfg) {
+    citiesConnectionRuntime = {};
+
     // Load static game data (unit templates) before any units are spawned.
     if (!GameDataSystem::isUnitsLoaded()) {
         try {
