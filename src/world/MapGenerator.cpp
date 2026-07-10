@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <unordered_map>
 
 static constexpr float BORDER_EXPANSION = 1.0f / 3.0f;
@@ -199,20 +200,51 @@ void MapGenerator::generate(Map& map, const Params& params) {
         }
     }
 
-    // 5) Pick capitals far apart on land (inside border 2..N-3)
-    std::vector<int> candidates;
-    candidates.reserve(N * N);
-    for (int r = 2; r < N - 2; ++r) {
-        for (int c = 2; c < N - 2; ++c) {
-            int idx = r * N + c;
-            if (map.allTiles()[static_cast<size_t>(idx)].getBaseTerrain() == BaseTerrainEnum::Land) {
-                candidates.push_back(idx);
+    // 5) Place each capital in a distinct, evenly sized map domain.
+    // 1-4 players use 2x2 domains, 5-9 use 3x3, and 10-16 use 4x4.
+    // Domains are selected with a weight proportional to available land, which
+    // keeps starts varied while preventing capitals from clustering together.
+    const size_t P = tribes.size();
+    const int domainsPerAxis = (P <= 4) ? 2 : (P <= 9) ? 3 : 4;
+    const int domainCount = domainsPerAxis * domainsPerAxis;
+
+    std::vector<std::vector<int>> domainCells(static_cast<size_t>(domainCount));
+    std::vector<std::vector<int>> landCandidates(static_cast<size_t>(domainCount));
+    for (int domainY = 0; domainY < domainsPerAxis; ++domainY) {
+        const int y0 = (domainY * N) / domainsPerAxis;
+        const int y1 = ((domainY + 1) * N) / domainsPerAxis;
+        for (int domainX = 0; domainX < domainsPerAxis; ++domainX) {
+            const int x0 = (domainX * N) / domainsPerAxis;
+            const int x1 = ((domainX + 1) * N) / domainsPerAxis;
+            const int domain = domainY * domainsPerAxis + domainX;
+            auto& cells = domainCells[static_cast<size_t>(domain)];
+            auto& land = landCandidates[static_cast<size_t>(domain)];
+
+            const int centerX = std::clamp((x0 + x1) / 2, x0, x1 - 1);
+            const int centerY = std::clamp((y0 + y1) / 2, y0, y1 - 1);
+            const int preferredX0 = std::max(x0, centerX - 2);
+            const int preferredX1 = std::min(x1 - 1, centerX + 2);
+            const int preferredY0 = std::max(y0, centerY - 2);
+            const int preferredY1 = std::min(y1 - 1, centerY + 2);
+
+            for (int y = preferredY0; y <= preferredY1; ++y) {
+                for (int x = preferredX0; x <= preferredX1; ++x) {
+                    // Prefer not to place a capital directly on the map edge.
+                    if (x == 0 || y == 0 || x == N - 1 || y == N - 1) continue;
+                    const int cell = y * N + x;
+                    cells.push_back(cell);
+                    if (map.allTiles()[static_cast<size_t>(cell)].getBaseTerrain() == BaseTerrainEnum::Land) {
+                        land.push_back(cell);
+                    }
+                }
+            }
+
+            // Very small maps can leave the central area with edge cells only.
+            if (cells.empty()) {
+                cells.push_back(centerY * N + centerX);
             }
         }
     }
-    if (candidates.empty()) return;
-
-    const size_t P = tribes.size();
 
     // Player order: keep overall order, but shuffle within groups of the same tribe type.
     std::vector<size_t> playerOrder(P);
@@ -243,40 +275,37 @@ void MapGenerator::generate(Map& map, const Params& params) {
     }
 
     std::vector<int> capitalCellsByPlayer(P, -1);
-    std::vector<int> chosenCaps;
-    chosenCaps.reserve(P);
-
-    auto minDistToChosen = [&](int cell) -> int {
-        if (chosenCaps.empty()) return N;
-        int md = N;
-        for (int cap : chosenCaps) {
-            md = std::min(md, chebyshevDistance(cell, cap, N));
-        }
-        return md;
-    };
+    std::vector<int> availableDomains(domainCount);
+    std::iota(availableDomains.begin(), availableDomains.end(), 0);
 
     for (size_t k = 0; k < P; ++k) {
         const size_t playerIdx = playerOrder[k];
 
-        int bestMinDist = -1;
-        std::vector<int> bestCells;
-        bestCells.reserve(64);
+        std::vector<double> weights;
+        weights.reserve(availableDomains.size());
+        for (const int domain : availableDomains) {
+            // Domains without land remain selectable; a fallback tile will be
+            // converted to land so every player still receives a unique domain.
+            weights.push_back(std::max<size_t>(1, landCandidates[static_cast<size_t>(domain)].size()));
+        }
+        std::discrete_distribution<size_t> pickDomain(weights.begin(), weights.end());
+        const size_t domainSlot = pickDomain(rng);
+        const int domain = availableDomains[domainSlot];
+        availableDomains.erase(availableDomains.begin() + static_cast<std::ptrdiff_t>(domainSlot));
 
-        for (int cell : candidates) {
-            int md = minDistToChosen(cell);
-            if (md > bestMinDist) {
-                bestMinDist = md;
-                bestCells.clear();
-                bestCells.push_back(cell);
-            } else if (md == bestMinDist) {
-                bestCells.push_back(cell);
-            }
+        auto& land = landCandidates[static_cast<size_t>(domain)];
+        int picked = -1;
+        if (!land.empty()) {
+            picked = land[static_cast<size_t>(randInt(rng, 0, int(land.size()) - 1))];
+        } else {
+            const auto& cells = domainCells[static_cast<size_t>(domain)];
+            picked = cells[static_cast<size_t>(randInt(rng, 0, int(cells.size()) - 1))];
+            Tile& fallback = map.allTiles()[static_cast<size_t>(picked)];
+            fallback.setBaseTerrain(BaseTerrainEnum::Land);
+            fallback.setResource(ResourcesEnum::None);
         }
 
-        int picked = bestCells[static_cast<size_t>(randInt(rng, 0, int(bestCells.size()) - 1))];
-
         capitalCellsByPlayer[playerIdx] = picked;
-        chosenCaps.push_back(picked);
 
         Tile& t = map.allTiles()[static_cast<size_t>(picked)];
         t.setTribe(tribes[playerIdx]);
@@ -569,6 +598,66 @@ void MapGenerator::generate(Map& map, const Params& params) {
             if (!hasResource && proc(cell, P_METAL * pr.metal)) {
                 t.setResource(ResourcesEnum::Metal);
             }
+        }
+    }
+
+    // Turn-0 tribes must always be able to upgrade their capital with their
+    // starting technology. The regular resource pass above is probabilistic,
+    // so fill any missing capital resources afterwards.
+    auto ensureCapitalResources = [&](TribeType tribe, int capitalCell,
+                                      ResourcesEnum resource,
+                                      BaseTerrainEnum terrain,
+                                      int requiredCount) {
+        int present = 0;
+        const std::vector<int> neighbours = circle(capitalCell, 1, N);
+
+        for (int cell : neighbours) {
+            const Tile& tile = map.allTiles()[static_cast<size_t>(cell)];
+            if (tile.getResource() == resource && tile.getBaseTerrain() == terrain) {
+                ++present;
+            }
+        }
+
+        for (int cell : neighbours) {
+            if (present >= requiredCount) break;
+
+            Tile& tile = map.allTiles()[static_cast<size_t>(cell)];
+            if (tile.getSettlementType() != SettlementTypeEnum::None) continue;
+            if (tile.getResource() == resource && tile.getBaseTerrain() == terrain) continue;
+
+            tile.setBaseTerrain(terrain);
+            tile.setResource(resource);
+            if (terrain == BaseTerrainEnum::Water) {
+                tile.setTribe(TribeType::Unknown);
+            } else {
+                tile.setTribe(tribe);
+            }
+            ++present;
+        }
+    };
+
+    for (size_t playerIdx = 0; playerIdx < P; ++playerIdx) {
+        const TribeType tribe = tribes[playerIdx];
+        const int capitalCell = capitalCellsByPlayer[playerIdx];
+        switch (tribe) {
+            case TribeType::Bardur:
+                ensureCapitalResources(tribe, capitalCell, ResourcesEnum::Animal,
+                                       BaseTerrainEnum::Forest, 2);
+                break;
+            case TribeType::Imperius:
+                ensureCapitalResources(tribe, capitalCell, ResourcesEnum::Fruit,
+                                       BaseTerrainEnum::Land, 2);
+                break;
+            case TribeType::Kickoo:
+                ensureCapitalResources(tribe, capitalCell, ResourcesEnum::Fish,
+                                       BaseTerrainEnum::Water, 2);
+                break;
+            case TribeType::Zebasi:
+                ensureCapitalResources(tribe, capitalCell, ResourcesEnum::Crops,
+                                       BaseTerrainEnum::Land, 1);
+                break;
+            default:
+                break;
         }
     }
 

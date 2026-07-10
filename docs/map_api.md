@@ -94,6 +94,24 @@ y = idx // map_width
 
 Each tile has the same 18 features documented in [Model Request API](model_request_api.md#map-tokens).
 
+## Capital Domains
+
+The generator places each starting capital in a distinct evenly sized map
+domain. This prevents clustered starting positions while retaining seeded,
+weighted randomness within each domain:
+
+| Players | Domain grid |
+| --- | --- |
+| 1-4 | `2 x 2` |
+| 5-9 | `3 x 3` |
+| 10-16 | `4 x 4` |
+
+Domains with more suitable land tiles are more likely to be selected. Within a
+selected domain, a capital is placed around its center with a small random
+offset of at most two tiles in each direction. If that central area has no land
+tile, the generator prepares one there so each player still receives a unique
+domain.
+
 ## Prediction Workflow
 
 A typical hidden-map prediction setup uses player-view as input and full-map as target:
