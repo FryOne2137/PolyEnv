@@ -1,6 +1,9 @@
 site_name: PolyEnv Game Engine
 site_description: Polytopia-like game engine with Python bindings for AI training.
 repo_url: https://github.com/FryOne2137/PolyEnv
+# Generate explicit .html page URLs. This avoids broken relative asset paths on
+# static hosts when a directory URL such as /gui is opened without its trailing slash.
+use_directory_urls: false
 
 theme:
   name: material
