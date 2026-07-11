@@ -126,10 +126,10 @@ final_observation = replay.load("match.polygame")
 ```
 
 The shared native C++ recorder stores the effective map seed, map size, tribe
-order, map-generation settings, and each accepted `action_id`. `load()` creates
-the initial game again and executes the actions in order; it rejects malformed
-files and actions that are no longer legal. The GUI uses the same recorder and
-file format.
+order, map-generation settings, ruleset identifier, and each accepted
+`action_id`. `load()` creates the initial game again and executes the actions
+in order; it rejects malformed files, incompatible rulesets, and actions that
+are no longer legal. The GUI uses the same recorder and file format.
 
 This format is intended for replays made with the same PolyEnv rules release.
 See [Replays](replays.md) for format details and determinism limits.

@@ -421,7 +421,10 @@ bool CitySystem::canFoundCityFromVillage(const Game& game, PlayerId owner, Pos p
     const SettlementId sid = tile.getSettlementId();
     if (sid != kNoSettlement) {
         const CityId cid = static_cast<CityId>(sid);
-        if (static_cast<size_t>(cid) < game.getCities().size()) {
+        // Villages keep their generator settlement id. Capturing a village
+        // with a higher id first can leave placeholder City slots below it;
+        // only an initialized City is allowed to block this village capture.
+        if (CitySystem::cityExists(game, cid)) {
             const City* c = game.getCity(cid);
             if (c && static_cast<PlayerId>(c->getOwnerId()) != owner) return false;
         }

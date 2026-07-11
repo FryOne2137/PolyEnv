@@ -788,11 +788,13 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                             if (uOn != Map::kNoUnit) {
                                 if (ab.kind == ActionKind::CaptureVillage) {
                                     perfLog("CaptureVillage", [&] {
-                                        InteractionSystem::handleVillage(*game, uOn, g_actionPos);
+                                        (void)game->handleVillage(
+                                            game->getCurrentPlayerId(), uOn, g_actionPos);
                                     });
                                 } else {
                                     perfLog("CaptureCity", [&] {
-                                        InteractionSystem::handleCityCapture(*game, uOn, g_actionPos);
+                                        (void)game->handleCityCapture(
+                                            game->getCurrentPlayerId(), uOn, g_actionPos);
                                     });
                                 }
                             }

@@ -1828,6 +1828,7 @@ public:
         metadata.initialLand = initialLand_;
         metadata.smoothing = smoothing_;
         metadata.relief = relief_;
+        metadata.ruleset = "polyenv-2026-07";
         for (const Player& player : game.getPlayers()) {
             metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
         }

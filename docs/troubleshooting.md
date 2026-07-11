@@ -2,10 +2,13 @@
 
 ## A `.polygame` Replay Does Not Load
 
-Use the same PolyEnv rules release that created the replay. The loader rejects
-unknown format versions, invalid headers, and actions that are not legal while
-reconstructing the game. Keep the replay together with its PolyEnv version and
-the original seed when reporting an issue.
+Use the same PolyEnv ruleset that created the replay. Current `v2` files store
+the ruleset and reject a mismatch before replaying actions. Legacy `v1` files
+cannot be replayed after incompatible changes to map generation or the action
+space; open them with the engine revision that created them. The loader also
+rejects invalid headers and actions that are not legal while reconstructing the
+game. Keep the replay together with its PolyEnv version and original seed when
+reporting an issue.
 
 ## GUI Does Not Open A System File Dialog
 

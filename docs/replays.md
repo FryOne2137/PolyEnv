@@ -31,8 +31,9 @@ writing a file.
 ```json
 {
   "format": "polyenv-game",
-  "format_version": 1,
-  "engine_version": "0.1.0",
+  "format_version": 2,
+  "engine_version": "0.2.0",
+  "ruleset": "polyenv-2026-07",
   "seed": 1234,
   "map_size": 11,
   "tribes": [3, 2],
@@ -63,7 +64,12 @@ an unnecessary growing action vector.
 
 ## Compatibility
 
-Replays are designed to be reproducible with the same PolyEnv rules release.
+Replays are designed to be reproducible with the same PolyEnv ruleset. Format
+`v2` records that ruleset explicitly and the loader rejects a mismatch before
+trying to execute any action. Format `v1` files are legacy files: they predate
+the ruleset marker and cannot be replayed after incompatible map-generation or
+action-space changes.
+
 Keep the `.polygame` file together with the PolyEnv version used to create it.
 Cross-platform bit-for-bit determinism is not guaranteed across different C++
 standard-library implementations or engine releases.

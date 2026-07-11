@@ -325,8 +325,13 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
         // (but only when it killed a unit)
         attackedThisTurnFinal = !UnitSystem::hasSkill(game, attackerId, UnitSkill::Persist);
 
-        // Melee (range==1) advances into the killed unit's tile, unless territory rules forbid it.
-        if (UnitSystem::getRange(game, attackerId) == 1) {
+        // Melee units advance into the killed unit's tile. Rammer is listed explicitly
+        // because it is a naval melee unit; MovementSystem::move validates whether the
+        // destination is legal (for example Sailing for ocean and Climbing for mountains).
+        const bool advancesAfterKill =
+            UnitSystem::getRange(game, attackerId) == 1 ||
+            UnitSystem::getType(game, attackerId) == UnitType::Rammer;
+        if (advancesAfterKill) {
             const bool oldMoved = UnitSystem::movedThisTurn(game, attackerId);
 
             UnitSystem::setMovedThisTurn(game, attackerId, false);
