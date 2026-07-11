@@ -1,39 +1,27 @@
 # Installation
 
-PolyEnv is distributed as a Python package with a C++ extension module. Installing it builds the engine bindings for your local Python.
-
 ## Install From GitHub
 
 ```bash
-pip install git+https://github.com/FryOne2137/PolyEnv.git
+python -m pip install git+https://github.com/FryOne2137/PolyEnv.git
 ```
 
-The package declares `numpy` as a runtime dependency, so users do not need to install it separately.
+This installs NumPy automatically and builds the C++ extension for the Python
+interpreter used by that command.
 
-## Requirements
+Requirements: Python 3.10+, `pip`, CMake 3.20+, and a C++20-capable compiler.
 
-- Python `>=3.10`
-- A C++20-capable compiler
-- CMake `>=3.20`
-- `pip`
-
-Build dependencies such as `scikit-build-core` and `pybind11` are declared in `pyproject.toml` and are installed automatically by modern `pip`.
-
-## Install From A Local Checkout
+## Install A Local Checkout
 
 ```bash
 git clone https://github.com/FryOne2137/PolyEnv.git
 cd PolyEnv
-pip install .
+python -m pip install .
 ```
 
-For development:
+For development, use `python -m pip install -e .`.
 
-```bash
-pip install -e .
-```
-
-## Quick Check
+## Check The Install
 
 ```python
 from PolyEnv import GameEnv, Bardur, Imperius
@@ -41,39 +29,17 @@ from PolyEnv import GameEnv, Bardur, Imperius
 env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 packet = env.model_request_numpy()
 
-print(packet["map_tokens"].shape)
-print(packet["actions"]["action_id"])
-print(packet["obs"]["visible_only"])
-print(env.full_map_numpy().shape)
+print(packet["map_tokens"].shape)  # (121, 18) for an 11 x 11 map
+print(len(packet["actions"]["action_id"]))
 ```
 
-Expected shape for an 11x11 map:
-
-```text
-(121, 18)
-```
-
-`packet["map_tokens"]` is the current player's visible map. `env.full_map_numpy()` is the explicit ground-truth map.
-
-## Local Documentation
+If `PolyEnv` cannot be imported, verify that `python` and `pip` point to the
+same environment:
 
 ```bash
-pip install -r docs/requirements.txt
-mkdocs serve
+python -m pip --version
+python -c "import sys; print(sys.executable)"
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-## Common Install Command For Users
-
-For most users, this is enough:
-
-```bash
-python -m pip install git+https://github.com/FryOne2137/PolyEnv.git
-```
-
-Use `python -m pip` instead of bare `pip` when you have multiple Python versions installed.
+For local documentation, run `python -m pip install -r docs/requirements.txt`
+and then `mkdocs serve`.

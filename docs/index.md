@@ -1,87 +1,53 @@
-# PolyEnv Game Engine
+# PolyEnv
 
-PolyEnv is an unofficial Polytopia-like game engine with Python bindings for AI training and inference experiments.
+PolyEnv is an unofficial Polytopia-like game engine with a C++ core and Python
+bindings. It is intended for AI training, external bots, MCTS, and inspecting
+saved games.
 
-The supported release scope is the 12 regular tribes: Xin-Xi, Imperius, Bardur, Oumaji, Kickoo, Hoodrick, Luxidoor, Vengir, Zebasi, Ai-Mo, Quetzali, and Yadakk. Special tribes such as Aquarion, Elyrion, Polaris, and Cymanti are not part of the supported ruleset.
+The supported ruleset contains the 12 regular tribes. Aquarion, Elyrion,
+Polaris, and Cymanti are not supported.
 
-## Release Status
+## Start Here
 
-PolyEnv is currently beta `0.1`. It is suitable for simulation, AI training,
-external MCTS, and reproducible replay workflows. Replay compatibility is
-guaranteed for the same PolyEnv rules release; do not rely on byte-identical
-results across different engine versions or compiler platforms.
+```python
+from PolyEnv import GameEnv, Bardur, Imperius
+
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
+
+packet = env.model_request_numpy()
+action_id = int(packet["actions"]["action_id"][0])
+ok, done, reward, winner, current_player = env.step_fast(action_id)
+```
+
+Use only action ids returned in the current packet. The legal set changes after
+every step.
+
+## Important Concepts
+
+| Need | API |
+| --- | --- |
+| Model input and legal actions | `env.model_request_numpy()` |
+| Readable debug packet | `env.model_request()` |
+| Player-view map | `env.player_map_numpy()` |
+| Full ground-truth map | `env.full_map_numpy()` |
+| Fast action execution | `env.step_fast(action_id)` |
+| MCTS branch | `env.clone()` |
+| Portable replay | `env.save(path)` / `env.load(path)` |
+
+The normal model and observation APIs expose only the current player's view.
+`full_map_numpy()` is deliberately separate and is meant for debugging or
+supervised hidden-map prediction.
+
+## Next Pages
+
+1. [Installation](installation.md)
+2. [Core Python API](python_api.md)
+3. [Model input and actions](model_request_api.md)
+4. [Maps and fog of war](map_api.md)
+5. [Replays](replays.md) and [GUI](gui.md)
 
 ## Attribution
 
-The map generation code is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and has been modified for this engine.
-
-## Quick Start
-
-The main Python entry point is `GameEnv`. It exposes game state, legal actions, and fast stepping APIs. For model integration, use the canonical model request methods:
-
-```python
-from PolyEnv import GameEnv, Bardur, Imperius
-
-env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
-
-packet = env.model_request()
-fast_packet = env.model_request_numpy()
-```
-
-Use `model_request()` for debugging and JSON-like inspection. Use `model_request_numpy()` for training or batched inference.
-
-`model_request*` returns the current player's visible map. Full ground-truth map access is explicit through `env.full_map()` and `env.full_map_numpy()`.
-
-## Minimal Rollout
-
-```python
-from PolyEnv import GameEnv, Bardur, Imperius
-
-env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
-
-while not env.is_done():
-    packet = env.model_request_numpy()
-    legal_action_ids = packet["actions"]["action_id"]
-
-    # Replace this with your policy/model.
-    action_id = int(legal_action_ids[0])
-
-    ok, done, reward, winner, current_player = env.step_fast(action_id)
-    if not ok:
-        raise RuntimeError(f"Illegal action selected: {action_id}")
-```
-
-## Which API Should I Use?
-
-| Use case | Method |
-| --- | --- |
-| Inspect state by hand | `env.model_request()` |
-| Train or run a model | `env.model_request_numpy()` |
-| Read the current player's visible map | `env.player_map_numpy()` |
-| Read the full ground-truth map | `env.full_map_numpy()` |
-| Step with a chosen legal action id | `env.step_fast(action_id)` |
-| Debug one action id | `env.decode_action(action_id)` |
-| Read a simple visible observation | `env.observation()` |
-| Save or load an action replay | `env.save(path)` / `env.load(path)` |
-
-## Important Rule
-
-Models must choose an `action_id` from the current packet:
-
-```python
-packet["actions"]["action_id"]
-```
-
-Do not invent action ids. The legal action set changes after every step.
-
-## Pages
-
-- [Installation](installation.md): install from GitHub or a local checkout.
-- [Python API](python_api.md): core `GameEnv` methods.
-- [Replays](replays.md): `.polygame` format, Python API, and determinism limits.
-- [GUI](gui.md): normal-game controls and replay viewer.
-- [Map API](map_api.md): player-view maps, full maps, and hidden-tile prediction workflow.
-- [Model Request API](model_request_api.md): packet schema, map tokens, actions, and NumPy layout.
-- [Token Reference](token_reference.md): numeric ids for terrain, resources, buildings, tribes, techs, actions, and units.
-- [Training Loop](training_loop.md): CPU environments, NumPy packets, Torch tensors, and GPU batching.
-- [Troubleshooting](troubleshooting.md): common install, build, and Read the Docs failures.
+Map generation is based on
+[QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator)
+and was modified for PolyEnv.

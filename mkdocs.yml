@@ -13,17 +13,21 @@ theme:
     - content.code.copy
 
 nav:
-  - Home: index.md
-  - Installation: installation.md
-  - Python API: python_api.md
-  - Replays: replays.md
-  - GUI: gui.md
-  - Map API: map_api.md
-  - Model Request API: model_request_api.md
-  - Token Reference: token_reference.md
-  - Training Loop: training_loop.md
-  - Read the Docs: readthedocs.md
-  - Troubleshooting: troubleshooting.md
+  - Start:
+      - Overview: index.md
+      - Installation: installation.md
+  - Use PolyEnv:
+      - Core Python API: python_api.md
+      - Model Input And Actions: model_request_api.md
+      - Maps And Fog Of War: map_api.md
+      - Replays: replays.md
+      - GUI: gui.md
+      - Training Pattern: training_loop.md
+  - Reference:
+      - Game Data And IDs: token_reference.md
+      - Troubleshooting: troubleshooting.md
+  - Maintainers:
+      - Read the Docs: readthedocs.md
 
 markdown_extensions:
   - admonition

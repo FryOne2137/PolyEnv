@@ -1,77 +1,22 @@
 # Read the Docs
 
-This repository is ready to be published on Read the Docs.
+The repository includes `.readthedocs.yaml`. For a public GitHub repository,
+Read the Docs can build this MkDocs site for free.
 
-Read the Docs is free for public open source repositories. The build is configured by `.readthedocs.yaml` in the repository root:
+1. Push the repository to GitHub.
+2. Sign in at [readthedocs.org](https://readthedocs.org/) with GitHub.
+3. Choose **Import a Project** and select `PolyEnv`.
+4. Confirm the default configuration.
 
-```yaml
-version: 2
+Read the Docs installs `docs/requirements.txt` and builds `mkdocs.yml`.
 
-build:
-  os: ubuntu-24.04
-  tools:
-    python: "3.12"
-
-mkdocs:
-  configuration: mkdocs.yml
-
-python:
-  install:
-    - requirements: docs/requirements.txt
-```
-
-## Publish The Documentation
-
-1. Push this repository to GitHub.
-2. Open [readthedocs.org](https://readthedocs.org/).
-3. Sign in with GitHub.
-4. Click **Import a Project**.
-5. Select the `PolyEnv` repository.
-6. Keep the default settings and confirm.
-7. Read the Docs will detect `.readthedocs.yaml` and build the MkDocs site.
-
-After the first successful build, the documentation will be available at a URL like:
-
-```text
-https://<project-slug>.readthedocs.io/
-```
-
-The exact URL depends on the project slug chosen during import.
-
-## Local Preview
-
-Before pushing changes, preview the docs locally:
+Before pushing documentation changes, verify them locally:
 
 ```bash
-pip install -r docs/requirements.txt
-mkdocs serve
-```
-
-Build locally in strict mode:
-
-```bash
+python -m pip install -r docs/requirements.txt
 mkdocs build --strict
 ```
 
-Strict mode fails the build on broken links or invalid documentation configuration.
-
-## Common Read the Docs Failure
-
-If the build log says:
-
-```text
-Could not open requirements file: docs/requirements.txt
-```
-
-then the `docs/requirements.txt` file was not committed or pushed to GitHub. Read the Docs builds from the remote repository, not from your local working tree.
-
-Fix:
-
-```bash
-git add .readthedocs.yaml mkdocs.yml docs/
-git commit -m "Add Read the Docs documentation"
-git push origin main
-```
-
-Then click **Rebuild** in Read the Docs.
-
+If the remote build cannot find `docs/requirements.txt`, make sure the file,
+`.readthedocs.yaml`, `mkdocs.yml`, and the documentation changes were committed
+and pushed.
