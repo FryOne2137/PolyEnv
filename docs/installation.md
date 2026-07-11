@@ -11,6 +11,12 @@ interpreter used by that command.
 
 Requirements: Python 3.10+, `pip`, CMake 3.20+, and a C++20-capable compiler.
 
+Uninstall:
+
+```bash
+python -m pip uninstall PolyEnv
+```
+
 ## Install A Local Checkout
 
 ```bash

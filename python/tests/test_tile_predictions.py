@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from game_engine import GameEnv, clone_with_predictions, hidden_action_targets, tribes
+from PolyEnv import GameEnv, clone_with_predictions, hidden_action_targets, tribes
 
 # Feature index constants (mirror __init__.py private constants).
 _FEAT_ROAD_BRIDGE     = 7

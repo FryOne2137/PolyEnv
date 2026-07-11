@@ -6,7 +6,7 @@ requires = [
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "game-engine"
+name = "PolyEnv"
 version = "0.1.0"
 description = "Polytopia-like game engine Python bindings"
 readme = "README.md"
@@ -30,9 +30,8 @@ cmake.args = [
   "-DGAME_ENGINE_BUILD_GUI=OFF",
   "-DGAME_ENGINE_BUILD_PYTHON_BINDINGS=ON",
 ]
-wheel.packages = ["python/game_engine", "python/PolyEnv"]
+wheel.packages = ["python/PolyEnv"]
 sdist.include = [
-  "python/game_engine/**",
   "python/PolyEnv/**",
   "data/Units.json",
 ]

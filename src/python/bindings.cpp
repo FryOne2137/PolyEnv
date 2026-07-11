@@ -169,7 +169,7 @@ static std::string resolveDefaultUnitsJsonPath() {
     // Prefer package data path regardless of current working directory.
     try {
         py::module_ importlibResources = py::module_::import("importlib.resources");
-        py::object packageRoot = importlibResources.attr("files")("game_engine");
+        py::object packageRoot = importlibResources.attr("files")("PolyEnv");
         py::object unitsPath = packageRoot.attr("joinpath")("data", "Units.json");
         if (py::bool_(unitsPath.attr("is_file")())) {
             return py::cast<std::string>(py::str(unitsPath));

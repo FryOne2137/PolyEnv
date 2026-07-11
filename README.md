@@ -14,6 +14,12 @@ bot or reward shaping.
 python -m pip install git+https://github.com/FryOne2137/PolyEnv.git
 ```
 
+Uninstall:
+
+```bash
+python -m pip uninstall PolyEnv
+```
+
 `numpy` is installed automatically. Building from source requires Python 3.10+
 a C++20 compiler and CMake 3.20+.
 

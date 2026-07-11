@@ -365,6 +365,7 @@ bool Game::handleStarfish(PlayerId pid, UnitId unitId, Pos pos) {
 bool Game::canHandleStarfish(PlayerId pid, UnitId unitId, Pos pos) const {
     if (!canControlUnit(*this, pid, unitId, true)) return false;
     if (!PlayerSystem::hasTech(*this, pid, TechId::Navigation)) return false;
+    if (!UnitSystem::hasSkill(*this, unitId, UnitSkill::WaterOnly)) return false;
     if (!map.inBounds(pos)) return false;
     if (UnitSystem::getPos(*this, unitId) != pos) return false;
     if (UnitSystem::movedThisTurn(*this, unitId) || UnitSystem::attackedThisTurn(*this, unitId)) return false;

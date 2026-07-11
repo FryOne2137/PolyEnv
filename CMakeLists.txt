@@ -239,22 +239,22 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
     target_compile_features(_game_engine PRIVATE cxx_std_20)
 
     # ---- Python package layout for scikit-build-core (SKBUILD) ----
-    set(_GE_PY_PKG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python/game_engine")
+    set(_GE_PY_PKG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python/PolyEnv")
 
-    # Install the compiled extension into the wheel's platlib under game_engine/
+    # Install the compiled extension into the wheel's platlib under PolyEnv/
     install(TARGETS _game_engine
-            LIBRARY DESTINATION "${SKBUILD_PLATLIB_DIR}/game_engine"
-            RUNTIME DESTINATION "${SKBUILD_PLATLIB_DIR}/game_engine"
-            ARCHIVE DESTINATION "${SKBUILD_PLATLIB_DIR}/game_engine")
+            LIBRARY DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
+            RUNTIME DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
+            ARCHIVE DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv")
 
     # Install the pure-Python package files and bundled data (e.g. JSON) in one go
     install(DIRECTORY "${_GE_PY_PKG_DIR}/"
-            DESTINATION "${SKBUILD_PLATLIB_DIR}/game_engine"
+            DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
             FILES_MATCHING
               PATTERN "*.py"
               PATTERN "*.json")
 
     # Always bundle canonical units data from repository root as package data.
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/data/Units.json"
-            DESTINATION "${SKBUILD_PLATLIB_DIR}/game_engine/data")
+            DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv/data")
 endif()

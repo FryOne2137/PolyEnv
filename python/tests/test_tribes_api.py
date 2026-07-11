@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from game_engine import Bardur, GameEnv, Imperius, Kickoo, Tribe, get_tribe
+from PolyEnv import Bardur, GameEnv, Imperius, Kickoo, Tribe, get_tribe
 
 
 def test_game_env_accepts_direct_tribe_constants() -> None:

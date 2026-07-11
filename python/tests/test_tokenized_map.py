@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from game_engine import GameEnv, tribes
+from PolyEnv import GameEnv, tribes
 
 
 def test_tokenized_map_has_expected_shape() -> None:

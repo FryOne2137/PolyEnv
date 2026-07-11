@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from game_engine import GameEnv, tribes
+from PolyEnv import GameEnv, tribes
 
 # ---------------------------------------------------------------------------
 # Feature indices w tokenized_map (18 elementów na kafelek)

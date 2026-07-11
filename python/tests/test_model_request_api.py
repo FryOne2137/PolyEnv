@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from game_engine import GameEnv, tribes
+from PolyEnv import GameEnv, tribes
 
 _FEAT_SETTLEMENT_TYPE = 11
 _FEAT_BASE_TERRAIN = 16

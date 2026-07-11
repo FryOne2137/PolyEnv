@@ -71,6 +71,7 @@ void InteractionSystem::handleStarfish(Game& game, UnitId unitId, Pos pos) {
     if (!game.getMap().inBounds(pos)) return;
     if (UnitSystem::getPos(game, unitId) != pos) return;
     if (UnitSystem::movedThisTurn(game, unitId) || UnitSystem::attackedThisTurn(game, unitId)) return;
+    if (!UnitSystem::hasSkill(game, unitId, UnitSkill::WaterOnly)) return;
     const PlayerId pid = UnitSystem::getOwnerId(game, unitId);
     if (!PlayerSystem::hasTech(game, pid, TechId::Navigation)) return;
 

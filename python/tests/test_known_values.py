@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from game_engine import GameEnv, tribes
+from PolyEnv import GameEnv, tribes
 
 
 # ---------------------------------------------------------------------------

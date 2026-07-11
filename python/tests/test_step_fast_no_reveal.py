@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from game_engine import GameEnv, tribes
+from PolyEnv import GameEnv, tribes
 
 
 TOKEN_VISIBILITY_LAYER = 0
