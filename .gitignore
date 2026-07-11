@@ -1,7 +1,11 @@
 .idea/
 .claude/
+__pycache__/
+*.py[cod]
+.DS_Store
 /build-core/
 /build-gui/
 /build-py/
 /cmake-build-debug/
 /assets/
+/site/
