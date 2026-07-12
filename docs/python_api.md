@@ -92,8 +92,8 @@ compatibility rules.
 `step_param_vec()` are lower-level action APIs. The recommended integration
 for new model code is `model_request_numpy()` plus `step_fast(action_id)`.
 
-## Hidden-Map Prediction Helpers
+## Hidden-Map Prediction Helper
 
 For MCTS rollouts that use fog-of-war predictions, see
-[Hidden-Map Predictions](hidden_map_predictions.md). The helpers described
-there are module-level functions from `PolyEnv`, not `GameEnv` methods.
+[Hidden-Map Predictions](hidden_map_predictions.md). The function described
+there is imported from `PolyEnv`, not called as a `GameEnv` method.

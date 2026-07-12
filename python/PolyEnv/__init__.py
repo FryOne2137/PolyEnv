@@ -186,18 +186,6 @@ class GameEnv(_GameEnv):
         return revealed, features
 
 
-def hidden_action_targets(env: "GameEnv", hidden_value: int = -1) -> set[int]:
-    """Return tile indices that are both hidden and legal action targets."""
-    hidden = set(env.hidden_tile_indices())
-    if not hidden:
-        return set()
-    return {
-        a["target_index"]
-        for a in env.legal_param_actions()
-        if a["target_index"] >= 0 and a["target_index"] in hidden
-    }
-
-
 def clone_with_predictions(
     env: "GameEnv",
     predictions: dict[int, list[int]],
@@ -219,7 +207,6 @@ __all__ = [
     "NAME_TO_TRIBE",
     "SUPPORTED_TRIBES",
     "tribes",
-    "hidden_action_targets",
     "clone_with_predictions",
     "XinXi",
     "Imperius",

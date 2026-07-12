@@ -217,30 +217,6 @@ class GameEnv(_GameEnv):
         return revealed, features
 
 
-def hidden_action_targets(env: "GameEnv", hidden_value: int = -1) -> set[int]:
-    """Return tile indices that are both hidden AND the target of a legal action.
-
-    These are the only tiles where prediction actually affects the rollout —
-    ignore the rest of the fog to keep the prediction budget minimal.
-
-    Args:
-        env:          A GameEnv (or clone) whose current player's perspective is used.
-        hidden_value: The sentinel written by tokenized_map for unseen features
-                      (default -1, must match the value passed to observation()).
-
-    Returns:
-        Set of tile indices worth predicting for the current player's next move.
-    """
-    hidden = set(env.hidden_tile_indices())
-    if not hidden:
-        return set()
-    return {
-        a["target_index"]
-        for a in env.legal_param_actions()
-        if a["target_index"] >= 0 and a["target_index"] in hidden
-    }
-
-
 def clone_with_predictions(
     env: "GameEnv",
     predictions: dict[int, list[int]],
@@ -271,9 +247,8 @@ def clone_with_predictions(
 
     Example::
 
-        targets = hidden_action_targets(env)
-        preds   = my_tile_model.predict(obs["tokenized_map"], targets)
-        cloned  = clone_with_predictions(env, preds)
+        predictions = {tile_index: feature_vector}
+        cloned = clone_with_predictions(env, predictions)
         # run MCTS rollout on `cloned` …
     """
     cloned = env.clone()
@@ -291,7 +266,6 @@ __all__ = [
     "NAME_TO_TRIBE",
     "SUPPORTED_TRIBES",
     "tribes",
-    "hidden_action_targets",
     "clone_with_predictions",
     "XinXi",
     "Imperius",

@@ -1,29 +1,11 @@
 # Hidden-Map Predictions
 
-`hidden_action_targets()` and `clone_with_predictions()` are module-level
-functions imported from `PolyEnv`; they are **not** methods of `GameEnv`.
-They support MCTS or other rollouts that use model predictions for tiles under
-fog of war. Normal policies should use only the player-view packet and do not
-need these helpers.
+`clone_with_predictions()` is a module-level function imported from `PolyEnv`;
+it is **not** a method of `GameEnv`. It supports MCTS or other rollouts that
+use model predictions for tiles under fog of war. Normal policies should use
+only the player-view packet and do not need this helper.
 
-## Functions
-
-### `hidden_action_targets(env, hidden_value=-1)`
-
-Returns a `set[int]` of tile indices that are both hidden from the current
-player and targets of a currently legal parameterized action. Predicting only
-these tiles keeps the prediction budget small and limits predictions to tiles
-that can affect the next rollout decision. An empty set means that no hidden
-legal target exists.
-
-| Element | Type | Meaning |
-| --- | --- | --- |
-| `env` | `GameEnv` | Game state whose current player's fog of war is inspected. |
-| return value | `set[int]` | Map tile indices, for example `{18, 51}`. |
-| `hidden_value` | `int` | Kept for API compatibility; hidden tiles use `-1` in player-view maps. |
-
-Tile indices address rows in `packet["map_tokens"]`: `targets` contains only
-values from `0` through `len(packet["map_tokens"]) - 1`.
+## Function
 
 ### `clone_with_predictions(env, predictions, perspective=None)`
 
@@ -47,19 +29,19 @@ Predictions for visible tiles are ignored.
 
 ## Workflow example
 
-The following example predicts a land tile containing fruit and applies the
-prediction only if that tile is a hidden, legal action target:
+The following example creates a rollout clone with a hypothesis that one
+currently hidden tile contains land and fruit:
 
 ```python
 import numpy as np
 
-from PolyEnv import clone_with_predictions, hidden_action_targets
+from PolyEnv import clone_with_predictions
 
 packet = env.model_request_numpy()
-targets = hidden_action_targets(env)
+hidden_tiles = env.hidden_tile_indices()
 
-if targets:
-    tile_index = next(iter(targets))
+if hidden_tiles:
+    tile_index = hidden_tiles[0]
 
     # A one-dimensional NumPy array is accepted as the feature vector.
     # It has the same 18-value layout as map_tokens[tile_index].
@@ -80,8 +62,9 @@ if targets:
     rollout_env.step_fast(action_id)
 ```
 
-If `targets` is empty, do not call the predictor or clone with a map
-prediction; no currently legal action can benefit from it.
+Legal actions in PolyEnv never target hidden tiles. This helper does not
+change action legality and does not reveal a tile to the player; it only
+changes the internal terrain hypothesis of the clone.
 
 ### What `predictions` is
 
@@ -99,15 +82,15 @@ The dictionary itself cannot be replaced with a two-dimensional NumPy array:
 the engine needs the key to know which map tile each vector belongs to. A
 one-dimensional integer NumPy array is accepted for an individual dictionary
 value, for example `predictions[tile_index] = model_output[i].astype(np.int32)`.
-If a model outputs `model_output` with shape `[number_of_targets, 18]`, keep
-a stable target order and build the mapping explicitly:
+If a model outputs `model_output` with shape `[number_of_predicted_tiles, 18]`,
+keep a stable tile order and build the mapping explicitly:
 
 ```python
-target_indices = sorted(hidden_action_targets(env))
-# model_output[row] is the prediction for target_indices[row]
+tile_indices = sorted(env.hidden_tile_indices())
+# model_output[row] is the prediction for tile_indices[row]
 predictions = {
     int(tile_index): model_output[row].astype(np.int32)
-    for row, tile_index in enumerate(target_indices)
+    for row, tile_index in enumerate(tile_indices)
 }
 ```
 

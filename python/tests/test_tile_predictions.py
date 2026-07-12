@@ -3,7 +3,6 @@
 Covers:
   - hidden_tile_indices()        : C++ binding
   - apply_tile_predictions()     : C++ binding
-  - hidden_action_targets()      : Python helper
   - clone_with_predictions()     : Python helper
   - last_revealed_tiles()        : Python method on GameEnv
 """
@@ -11,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from PolyEnv import GameEnv, clone_with_predictions, hidden_action_targets, tribes
+from PolyEnv import GameEnv, clone_with_predictions, tribes
 
 # Feature index constants (mirror __init__.py private constants).
 _FEAT_ROAD_BRIDGE     = 7
@@ -185,41 +184,6 @@ class TestApplyTilePredictions:
 
 
 # ---------------------------------------------------------------------------
-# hidden_action_targets  (Python helper)
-# ---------------------------------------------------------------------------
-
-class TestHiddenActionTargets:
-    def test_returns_set_of_ints(self) -> None:
-        env = _env()
-        result = hidden_action_targets(env)
-        assert isinstance(result, set)
-        assert all(isinstance(i, int) for i in result)
-
-    def test_all_targets_are_hidden(self) -> None:
-        env = _env()
-        hidden_set = set(env.hidden_tile_indices())
-        for idx in hidden_action_targets(env):
-            assert idx in hidden_set, (
-                f"target {idx} is not hidden but was returned by hidden_action_targets"
-            )
-
-    def test_all_targets_appear_in_legal_actions(self) -> None:
-        env = _env()
-        legal_targets = {
-            a["target_index"]
-            for a in env.legal_param_actions()
-            if a["target_index"] >= 0
-        }
-        for idx in hidden_action_targets(env):
-            assert idx in legal_targets
-
-    def test_subset_of_hidden_tiles(self) -> None:
-        """hidden_action_targets must be a subset of hidden_tile_indices."""
-        env = _env()
-        assert hidden_action_targets(env) <= set(env.hidden_tile_indices())
-
-
-# ---------------------------------------------------------------------------
 # clone_with_predictions  (Python helper)
 # ---------------------------------------------------------------------------
 
@@ -269,13 +233,13 @@ class TestCloneWithPredictions:
         assert env.current_player() == cloned.current_player()
         assert env.get_techs() == cloned.get_techs()
 
-    def test_typical_mcts_pattern(self) -> None:
-        """Simulate a realistic MCTS partial-prediction loop without errors."""
+    def test_sparse_prediction_rollout(self) -> None:
+        """A clone with sparse hidden-tile predictions remains playable."""
         env = _env(seed=7)
         for _ in range(10):
             if env.is_done():
                 break
-            targets = hidden_action_targets(env)
+            targets = env.hidden_tile_indices()[:5]
             preds = {
                 idx: ([0] * 18)  # dummy 'model output' — all zeros
                 for idx in targets
@@ -285,6 +249,18 @@ class TestCloneWithPredictions:
             assert len(legal) > 0
             # Step the *original* env forward (not the clone).
             env.step_fast_no_reveal(legal[0])
+
+
+def test_legal_actions_never_target_hidden_tiles() -> None:
+    """Fog-of-war must exclude hidden tiles from every legal targeted action."""
+    env = _env(seed=7)
+    hidden = set(env.hidden_tile_indices())
+    targets = {
+        action["target_index"]
+        for action in env.legal_param_actions()
+        if action["target_index"] >= 0
+    }
+    assert targets.isdisjoint(hidden)
 
 
 # ---------------------------------------------------------------------------
