@@ -32,6 +32,7 @@ every step.
 | Full ground-truth map | `env.full_map_numpy()` |
 | Fast action execution | `env.step_fast(action_id)` |
 | MCTS branch | `env.clone()` |
+| Fog-of-war prediction rollout | [`hidden_action_targets()` and `clone_with_predictions()`](hidden_map_predictions.md) |
 | Portable replay | `env.save(path)` / `env.load(path)` |
 
 The normal model and observation APIs expose only the current player's view.
@@ -44,7 +45,8 @@ supervised hidden-map prediction.
 2. [Core Python API](python_api.md)
 3. [Model input and actions](model_request_api.md)
 4. [Maps and fog of war](map_api.md)
-5. [Replays](replays.md) and [GUI](gui.md)
+5. [Hidden-map predictions](hidden_map_predictions.md)
+6. [Replays](replays.md) and [GUI](gui.md)
 
 ## Attribution
 

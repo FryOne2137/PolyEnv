@@ -94,41 +94,6 @@ for new model code is `model_request_numpy()` plus `step_fast(action_id)`.
 
 ## Hidden-Map Prediction Helpers
 
-`hidden_action_targets()` and `clone_with_predictions()` are module-level
-functions imported from `PolyEnv`; they are **not** methods of `GameEnv`.
-They are useful when a model predicts fog-of-war tiles and an MCTS rollout
-should use those predictions. Normal policies should use only the player-view
-packet and do not need either helper.
-
-```python
-from PolyEnv import clone_with_predictions, hidden_action_targets
-
-targets = hidden_action_targets(env)
-predictions = {
-    tile_index: predicted_features  # a list of 18 integer token values
-    for tile_index, predicted_features in model_predictions.items()
-    if tile_index in targets
-}
-rollout_env = clone_with_predictions(env, predictions)
-```
-
-### `hidden_action_targets(env, hidden_value=-1)`
-
-Returns a `set[int]` of tile indices that are both hidden from the current
-player and targets of a currently legal parameterized action. Predicting only
-these tiles keeps the prediction budget small and limits predictions to tiles
-that can affect the next rollout decision. An empty set means that no hidden
-legal target exists.
-
-### `clone_with_predictions(env, predictions, perspective=None)`
-
-Creates an independent clone of `env`, then applies the sparse mapping
-`{tile_index: feature_vector}` to hidden tiles in that clone. The original
-environment is never mutated. `perspective` selects whose fog-of-war mask is
-used; by default it is the current player.
-
-Each feature vector has 18 integer entries in the same layout as
-`map_tokens`. Only safe terrain-level values are applied: road/bridge,
-building, non-city settlement type, resource, base terrain, and tribe.
-Visibility, units, city ownership, and territory ownership are not replaced.
-Predictions for visible tiles are ignored.
+For MCTS rollouts that use fog-of-war predictions, see
+[Hidden-Map Predictions](hidden_map_predictions.md). The helpers described
+there are module-level functions from `PolyEnv`, not `GameEnv` methods.

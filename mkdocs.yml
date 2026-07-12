@@ -20,6 +20,7 @@ nav:
       - Core Python API: python_api.md
       - Model Input And Actions: model_request_api.md
       - Maps And Fog Of War: map_api.md
+      - Hidden-Map Predictions: hidden_map_predictions.md
       - Replays: replays.md
       - GUI: gui.md
       - Training Pattern: training_loop.md
