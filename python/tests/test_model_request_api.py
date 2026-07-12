@@ -61,6 +61,7 @@ def test_model_request_numpy_returns_arrays_for_hot_path_fields() -> None:
     assert packet["map_tokens"].shape == (11 * 11, 18)
     assert packet["map_tokens"].dtype == np.int32
     assert packet["obs"]["visible_only"] is True
+    assert "tokenized_map" not in packet["obs"]
     assert np.array_equal(packet["map_tokens"], env.player_map_numpy())
     assert not np.array_equal(packet["map_tokens"], env.full_map_numpy())
 

@@ -22,7 +22,7 @@ NumPy arrays.
 ```python
 packet = {
     "map_tokens": np.ndarray,  # [tiles, 18], player view
-    "obs": dict,               # turn, player, stars, cities, income, ...
+    "obs": dict,               # scalar/list state metadata; no map copy
     "actions": dict,           # one row per legal action
     "spec": dict,              # dimensions and categorical vocabularies
 }
@@ -43,7 +43,8 @@ Useful action arrays are:
 
 The `obs` dictionary includes turn, current player, winner/game-over state,
 map size, `map_type` (`"lakes"` or `"drylands"`), stars, own units/cities,
-income, and pending city reward state.
+income, and pending city reward state. It intentionally does not include
+`tokenized_map`: use the NumPy `map_tokens` field as the sole map input.
 
 ## Legal Actions
 

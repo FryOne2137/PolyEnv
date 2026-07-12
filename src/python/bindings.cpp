@@ -1485,7 +1485,12 @@ public:
 
         py::dict out;
         out["map_tokens"] = playerMapNumpy(std::nullopt, -1);
-        out["obs"] = observation(std::nullopt, true, -1);
+        // model_request_numpy() is the hot training path.  The tokenized map
+        // is already exposed above as a contiguous NumPy array, so do not
+        // retain the legacy Python-list copy in obs.
+        py::dict obs = observation(std::nullopt, true, -1);
+        obs.attr("pop")("tokenized_map");
+        out["obs"] = std::move(obs);
         out["actions"] = actionsToNumpy(req["actions"]);
         out["spec"] = jsonToPy(req["spec"]);
         return out;
