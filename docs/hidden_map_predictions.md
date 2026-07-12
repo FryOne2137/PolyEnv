@@ -14,8 +14,8 @@ Creates an independent clone of `env`, then applies the sparse mapping
 environment is never mutated. `perspective` selects whose fog-of-war mask is
 used; by default it is the current player.
 
-Each feature vector needs at least 18 integer entries in the same layout as
-`map_tokens`; values after index 17 are ignored. Only safe terrain-level values are applied: road/bridge,
+Each feature vector needs at least 19 integer entries in the same layout as
+`map_tokens`. Only safe terrain-level values are applied: road/bridge,
 building, non-city settlement type, resource, base terrain, and tribe.
 Visibility, units, city ownership, and territory ownership are not replaced.
 Predictions for visible tiles are ignored.
@@ -23,7 +23,7 @@ Predictions for visible tiles are ignored.
 | Element | Type | Meaning |
 | --- | --- | --- |
 | `env` | `GameEnv` | Source environment. It is not modified. |
-| `predictions` | `dict[int, list[int] \| np.ndarray]` | Sparse mapping from a tile index to one feature vector with at least 18 integer values. |
+| `predictions` | `dict[int, list[int] \| np.ndarray]` | Sparse mapping from a tile index to one feature vector with at least 19 integer values. |
 | `perspective` | `int \| None` | Player id whose hidden tiles may be changed. `None` means the current player. |
 | return value | `GameEnv` | Separate clone used for a rollout. |
 
@@ -44,8 +44,8 @@ if hidden_tiles:
     tile_index = hidden_tiles[0]
 
     # A one-dimensional NumPy array is accepted as the feature vector.
-    # It has the same 18-value layout as map_tokens[tile_index].
-    predicted_tile = np.full(18, -1, dtype=np.int32)
+    # It has the same 19-value layout as map_tokens[tile_index].
+    predicted_tile = np.full(19, -1, dtype=np.int32)
     predicted_tile[7] = 0    # road_bridge: none
     predicted_tile[8] = 0    # building: none
     predicted_tile[11] = 0   # settlement_type: none
@@ -69,12 +69,12 @@ changes the internal terrain hypothesis of the clone.
 ### What `predictions` is
 
 `predictions` is a sparse Python dictionary. Its key is an integer map tile
-index and its value is that tile's predicted 18-value feature vector:
+index and its value is that tile's predicted 19-value feature vector:
 
 ```python
 predictions = {
-    18: [-1, -1, -1, -1, -1, -1, -1, 0, 0, -1, -1, 0, -1, -1, -1, 3, 2, 3],
-    51: np.array([-1] * 18, dtype=np.int32),
+    18: [-1, -1, -1, -1, -1, -1, -1, 0, 0, -1, -1, 0, -1, -1, -1, 3, 2, 3, -1],
+    51: np.array([-1] * 19, dtype=np.int32),
 }
 ```
 
@@ -82,7 +82,7 @@ The dictionary itself cannot be replaced with a two-dimensional NumPy array:
 the engine needs the key to know which map tile each vector belongs to. A
 one-dimensional integer NumPy array is accepted for an individual dictionary
 value, for example `predictions[tile_index] = model_output[i].astype(np.int32)`.
-If a model outputs `model_output` with shape `[number_of_predicted_tiles, 18]`,
+If a model outputs `model_output` with shape `[number_of_predicted_tiles, 19]`,
 keep a stable tile order and build the mapping explicitly:
 
 ```python
@@ -96,7 +96,7 @@ predictions = {
 
 ## Feature-vector layout
 
-The vector must contain at least 18 integers. The engine reads only the
+The vector must contain at least 19 integers. The engine reads only the
 following positions when applying a prediction; all other entries may be set
 to `-1`.
 

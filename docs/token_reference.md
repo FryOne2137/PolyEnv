@@ -6,7 +6,7 @@ This page lists numeric ids used in `map_tokens`, action fields, and model reque
 
 ## Tile Token Layout
 
-Every row in `map_tokens` describes one map tile and has exactly 18 integer
+Every row in `map_tokens` describes one map tile and has exactly 19 integer
 features. Tile index `i` addresses the row `map_tokens[i]`.
 
 | Index | Field | Meaning | No value / hidden |
@@ -15,7 +15,7 @@ features. Tile index `i` addresses the row `map_tokens[i]`.
 | 1 | `is_cloak_around` | `1` when one of the player's units is adjacent to an enemy Cloak that remains hidden; otherwise `0`. | `-1` when the tile itself is hidden. |
 | 2 | `unit_hp` | Health of the unit on this tile. | `-1` when no visible unit exists or the value is hidden. |
 | 3 | `unit_owner` | Player id of the unit on this tile. | `-1` when no visible unit exists or the value is hidden. |
-| 4 | `unit_id` | Runtime id of the visible unit on this tile. It is not a unit type and should not be treated as a stable model feature between games. | `-1` when no visible unit exists or the value is hidden. |
+| 4 | `unit_type` | Type of the visible unit, such as Warrior, Archer, Catapult, or Giant. See [Units](#units). | `-1` when no visible unit exists or the value is hidden. |
 | 5 | `own_unit_kills` | Kill count, exposed only for a unit owned by the selected player. | `-1` for other units, no unit, or hidden data. |
 | 6 | `territory_city_id` | Runtime id of the city whose territory contains this tile. | `-1` when the tile has no territory or the value is hidden. |
 | 7 | `road_bridge` | Road / bridge state. See [Road And Bridge](#road-and-bridge). | `-1` when hidden. |
@@ -29,12 +29,12 @@ features. Tile index `i` addresses the row `map_tokens[i]`.
 | 15 | `resource` | Resource type. See [Resources](#resources). | `-1` when hidden. |
 | 16 | `base_terrain` | Base terrain type. See [Base Terrain](#base-terrain). | `-1` when hidden. |
 | 17 | `tribe` | Map-generation tribe type. See [Tribes](#tribes). | `-1` when hidden. |
+| 18 | `unit_max_hp` | Maximum health of the visible unit, including bonuses such as veteran status. | `-1` when no visible unit exists or the value is hidden. |
 
 !!! note
-    Runtime ids such as `unit_id`, `territory_city_id`, and `settlement_id` are
-    useful for linking data during one running game. They are not categorical
-    ids for model training and must not be interpreted as unit types or city
-    classes.
+    Runtime ids such as `territory_city_id` and `settlement_id` are useful for
+    linking data during one running game. They are not categorical ids for
+    model training and must not be interpreted as city classes.
 
 The terrain and object columns most commonly used by models are:
 
@@ -204,7 +204,9 @@ Used by action field `tech`.
 
 ## Units
 
-Used by unit type fields such as `spawn_type`. Concrete `unit_id` values are runtime object ids and are not listed here.
+Used by `map_tokens[*][4]` (`unit_type`) and action fields such as
+`spawn_type`. Concrete `unit_id` values remain runtime object ids used only in
+action payloads and are not listed here.
 
 | Id | Name | Group |
 | ---: | --- | --- |

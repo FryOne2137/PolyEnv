@@ -16,12 +16,12 @@ import pytest
 from PolyEnv import GameEnv, tribes
 
 # ---------------------------------------------------------------------------
-# Feature indices w tokenized_map (18 elementów na kafelek)
+# Feature indices w tokenized_map (19 elementów na kafelek)
 # ---------------------------------------------------------------------------
 _FEAT_VISIBILITY      = 0
 _FEAT_UNIT_OWNER      = 3
-_FEAT_UNIT_HP         = 4
-_FEAT_UNIT_MAX_HP     = 5
+_FEAT_UNIT_HP         = 2
+_FEAT_UNIT_MAX_HP     = 18
 _FEAT_CITY_OWNER      = 9
 _FEAT_SETTLEMENT_TYPE = 11
 _FEAT_BASE_TERRAIN    = 16

@@ -10,7 +10,7 @@ from ._game_engine import GameEnv as _GameEnv, MapType
 Lakes = MapType.Lakes
 Drylands = MapType.Drylands
 
-# Feature indices in the tokenized_map tile vector (18 features total).
+# Feature indices in the tokenized_map tile vector (19 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
 _FEAT_ROAD_BRIDGE      = 7
 _FEAT_BUILDING         = 8
@@ -202,7 +202,7 @@ class GameEnv(_GameEnv):
             # indices only
             revealed = env.last_revealed_tiles()
 
-            # indices + ground-truth feature vectors (18 ints each)
+            # indices + ground-truth feature vectors (19 ints each)
             revealed, features = env.last_revealed_tiles(return_features=True)
             for idx, feat in zip(revealed, features):
                 print(f"tile {idx}: terrain={feat[16]}, resource={feat[15]}")
@@ -228,7 +228,7 @@ def clone_with_predictions(
     *predictions* are overwritten.  Visible tiles in *predictions* are silently
     ignored (enforced in C++).
 
-    Safe tile features written per entry (index → 18-int feature vector):
+    Safe tile features written per entry (index → 19-int feature vector):
         [7]  roadBridge     [8]  buildingType   [11] settlementType (non-City)
         [15] resource       [16] baseTerrain    [17] tribe
 

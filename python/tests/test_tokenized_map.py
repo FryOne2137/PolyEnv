@@ -15,4 +15,4 @@ def test_tokenized_map_has_expected_shape() -> None:
 
     assert len(tiles) == map_size * map_size
     assert all(isinstance(tile, list) for tile in tiles)
-    assert all(len(tile) == 18 for tile in tiles)
+    assert all(len(tile) == 19 for tile in tiles)

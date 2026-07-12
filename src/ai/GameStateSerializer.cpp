@@ -527,11 +527,12 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
 
             int unitHp           = -1;
             int unitOwner        = -1;
-            int unitId_v         = -1;
+            int unitType         = -1;
             int isCloakAround    = 0;
             int capitalLayer     = -1;
             int cityLevel        = -1;
             int ownUnitKills     = -1;
+            int unitMaxHp        = -1;
             int resourceToken    = static_cast<int>(t.getResource());
             int settlementType   = static_cast<int>(t.getSettlementType());
             int settlementId_v   = (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement))
@@ -573,9 +574,10 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
             if (uid != Map::kNoUnit) {
                 if (const Unit* u = game.getUnit(uid)) {
                     if (!isEnemyHidden(u)) {
-                        unitId_v  = static_cast<int>(uid);
                         unitHp    = u->getHealth();
                         unitOwner = static_cast<int>(u->getOwnerId());
+                        unitType  = static_cast<int>(u->getType());
+                        unitMaxHp = u->getMaxHealth();
                         if (perspective != kNoPlayer &&
                             static_cast<int>(u->getOwnerId()) == static_cast<int>(perspective)) {
                             ownUnitKills = u->getKillCounter();
@@ -592,13 +594,13 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
             const int territoryCityId = (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity))
                                         ? -1 : static_cast<int>(t.getTerritoryCityId());
 
-            // 18 features per tile (as floats)
+            // 19 features per tile (as floats)
             tiles.push_back(json::array({
                 (float)visibility,
                 (float)isCloakAround,
                 (float)unitHp,
                 (float)unitOwner,
-                (float)unitId_v,
+                (float)unitType,
                 (float)ownUnitKills,
                 (float)territoryCityId,
                 (float)static_cast<int>(t.getRoadBridge()),
@@ -612,6 +614,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                 (float)resourceToken,
                 (float)static_cast<int>(t.getBaseTerrain()),
                 (float)static_cast<int>(t.getTribe()),
+                (float)unitMaxHp,
             }));
         }
     }

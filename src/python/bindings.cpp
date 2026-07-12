@@ -1121,12 +1121,13 @@ public:
 
                 int unitHp = -1;
                 int unitOwner = -1;
-                int unitId = static_cast<int>(Map::kNoUnit);
+                int unitType = -1;
                 int isCloakAround = 0;
                 int capitalLayer = -1;
                 //city level
                 int cityLevel = -1;
                 int ownUnitKills = -1;
+                int unitMaxHp = -1;
                 int resourceToken = static_cast<int>(t.getResource());
                 int settlementTypeToken = static_cast<int>(t.getSettlementType());
                 int settlementIdToken =
@@ -1173,9 +1174,10 @@ public:
                     if (u) {
                         const bool hiddenEnemy = isEnemyHiddenUnitForPerspective(u);
                         if (!hiddenEnemy) {
-                            unitId = static_cast<int>(uid);
                             unitHp = u->getHealth();
                             unitOwner = static_cast<int>(u->getOwnerId());
+                            unitType = static_cast<int>(u->getType());
+                            unitMaxHp = u->getMaxHealth();
                             if (perspective >= 0 &&
                                 static_cast<int>(u->getOwnerId()) == perspective) {
                                 ownUnitKills = u->getKillCounter();
@@ -1194,7 +1196,7 @@ public:
                     isCloakAround,
                     unitHp,
                     unitOwner,
-                    (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
+                    unitType,
                     ownUnitKills,
                     (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
                     static_cast<int>(t.getRoadBridge()),
@@ -1208,6 +1210,7 @@ public:
                     resourceToken,
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
+                    unitMaxHp,
                 };
                 if (visibleOnly && !knownToObservation) {
                     for (size_t i = 1; i < tileToken.size(); ++i) {
@@ -1248,14 +1251,16 @@ public:
 
                 int unitHp = -1;
                 int unitOwner = -1;
-                int unitId = static_cast<int>(Map::kNoUnit);
+                int unitType = -1;
                 int ownUnitKills = -1;
+                int unitMaxHp = -1;
                 const UnitId uid = m.unitOn(p);
                 if (uid != Map::kNoUnit) {
                     if (const Unit* u = g.getUnit(uid)) {
-                        unitId = static_cast<int>(uid);
                         unitHp = u->getHealth();
                         unitOwner = static_cast<int>(u->getOwnerId());
+                        unitType = static_cast<int>(u->getType());
+                        unitMaxHp = u->getMaxHealth();
                         ownUnitKills = u->getKillCounter();
                     }
                 }
@@ -1287,7 +1292,7 @@ public:
                     0,
                     unitHp,
                     unitOwner,
-                    (unitId == static_cast<int>(Map::kNoUnit)) ? -1 : unitId,
+                    unitType,
                     ownUnitKills,
                     (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity)) ? -1 : static_cast<int>(t.getTerritoryCityId()),
                     static_cast<int>(t.getRoadBridge()),
@@ -1301,6 +1306,7 @@ public:
                     static_cast<int>(t.getResource()),
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
+                    unitMaxHp,
                 });
             }
         }
@@ -1954,7 +1960,7 @@ public:
 
     // Apply predicted tile features for hidden tiles only.
     //
-    // Accepts a sparse dict {tile_index → feature_vector_of_18_ints} produced by
+    // Accepts a sparse dict {tile_index → feature_vector_of_19_ints} produced by
     // the tile-prediction model (same layout as tokenized_map()).
     // Tiles already visible to `perspective` are silently skipped (guard in C++).
     //
@@ -1993,7 +1999,7 @@ public:
         int patched = 0;
         for (const auto& [idx, features] : predictions) {
             if (idx < 0 || idx >= tileCount) continue;
-            if (static_cast<int>(features.size()) < 18) continue;
+            if (static_cast<int>(features.size()) < 19) continue;
             // Guard: silently skip tiles already visible to this perspective.
             if (knownObs && (*knownObs)[static_cast<size_t>(idx)]) continue;
 

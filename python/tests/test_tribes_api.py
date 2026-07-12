@@ -16,7 +16,7 @@ def test_game_env_accepts_direct_tribe_constants() -> None:
 def test_game_env_accepts_direct_tribe_constants_in_players() -> None:
     env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
 
-    assert env.model_request_numpy()["map_tokens"].shape == (11 * 11, 18)
+    assert env.model_request_numpy()["map_tokens"].shape == (11 * 11, 19)
 
 
 def test_get_tribe_resolves_by_name() -> None:
@@ -42,4 +42,4 @@ def test_polyenv_import_alias_exports_public_api() -> None:
 
     env = PolyGameEnv(seed=1234, map_size=11, players=(PolyBardur, PolyImperius))
 
-    assert env.model_request_numpy()["map_tokens"].shape == (11 * 11, 18)
+    assert env.model_request_numpy()["map_tokens"].shape == (11 * 11, 19)

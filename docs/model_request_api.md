@@ -21,7 +21,7 @@ NumPy arrays.
 
 ```python
 packet = {
-    "map_tokens": np.ndarray,  # [tiles, 18], player view
+    "map_tokens": np.ndarray,  # [tiles, 19], player view
     "obs": dict,               # scalar/list state metadata; no map copy
     "actions": dict,           # one row per legal action
     "spec": dict,              # dimensions and categorical vocabularies
@@ -74,6 +74,6 @@ GPU. Keep game states and `GameEnv` objects on CPU.
 
 ## Map Features
 
-`map_tokens` has shape `[map_width * map_height, 18]`. It is always the
+`map_tokens` has shape `[map_width * map_height, 19]`. It is always the
 player-view map; hidden tiles are masked. See [Maps And Fog Of War](map_api.md)
 and [Token Reference](token_reference.md) for feature layout and enum ids.

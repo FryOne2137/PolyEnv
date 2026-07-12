@@ -32,7 +32,7 @@ def test_model_request_contains_canonical_packet_fields() -> None:
 
     assert set(packet.keys()) == {"map_tokens", "obs", "actions", "spec"}
     assert len(packet["map_tokens"]) == 11 * 11
-    assert all(len(tile) == 18 for tile in packet["map_tokens"])
+    assert all(len(tile) == 19 for tile in packet["map_tokens"])
     assert len(packet["actions"]) == len(env.legal_param_actions())
     assert packet["spec"]["map_width"] == 11
     assert packet["spec"]["map_height"] == 11
@@ -58,7 +58,7 @@ def test_model_request_numpy_returns_arrays_for_hot_path_fields() -> None:
     actions = packet["actions"]
 
     assert isinstance(packet["map_tokens"], np.ndarray)
-    assert packet["map_tokens"].shape == (11 * 11, 18)
+    assert packet["map_tokens"].shape == (11 * 11, 19)
     assert packet["map_tokens"].dtype == np.int32
     assert packet["obs"]["visible_only"] is True
     assert "tokenized_map" not in packet["obs"]

@@ -10,7 +10,7 @@ from ._game_engine import GameEnv as _GameEnv, MapType
 Lakes = MapType.Lakes
 Drylands = MapType.Drylands
 
-# Feature indices in the tokenized_map tile vector (18 features total).
+# Feature indices in the tokenized_map tile vector (19 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
 _FEAT_ROAD_BRIDGE = 7
 _FEAT_BUILDING = 8
