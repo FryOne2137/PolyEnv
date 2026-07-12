@@ -4,7 +4,39 @@ This page lists numeric ids used in `map_tokens`, action fields, and model reque
 
 `model_request*`, `player_map*`, and default `tokenized_map()` use player-view tokens. Hidden player-view features are `-1`. `full_map*` uses the same feature layout but returns ground-truth values.
 
-The most important columns in `map_tokens` are:
+## Tile Token Layout
+
+Every row in `map_tokens` describes one map tile and has exactly 18 integer
+features. Tile index `i` addresses the row `map_tokens[i]`.
+
+| Index | Field | Meaning | No value / hidden |
+| ---: | --- | --- | --- |
+| 0 | `visibility` | Whether this tile is known to the selected player: `1` visible/known, `0` hidden. | `0` for a hidden tile. |
+| 1 | `is_cloak_around` | `1` when one of the player's units is adjacent to an enemy Cloak that remains hidden; otherwise `0`. | `-1` when the tile itself is hidden. |
+| 2 | `unit_hp` | Health of the unit on this tile. | `-1` when no visible unit exists or the value is hidden. |
+| 3 | `unit_owner` | Player id of the unit on this tile. | `-1` when no visible unit exists or the value is hidden. |
+| 4 | `unit_id` | Runtime id of the visible unit on this tile. It is not a unit type and should not be treated as a stable model feature between games. | `-1` when no visible unit exists or the value is hidden. |
+| 5 | `own_unit_kills` | Kill count, exposed only for a unit owned by the selected player. | `-1` for other units, no unit, or hidden data. |
+| 6 | `territory_city_id` | Runtime id of the city whose territory contains this tile. | `-1` when the tile has no territory or the value is hidden. |
+| 7 | `road_bridge` | Road / bridge state. See [Road And Bridge](#road-and-bridge). | `-1` when hidden. |
+| 8 | `building` | Building type. See [Buildings](#buildings). | `-1` when hidden. |
+| 9 | `is_capital` | `1` for a capital city, `0` for a non-capital city. | `-1` when the tile is not a city or is hidden. |
+| 10 | `city_level` | Level of the city on this tile. | `-1` when the tile is not a city or is hidden. |
+| 11 | `settlement_type` | None, village, city, starfish, or ruin. See [Settlements](#settlements). | `-1` when hidden. |
+| 12 | `settlement_id` | Runtime id of the settlement / city on this tile. | `-1` when no settlement exists or the value is hidden. |
+| 13 | `city_owner` | Player id of the city owner. | `-1` when the tile is not a city or is hidden. |
+| 14 | `own_city_units_occupied` | Number of the selected player's units occupying their own city. | `-1` for another player's city, a non-city tile, or hidden data. |
+| 15 | `resource` | Resource type. See [Resources](#resources). | `-1` when hidden. |
+| 16 | `base_terrain` | Base terrain type. See [Base Terrain](#base-terrain). | `-1` when hidden. |
+| 17 | `tribe` | Map-generation tribe type. See [Tribes](#tribes). | `-1` when hidden. |
+
+!!! note
+    Runtime ids such as `unit_id`, `territory_city_id`, and `settlement_id` are
+    useful for linking data during one running game. They are not categorical
+    ids for model training and must not be interpreted as unit types or city
+    classes.
+
+The terrain and object columns most commonly used by models are:
 
 | Feature index | Field | Uses table |
 | ---: | --- | --- |
