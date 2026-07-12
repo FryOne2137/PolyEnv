@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 
-from PolyEnv import Bardur, GameEnv, Imperius, Kickoo
+from PolyEnv import Bardur, Drylands, GameEnv, Imperius, Kickoo
 
 
 def _play_actions(env: GameEnv, count: int = 8) -> list[int]:
@@ -30,11 +30,12 @@ def test_save_and_load_reconstructs_final_state(tmp_path) -> None:
 
     payload = json.loads(replay_path.read_text(encoding="utf-8"))
     assert payload["format"] == "polyenv-game"
-    assert payload["format_version"] == 2
+    assert payload["format_version"] == 3
     assert payload["ruleset"] == "polyenv-2026-07"
     assert payload["seed"] == 1234
     assert payload["map_size"] == 11
     assert payload["tribes"] == [int(Bardur), int(Imperius)]
+    assert payload["map_generation"]["map_type"] == 0
     assert payload["actions"] == played
 
     restored = GameEnv(seed=7, map_size=16, players=(Kickoo, Bardur))
@@ -44,11 +45,25 @@ def test_save_and_load_reconstructs_final_state(tmp_path) -> None:
     assert restored.current_player() == original.current_player()
     assert restored.legal_action_ids_fast() == original.legal_action_ids_fast()
     assert np.array_equal(restored.full_map_numpy(), original.full_map_numpy())
+    assert restored.observation()["map_type"] == "lakes"
 
     cloned = restored.clone()
     assert isinstance(cloned, GameEnv)
     clone_path = cloned.save(tmp_path / "clone.polygame")
     assert json.loads(clone_path.read_text(encoding="utf-8"))["actions"] == played
+
+
+def test_replay_preserves_drylands_map_type(tmp_path) -> None:
+    original = GameEnv(seed=321, map_size=11, players=(Bardur, Imperius), map_type=Drylands)
+    replay_path = original.save(tmp_path / "drylands.polygame")
+
+    payload = json.loads(replay_path.read_text(encoding="utf-8"))
+    assert payload["map_generation"]["map_type"] == 1
+
+    restored = GameEnv(seed=7, map_size=16, players=(Kickoo, Bardur))
+    observation = restored.load(replay_path)
+    assert observation["map_type"] == "drylands"
+    assert np.array_equal(restored.full_map_numpy(), original.full_map_numpy())
 
 
 def test_replay_uses_effective_seed_when_initial_seed_is_random(tmp_path) -> None:

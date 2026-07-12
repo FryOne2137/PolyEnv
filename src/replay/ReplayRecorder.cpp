@@ -12,6 +12,10 @@ constexpr const char* kReplayRuleset = "polyenv-2026-07";
 bool validTribeId(int tribeId) {
     return tribeId >= 1 && tribeId <= 12;
 }
+
+bool validMapType(uint8_t mapType) {
+    return mapType <= 1; // 0 = Lakes, 1 = Drylands
+}
 } // namespace
 
 bool ReplayRecorder::save(
@@ -24,7 +28,8 @@ bool ReplayRecorder::save(
         error = "replay path is empty";
         return false;
     }
-    if (metadata.seed == 0 || metadata.mapSize <= 0 || metadata.tribes.empty()) {
+    if (metadata.seed == 0 || metadata.mapSize <= 0 || metadata.tribes.empty() ||
+        !validMapType(metadata.mapType)) {
         error = "invalid replay metadata";
         return false;
     }
@@ -110,7 +115,12 @@ bool ReplayRecorder::load(
 
         if (replay.contains("map_generation")) {
             const nlohmann::json& generation = replay.at("map_generation");
-            metadata.mapType = generation.value("map_type", metadata.mapType);
+            const int mapType = generation.value("map_type", static_cast<int>(metadata.mapType));
+            if (mapType < 0 || mapType > 1) {
+                error = "invalid map type";
+                return false;
+            }
+            metadata.mapType = static_cast<uint8_t>(mapType);
         }
         return true;
     } catch (const std::exception& exception) {
