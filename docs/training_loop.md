@@ -5,9 +5,9 @@ from many environments.
 
 ```python
 import torch
-from PolyEnv import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius, Lakes
 
-envs = [GameEnv(seed=seed, map_size=11, players=(Bardur, Imperius))
+envs = [GameEnv(seed=seed, map_size=11, players=(Bardur, Imperius), map_type=Lakes)
         for seed in range(64)]
 
 packets = [env.model_request_numpy() for env in envs]

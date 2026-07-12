@@ -30,9 +30,9 @@ For development, use `python -m pip install -e .`.
 ## Check The Install
 
 ```python
-from PolyEnv import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius, Lakes
 
-env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius), map_type=Lakes)
 packet = env.model_request_numpy()
 
 print(packet["map_tokens"].shape)  # (121, 18) for an 11 x 11 map

@@ -10,9 +10,9 @@ Polaris, and Cymanti are not supported.
 ## Start Here
 
 ```python
-from PolyEnv import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius, Lakes
 
-env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius), map_type=Lakes)
 
 packet = env.model_request_numpy()
 action_id = int(packet["actions"]["action_id"][0])
