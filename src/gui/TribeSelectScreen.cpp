@@ -15,10 +15,6 @@ static std::string mapSizeBuffer = "16";
 static bool seedActive     = false;
 static std::string seedBuffer    = "0";
 
-static int clampInt(int v, int lo, int hi) {
-    return std::max(lo, std::min(hi, v));
-}
-
 // ── Layout constants ──────────────────────────────────────────────────────────
 // Left tribe list
 static constexpr float kListX   = 40.f;
@@ -87,10 +83,9 @@ TribeSelectScreen::TribeSelectScreen() {
 
     mapSize = 16;
     mapSeed = 0;
-    initialLand  = 50;
-    smoothing    = 50;
-    relief       = 50;
-    activeSlider = ActiveSlider::None;
+    mapType = MapType::Lakes;
+    lakesBtn = {sf::FloatRect(840.f, 140.f, 170.f, 46.f), "Lakes"};
+    drylandsBtn = {sf::FloatRect(1030.f, 140.f, 170.f, 46.f), "Drylands"};
 }
 
 void TribeSelectScreen::setFont(sf::Font* f) { font = f; }
@@ -99,9 +94,7 @@ const std::vector<TribeType>& TribeSelectScreen::getSelectedTribes() const { ret
 const std::vector<bool>&      TribeSelectScreen::getSelectedBots()   const { return selectedBots; }
 int TribeSelectScreen::getMapSize()    const { return mapSize; }
 int TribeSelectScreen::getMapSeed()    const { return mapSeed; }
-int TribeSelectScreen::getInitialLand() const { return initialLand; }
-int TribeSelectScreen::getSmoothing()  const { return smoothing; }
-int TribeSelectScreen::getRelief()     const { return relief; }
+MapType TribeSelectScreen::getMapType() const { return mapType; }
 
 int TribeSelectScreen::getServerPort() const {
     if (portBuffer.empty()) return 5555;
@@ -117,33 +110,10 @@ bool TribeSelectScreen::consumeStartClicked() {
 // ── Event handling ────────────────────────────────────────────────────────────
 
 void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow& window) {
-    // Slider geometry
-    const float sliderX = 840.f;
-    const float sliderW = 360.f;
-    const float sliderH = 18.f;
-    const sf::FloatRect initialLandTrack(sliderX, 140.f, sliderW, sliderH);
-    const sf::FloatRect smoothingTrack  (sliderX, 210.f, sliderW, sliderH);
-    const sf::FloatRect reliefTrack     (sliderX, 280.f, sliderW, sliderH);
-
-    auto sliderValueFromMouse = [&](const sf::FloatRect& track, sf::Vector2f mp) -> int {
-        const float t = (mp.x - track.left) / track.width;
-        return clampInt(static_cast<int>(std::round(t * 100.f)), 0, 100);
-    };
-
     // ── MouseMoved ────────────────────────────────────────────────────────────
     if (ev.type == sf::Event::MouseMoved) {
         const sf::Vector2f mp = window.mapPixelToCoords({ev.mouseMove.x, ev.mouseMove.y});
         hoverIndex = -1;
-
-        // Drag active slider
-        if (sf::Mouse::isButtonPressed(sf::Mouse::Left) && activeSlider != ActiveSlider::None) {
-            if (activeSlider == ActiveSlider::InitialLand)
-                initialLand = sliderValueFromMouse(initialLandTrack, mp);
-            else if (activeSlider == ActiveSlider::Smoothing)
-                smoothing = sliderValueFromMouse(smoothingTrack, mp);
-            else if (activeSlider == ActiveSlider::Relief)
-                relief = sliderValueFromMouse(reliefTrack, mp);
-        }
 
         // Tribe list hover
         for (int i = 0; i < (int)allTribes.size(); ++i) {
@@ -167,23 +137,8 @@ void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow&
         }
         if (inside(clearBtn.rect, mp)) { selected.clear(); selectedBots.clear(); return; }
 
-        // Sliders
-        if (inside(initialLandTrack, mp)) {
-            activeSlider = ActiveSlider::InitialLand;
-            initialLand  = sliderValueFromMouse(initialLandTrack, mp);
-            return;
-        }
-        if (inside(smoothingTrack, mp)) {
-            activeSlider = ActiveSlider::Smoothing;
-            smoothing    = sliderValueFromMouse(smoothingTrack, mp);
-            return;
-        }
-        if (inside(reliefTrack, mp)) {
-            activeSlider = ActiveSlider::Relief;
-            relief       = sliderValueFromMouse(reliefTrack, mp);
-            return;
-        }
-        activeSlider = ActiveSlider::None;
+        if (inside(lakesBtn.rect, mp)) { mapType = MapType::Lakes; return; }
+        if (inside(drylandsBtn.rect, mp)) { mapType = MapType::Drylands; return; }
 
         // Map size / seed input boxes
         sf::FloatRect mapSizeBox(900.f, 550.f, 140.f, 40.f);
@@ -228,12 +183,6 @@ void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow&
                 return;
             }
         }
-    }
-
-    // ── MouseButtonReleased ───────────────────────────────────────────────────
-    if (ev.type == sf::Event::MouseButtonReleased &&
-        ev.mouseButton.button == sf::Mouse::Left) {
-        activeSlider = ActiveSlider::None;
     }
 
     // ── TextEntered ───────────────────────────────────────────────────────────
@@ -443,42 +392,28 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         rt.draw(seedValue);
     }
 
-    // ── Sliders ───────────────────────────────────────────────────────────────
-    auto drawSlider = [&](const std::string& label, const sf::FloatRect& track, int value) {
+    // ── Map type ──────────────────────────────────────────────────────────────
+    if (font) {
+        sf::Text label("Map type:", *font, 18);
+        label.setPosition(840.f, 105.f);
+        rt.draw(label);
+    }
+    auto drawMapTypeButton = [&](const Button& button, bool selected) {
+        sf::RectangleShape shape;
+        shape.setPosition(button.rect.left, button.rect.top);
+        shape.setSize({button.rect.width, button.rect.height});
+        shape.setFillColor(selected ? sf::Color(55, 120, 70) : sf::Color(55, 55, 55));
+        shape.setOutlineThickness(2);
+        shape.setOutlineColor(selected ? sf::Color(180, 230, 180) : sf::Color(120, 120, 120));
+        rt.draw(shape);
         if (font) {
-            sf::Text l(label + ": " + std::to_string(value), *font, 18);
-            l.setPosition(track.left, track.top - 28.f);
-            rt.draw(l);
+            sf::Text text(button.text, *font, 18);
+            text.setPosition(button.rect.left + 18.f, button.rect.top + 12.f);
+            rt.draw(text);
         }
-
-        sf::RectangleShape tr;
-        tr.setPosition(track.left, track.top);
-        tr.setSize({track.width, track.height});
-        tr.setFillColor(sf::Color(45, 45, 45));
-        tr.setOutlineThickness(2);
-        tr.setOutlineColor(sf::Color(120, 120, 120));
-        rt.draw(tr);
-
-        sf::RectangleShape fill;
-        fill.setPosition(track.left, track.top);
-        fill.setSize({track.width * (value / 100.f), track.height});
-        fill.setFillColor(sf::Color(70, 70, 90));
-        rt.draw(fill);
-
-        const float knobX = track.left + track.width * (value / 100.f);
-        sf::RectangleShape knob;
-        knob.setPosition(knobX - 6.f, track.top - 4.f);
-        knob.setSize({12.f, track.height + 8.f});
-        knob.setFillColor(sf::Color(200, 200, 200));
-        rt.draw(knob);
     };
-
-    const float sliderX = 840.f;
-    const float sliderW = 360.f;
-    const float sliderH = 18.f;
-    drawSlider("Initial land", sf::FloatRect(sliderX, 140.f, sliderW, sliderH), initialLand);
-    drawSlider("Smoothing",    sf::FloatRect(sliderX, 210.f, sliderW, sliderH), smoothing);
-    drawSlider("Relief",       sf::FloatRect(sliderX, 280.f, sliderW, sliderH), relief);
+    drawMapTypeButton(lakesBtn, mapType == MapType::Lakes);
+    drawMapTypeButton(drylandsBtn, mapType == MapType::Drylands);
 
     if (font) {
         sf::Text cnt("Count: " + std::to_string(selected.size()), *font, 18);

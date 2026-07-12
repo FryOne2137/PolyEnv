@@ -13,13 +13,16 @@
 #include "../content/tribes/Tribe.h"
 #include "world/Pos.h"
 
+enum class MapType : uint8_t {
+    Lakes = 0,
+    Drylands = 1,
+};
+
 class MapGenerator {
 public:
     struct Params {
         int mapSize = 16;          // width = height
-        float initialLand = 0.5f;  // [0..1]
-        int smoothing = 3;         // cellular automata iterations
-        int relief = 4;            // affects land/water threshold like in the python code
+        MapType mapType = MapType::Lakes;
         uint32_t seed = 0;         // 0 -> random_device
     };
 
@@ -43,7 +46,6 @@ private:
     static bool isLandLike(BaseTerrainEnum t);
 
     struct TribeProbs {
-        float water = 0.0f;
         float forest = 1.0f;
         float mountain = 1.0f;
         float metal = 1.0f;

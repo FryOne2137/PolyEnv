@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from . import tribes
-from ._game_engine import GameEnv as _GameEnv
+from ._game_engine import GameEnv as _GameEnv, MapType
+
+Lakes = MapType.Lakes
+Drylands = MapType.Drylands
 
 # Feature indices in the tokenized_map tile vector (18 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
@@ -82,6 +85,18 @@ def get_tribe(name: str) -> Tribe:
     return NAME_TO_TRIBE[key]
 
 
+def _normalize_map_type(map_type: MapType | str) -> MapType:
+    if isinstance(map_type, MapType):
+        return map_type
+    if isinstance(map_type, str):
+        normalized = map_type.strip().lower()
+        if normalized == "lakes":
+            return Lakes
+        if normalized == "drylands":
+            return Drylands
+    raise ValueError("map_type must be Lakes or Drylands")
+
+
 class GameEnv(_GameEnv):
     def __init__(
         self,
@@ -90,6 +105,7 @@ class GameEnv(_GameEnv):
         players: list[Any] | tuple[Any, ...] = (tribes.Bardur, tribes.Imperius),
         units_json_path: str | None = None,
         tribes: list[Any] | tuple[Any, ...] | None = None,
+        map_type: MapType | str = Lakes,
     ) -> None:
         selected_players = tribes if tribes is not None else players
         super().__init__(
@@ -97,6 +113,7 @@ class GameEnv(_GameEnv):
             _normalize_players(selected_players),
             seed,
             units_json_path or _default_units_path(),
+            _normalize_map_type(map_type),
         )
 
     def reset(
@@ -106,6 +123,7 @@ class GameEnv(_GameEnv):
         players: list[Any] | tuple[Any, ...] | None = None,
         units_json_path: str | None = None,
         tribes: list[Any] | tuple[Any, ...] | None = None,
+        map_type: MapType | str | None = None,
     ) -> dict[str, Any]:
         selected_players = tribes if tribes is not None else players
         observation = super().reset(
@@ -113,6 +131,7 @@ class GameEnv(_GameEnv):
             _normalize_players(selected_players) if selected_players is not None else None,
             seed,
             units_json_path or _default_units_path(),
+            _normalize_map_type(map_type) if map_type is not None else None,
         )
         return observation
 
@@ -192,6 +211,9 @@ def clone_with_predictions(
 
 __all__ = [
     "GameEnv",
+    "MapType",
+    "Lakes",
+    "Drylands",
     "Tribe",
     "get_tribe",
     "NAME_TO_TRIBE",

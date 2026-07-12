@@ -15,9 +15,11 @@ viewer with a timeline.
 
 ## Compatibility
 
-Current replay files use format `v2` and include a ruleset identifier. A replay
-can be loaded only by a compatible engine ruleset. This is necessary because
-action ids depend on the map generator and action space.
+Current replay files use format `v3` and include a ruleset identifier. Their
+setup stores the seed, map size, tribes, and `map_generation.map_type`
+(`0` for Lakes, `1` for Drylands). A replay can be loaded only by a compatible
+engine ruleset. This is necessary because action ids depend on the map
+generator and action space.
 
 Legacy `v1` files cannot be replayed after incompatible engine changes. Keep a
 replay together with the PolyEnv version that created it.

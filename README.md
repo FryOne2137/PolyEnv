@@ -26,9 +26,9 @@ a C++20 compiler and CMake 3.20+.
 ## Use
 
 ```python
-from PolyEnv import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius, Lakes
 
-env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius), map_type=Lakes)
 
 packet = env.model_request_numpy()
 action_id = int(packet["actions"]["action_id"][0])
@@ -38,6 +38,8 @@ ok, done, reward, winner, current_player = env.step_fast(action_id)
 `model_request_numpy()` returns the current player's visible map, game/player
 state, and legal actions. Choose only an `action_id` from
 `packet["actions"]["action_id"]`.
+
+`map_type` accepts `Lakes` / `"lakes"` or `Drylands` / `"drylands"`.
 
 ```python
 # Explicit ground truth, intended for labels or debugging.

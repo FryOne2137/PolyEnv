@@ -31,7 +31,7 @@ index = y * map_width + x
 
 Hidden tiles have `0` in feature `visibility` and `-1` in all remaining
 features. Player view also hides Metal until `Climbing`, Crops until
-`Organization`, and Starfish until `Sailing`. Collecting Starfish requires
+`Organization` or `Farming`, and Starfish until `Sailing`. Collecting Starfish requires
 `Navigation` and grants 8 stars.
 
 ## Full Map
@@ -46,7 +46,8 @@ policy input unless the experiment is intentionally omniscient.
 ## Map Generation
 
 Games with the same engine ruleset, seed, map size, tribe order, and map
-generation settings are deterministic. Starting capitals are placed in
+type are deterministic. `env.observation()["map_type"]` reports the active
+map type as `"lakes"` or `"drylands"`. Starting capitals are placed in
 separate domains:
 
 | Players | Domain grid |

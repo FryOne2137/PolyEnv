@@ -6,13 +6,11 @@
 #include <vector>
 
 struct ReplayMetadata {
-    int formatVersion = 2;
+    int formatVersion = 3;
     uint32_t seed = 1;
     int mapSize = 11;
     std::vector<int> tribes;
-    float initialLand = 0.5f;
-    int smoothing = 3;
-    int relief = 4;
+    uint8_t mapType = 0;
     std::string ruleset;
 };
 

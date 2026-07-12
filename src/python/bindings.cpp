@@ -758,12 +758,14 @@ public:
     GameEnv(int mapSize,
             const std::vector<int>& tribes,
             uint32_t seed,
-            const std::string& unitsJsonPath)
+            const std::string& unitsJsonPath,
+            MapType mapType)
         : mapSize_(mapSize)
         , tribesRaw_(tribes)
         , seed_(seed)
-        , unitsJsonPath_(unitsJsonPath.empty() ? resolveDefaultUnitsJsonPath() : unitsJsonPath) {
-        reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        , unitsJsonPath_(unitsJsonPath.empty() ? resolveDefaultUnitsJsonPath() : unitsJsonPath)
+        , mapType_(mapType) {
+        reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
     }
 
     GameEnv(const GameEnv& other)
@@ -771,9 +773,7 @@ public:
         , tribesRaw_(other.tribesRaw_)
         , seed_(other.seed_)
         , unitsJsonPath_(other.unitsJsonPath_)
-        , initialLand_(other.initialLand_)
-        , smoothing_(other.smoothing_)
-        , relief_(other.relief_)
+        , mapType_(other.mapType_)
         , replayRecorder_(other.replayRecorder_)
         , observationKnownByPlayer_(other.observationKnownByPlayer_)
         , legalIdsCacheValid_(other.legalIdsCacheValid_)
@@ -793,9 +793,7 @@ public:
         tribesRaw_ = other.tribesRaw_;
         seed_ = other.seed_;
         unitsJsonPath_ = other.unitsJsonPath_;
-        initialLand_ = other.initialLand_;
-        smoothing_ = other.smoothing_;
-        relief_ = other.relief_;
+        mapType_ = other.mapType_;
         replayRecorder_ = other.replayRecorder_;
         observationKnownByPlayer_ = other.observationKnownByPlayer_;
         legalIdsCacheValid_ = other.legalIdsCacheValid_;
@@ -818,11 +816,13 @@ public:
     py::dict reset(std::optional<int> mapSize,
                    std::optional<std::vector<int>> tribes,
                    std::optional<uint32_t> seed,
-                   std::optional<std::string> unitsJsonPath) {
+                   std::optional<std::string> unitsJsonPath,
+                   std::optional<MapType> mapType) {
         if (mapSize) mapSize_ = *mapSize;
         if (tribes) tribesRaw_ = *tribes;
         if (seed) seed_ = *seed;
         if (unitsJsonPath) unitsJsonPath_ = *unitsJsonPath;
+        if (mapType) mapType_ = *mapType;
 
         if (unitsJsonPath_.empty()) unitsJsonPath_ = resolveDefaultUnitsJsonPath();
         GameDataSystem::loadUnits(unitsJsonPath_);
@@ -831,9 +831,7 @@ public:
         Game::NewGameConfig cfg;
         cfg.mapSize = mapSize_;
         cfg.seed = seed_;
-        cfg.initialLand = initialLand_;
-        cfg.smoothing = smoothing_;
-        cfg.relief = relief_;
+        cfg.mapType = mapType_;
         cfg.tribes = parseTribes(tribesRaw_.empty() ? std::vector<int>{3, 2} : tribesRaw_);
         game.newGame(cfg);
 
@@ -1030,10 +1028,11 @@ public:
                     knownPlayers[i] = allPlayers[i];
                 }
             }
-            obs["lighthouse_discovered_by_masks"] = std::move(knownMasks);
+        obs["lighthouse_discovered_by_masks"] = std::move(knownMasks);
             obs["lighthouse_discovered_by_players"] = std::move(knownPlayers);
         }
         obs["map_size"] = w;
+        obs["map_type"] = mapType_ == MapType::Lakes ? "lakes" : "drylands";
         obs["tokenized_map"] = std::move(tokenized);
         obs["techs"] = getTechs(playerId);
         obs["seen_lighthouses"] = seenLighthouses(playerId);
@@ -1825,9 +1824,7 @@ public:
         ReplayMetadata metadata;
         metadata.seed = game.getWorldSeed();
         metadata.mapSize = game.getMap().getWidth();
-        metadata.initialLand = initialLand_;
-        metadata.smoothing = smoothing_;
-        metadata.relief = relief_;
+        metadata.mapType = static_cast<uint8_t>(mapType_);
         metadata.ruleset = "polyenv-2026-07";
         for (const Player& player : game.getPlayers()) {
             metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
@@ -1846,11 +1843,9 @@ public:
             throw std::runtime_error("Could not load .polygame: " + error);
         }
 
-        GameEnv replayed(metadata.mapSize, metadata.tribes, metadata.seed, unitsJsonPath_);
-        replayed.initialLand_ = metadata.initialLand;
-        replayed.smoothing_ = metadata.smoothing;
-        replayed.relief_ = metadata.relief;
-        replayed.reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        GameEnv replayed(metadata.mapSize, metadata.tribes, metadata.seed, unitsJsonPath_,
+                         static_cast<MapType>(metadata.mapType));
+        replayed.reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
         for (size_t index = 0; index < actionIds.size(); ++index) {
             const py::tuple result = replayed.stepFast(actionIds[index], std::nullopt);
             if (!py::cast<bool>(result[0])) {
@@ -2175,9 +2170,7 @@ private:
     std::vector<int> tribesRaw_{3, 2};
     uint32_t seed_ = 1;
     std::string unitsJsonPath_;
-    float initialLand_ = 0.5f;
-    int smoothing_ = 3;
-    int relief_ = 4;
+    MapType mapType_ = MapType::Lakes;
     ReplayRecorder replayRecorder_;
     std::vector<std::vector<uint8_t>> observationKnownByPlayer_;
     // Per-player list of tile indices revealed by the most recent step (0→1 transitions).
@@ -2212,17 +2205,24 @@ PYBIND11_MODULE(_game_engine, m) {
         .value("Yadakk", TribeType::Yadakk)
         .export_values();
 
+    py::enum_<MapType>(m, "MapType")
+        .value("Lakes", MapType::Lakes)
+        .value("Drylands", MapType::Drylands)
+        .export_values();
+
     py::class_<GameEnv>(m, "GameEnv")
-        .def(py::init<int, const std::vector<int>&, uint32_t, const std::string&>(),
+        .def(py::init<int, const std::vector<int>&, uint32_t, const std::string&, MapType>(),
              py::arg("map_size") = 16,
              py::arg("tribes") = std::vector<int>{3, 2},
              py::arg("seed") = 1u,
-             py::arg("units_json_path") = "")
+             py::arg("units_json_path") = "",
+             py::arg("map_type") = MapType::Lakes)
         .def("reset", &GameEnv::reset,
              py::arg("map_size") = std::nullopt,
              py::arg("tribes") = std::nullopt,
              py::arg("seed") = std::nullopt,
-             py::arg("units_json_path") = std::nullopt)
+             py::arg("units_json_path") = std::nullopt,
+             py::arg("map_type") = std::nullopt)
         .def("step", &GameEnv::step,
              py::arg("action_id"),
              py::arg("reward_player") = std::nullopt)

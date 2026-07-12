@@ -13,14 +13,13 @@
 #include "TextureStore.h"
 
 #include "../content/tribes/Tribe.h"
+#include "../world/MapGenerator.h"
 
 class TextureStore;
 
 class TribeSelectScreen {
 public:
-    int getInitialLand() const;
-    int getSmoothing() const;
-    int getRelief() const;
+    MapType getMapType() const;
     int getMapSeed() const;
 
     TribeSelectScreen();
@@ -69,12 +68,9 @@ private:
     static const char* tribeName(TribeType t);
     static const char* tribeFolder(TribeType t);
 
-    int initialLand = 50;
-    int smoothing   = 50;
-    int relief      = 50;
-
-    enum class ActiveSlider { None, InitialLand, Smoothing, Relief };
-    ActiveSlider activeSlider = ActiveSlider::None;
+    MapType mapType = MapType::Lakes;
+    Button lakesBtn;
+    Button drylandsBtn;
 
     int mapSeed = 0;
 

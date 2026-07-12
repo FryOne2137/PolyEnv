@@ -21,6 +21,7 @@
 #include "content/tribes/Tribe.h"
 #include "content/settlements/City.h"
 #include "terrain/BuildingTypeEnum.h"
+#include "terrain/ResourcesEnum.h"
 
 // Forward declarations systemów (żeby Game.h nie robił ciężkich include)
 class MovementSystem;
@@ -43,9 +44,7 @@ public:
 
     struct NewGameConfig {
         int mapSize = 16;
-        float initialLand = 0.5f;
-        int smoothing = 3;
-        int relief = 4;
+        MapType mapType = MapType::Lakes;
         uint32_t seed = 0;
 
         std::vector<TribeType> tribes; // 2..16
@@ -107,6 +106,10 @@ public:
     bool hasPlayerSeenCorner(PlayerId pid, MapCorner corner) const;
     const std::vector<Pos>& getVisibleTiles(PlayerId pid) const;
     bool isTileVisibleForPlayer(PlayerId pid, Pos p) const;
+    // Resource information filtered by the player's researched technologies.
+    // UI, bots and network views should use this instead of applying their
+    // own per-resource visibility rules.
+    ResourcesEnum getVisibleResourceForPlayer(PlayerId pid, Pos p) const;
     void noteTileVisible(PlayerId pid, Pos p);
     void resetVisibilityCache(size_t playerCount);
 

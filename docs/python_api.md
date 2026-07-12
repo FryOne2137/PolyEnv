@@ -3,9 +3,9 @@
 ## Create A Game
 
 ```python
-from PolyEnv import GameEnv, Bardur, Imperius
+from PolyEnv import GameEnv, Bardur, Imperius, Lakes
 
-env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
+env = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius), map_type=Lakes)
 ```
 
 `seed=0` chooses a random seed. Tribe constants, strings, and `get_tribe()`
@@ -18,6 +18,21 @@ env = GameEnv(players=(get_tribe("Bardur"), "Imperius"))
 ```
 
 Only the 12 regular tribes are supported.
+
+## Map Type
+
+The supported map types are `Lakes` and `Drylands`. Pass either the exported
+constant or its lower-case string form:
+
+```python
+from PolyEnv import Drylands, GameEnv
+
+dry_game = GameEnv(map_type=Drylands)
+same_game = GameEnv(map_type="drylands")
+```
+
+`reset()` accepts the same `map_type` argument. Every observation contains a
+`map_type` field whose value is either `"lakes"` or `"drylands"`.
 
 ## Everyday Methods
 
@@ -46,7 +61,7 @@ The engine returns terminal reward only: win `1.0`, loss `-1.0`, otherwise
 ## Reset And Branch
 
 ```python
-env.reset(seed=4321, players=(Bardur, Imperius))
+env.reset(seed=4321, players=(Bardur, Imperius), map_type="lakes")
 
 branch = env.clone()       # independent copy for MCTS
 branch2 = env.copy()       # alias for clone()

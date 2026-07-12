@@ -264,18 +264,10 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
     if (cfg.mapSize < 11) cfg.mapSize = 11;
     cfg.tribes = tribes;
 
-    const int uiInitialLand = selectScreen.getInitialLand();
-    const int uiSmoothing   = selectScreen.getSmoothing();
-    const int uiRelief      = selectScreen.getRelief();
-
-    cfg.initialLand = static_cast<float>(uiInitialLand) / 100.f;
-    cfg.smoothing   = std::clamp((uiSmoothing * 6 + 50) / 100, 0, 6);
-    cfg.relief      = std::clamp((uiRelief * 8 + 50) / 100, 0, 8);
+    cfg.mapType     = selectScreen.getMapType();
     cfg.seed        = static_cast<uint32_t>(selectScreen.getMapSeed());
 
-    std::cerr << "[mapgen] initialLand=" << cfg.initialLand
-              << " smoothing=" << cfg.smoothing
-              << " relief=" << cfg.relief
+    std::cerr << "[mapgen] mapType=" << (cfg.mapType == MapType::Lakes ? "Lakes" : "Drylands")
               << " seed=" << cfg.seed << "\n";
 
     using clock = std::chrono::high_resolution_clock;
@@ -342,9 +334,7 @@ bool GuiApp::saveReplayFile(const std::string& path) {
     ReplayMetadata metadata;
     metadata.seed = game.getWorldSeed();
     metadata.mapSize = game.getMap().getWidth();
-    metadata.initialLand = currentGameConfig_.initialLand;
-    metadata.smoothing = currentGameConfig_.smoothing;
-    metadata.relief = currentGameConfig_.relief;
+    metadata.mapType = static_cast<uint8_t>(currentGameConfig_.mapType);
     for (const Player& player : game.getPlayers()) {
         metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
     }
@@ -371,9 +361,7 @@ bool GuiApp::loadReplayFile(const std::string& path) {
         Game::NewGameConfig cfg;
         cfg.seed = metadata.seed;
         cfg.mapSize = metadata.mapSize;
-        cfg.initialLand = metadata.initialLand;
-        cfg.smoothing = metadata.smoothing;
-        cfg.relief = metadata.relief;
+        cfg.mapType = static_cast<MapType>(metadata.mapType);
         for (const int tribeId : metadata.tribes) {
             cfg.tribes.push_back(static_cast<TribeType>(tribeId));
         }
@@ -560,10 +548,24 @@ void GuiApp::drawFileUi() {
 
 void GuiApp::layoutFileUi() {
     const float windowWidth = static_cast<float>(window.getSize().x);
-    const float x = std::max(8.f, windowWidth - 84.f);
-    fileMenuRect_ = sf::FloatRect(x, 8.f, 76.f, 28.f);
-    fileLoadRect_ = sf::FloatRect(x - 154.f, 40.f, 230.f, 30.f);
-    fileSaveRect_ = sf::FloatRect(x - 154.f, 70.f, 230.f, 30.f);
+    if (mode == Mode::SelectTribes) {
+        // Start screen: after map type selection and before the bot/player
+        // configuration area.
+        const float x = std::min(840.f, std::max(8.f, windowWidth - 248.f));
+        fileMenuRect_ = sf::FloatRect(x, 210.f, 170.f, 36.f);
+        fileLoadRect_ = sf::FloatRect(x, 248.f, 230.f, 30.f);
+        fileSaveRect_ = sf::FloatRect(x, 278.f, 230.f, 30.f);
+        return;
+    }
+
+    // Game/replay: use exactly the former rewards-panel column.  MapRenderer
+    // reserves 400 px for the right info panel, then 150 px + 12 px padding
+    // for this column.
+    const float x = std::max(8.f, windowWidth - 562.f);
+    constexpr float width = 160.f;
+    fileMenuRect_ = sf::FloatRect(x, 8.f, width, 32.f);
+    fileLoadRect_ = sf::FloatRect(x, 42.f, width, 30.f);
+    fileSaveRect_ = sf::FloatRect(x, 72.f, width, 30.f);
 }
 
 bool GuiApp::runRandomAutoActionStep() {

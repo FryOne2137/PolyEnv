@@ -6,7 +6,7 @@
 
 namespace {
 constexpr const char* kReplayFormat = "polyenv-game";
-constexpr int kReplayFormatVersion = 2;
+constexpr int kReplayFormatVersion = 3;
 constexpr const char* kReplayRuleset = "polyenv-2026-07";
 
 bool validTribeId(int tribeId) {
@@ -40,9 +40,7 @@ bool ReplayRecorder::save(
         replay["tribes"] = metadata.tribes;
         replay["actions"] = actionIds;
         replay["map_generation"] = {
-            {"initial_land", metadata.initialLand},
-            {"smoothing", metadata.smoothing},
-            {"relief", metadata.relief},
+            {"map_type", metadata.mapType},
         };
 
         std::ofstream out(path);
@@ -112,9 +110,7 @@ bool ReplayRecorder::load(
 
         if (replay.contains("map_generation")) {
             const nlohmann::json& generation = replay.at("map_generation");
-            metadata.initialLand = generation.value("initial_land", metadata.initialLand);
-            metadata.smoothing = generation.value("smoothing", metadata.smoothing);
-            metadata.relief = generation.value("relief", metadata.relief);
+            metadata.mapType = generation.value("map_type", metadata.mapType);
         }
         return true;
     } catch (const std::exception& exception) {

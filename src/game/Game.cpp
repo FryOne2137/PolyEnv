@@ -79,6 +79,23 @@ bool Game::isTileVisibleForPlayer(PlayerId pid, Pos p) const {
     return visibleLookupByPlayer[idx][sflat] != 0;
 }
 
+ResourcesEnum Game::getVisibleResourceForPlayer(PlayerId pid, Pos p) const {
+    if (pid == kNoPlayer || !map.inBounds(p) || static_cast<size_t>(pid) >= players.size()) {
+        return ResourcesEnum::None;
+    }
+
+    const ResourcesEnum resource = map.at(p).getResource();
+    const Player& player = players[static_cast<size_t>(pid)];
+    if (resource == ResourcesEnum::Metal && !player.hasTech(TechId::Climbing)) {
+        return ResourcesEnum::None;
+    }
+    if (resource == ResourcesEnum::Crops &&
+        !player.hasTech(TechId::Organization) && !player.hasTech(TechId::Farming)) {
+        return ResourcesEnum::None;
+    }
+    return resource;
+}
+
 void Game::noteTileVisible(PlayerId pid, Pos p) {
     if (pid == kNoPlayer) return;
     if (!map.inBounds(p)) return;
@@ -135,9 +152,7 @@ void Game::newGame(const NewGameConfig& cfg) {
 
     MapGenerator::Params p;
     p.mapSize = cfg.mapSize;
-    p.initialLand = cfg.initialLand;
-    p.smoothing = cfg.smoothing;
-    p.relief = cfg.relief;
+    p.mapType = cfg.mapType;
     p.seed = worldSeed;
 
     MapGenerator::generate(map, p);

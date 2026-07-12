@@ -1886,25 +1886,15 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
     // --- Fog-of-war (gameplay view only) ---
     // In Map View (overview) we show the full map without fog.
     const PlayerId curPid = game->getCurrentPlayerId();
-    const bool curHasClimbing =
-        curPid != kNoPlayer &&
-        static_cast<size_t>(curPid) < game->getPlayers().size() &&
-        game->getPlayer(curPid).hasTech(TechId::Climbing);
-    const bool curHasOrganization =
-        curPid != kNoPlayer &&
-        static_cast<size_t>(curPid) < game->getPlayers().size() &&
-        game->getPlayer(curPid).hasTech(TechId::Organization);
     const bool curHasSailing =
         curPid != kNoPlayer &&
         static_cast<size_t>(curPid) < game->getPlayers().size() &&
         game->getPlayer(curPid).hasTech(TechId::Sailing);
 
-    auto displayResourceForTile = [&](const Tile& t) {
-        const ResourcesEnum r = t.getResource();
-        if (showOverview) return r;
-        if (r == ResourcesEnum::Metal && !curHasClimbing) return ResourcesEnum::None;
-        if (r == ResourcesEnum::Crops && !curHasOrganization) return ResourcesEnum::None;
-        return r;
+    auto displayResourceForTile = [&](Pos p, const Tile& t) {
+        // The overview is an explicit full-map inspection mode. Gameplay
+        // rendering uses the engine's player-specific resource view.
+        return showOverview ? t.getResource() : game->getVisibleResourceForPlayer(curPid, p);
     };
 
     auto displaySettlementForTile = [&](const Tile& t) {
@@ -2076,7 +2066,7 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             const TribeType tribe = tile.getTribe();
 
             // Convert engine tile state to JS-like "type".
-            const auto res = displayResourceForTile(tile);
+            const auto res = displayResourceForTile(p, tile);
             auto hasRes = [&](ResourcesEnum r) {
                 return res == r;
             };
@@ -2631,8 +2621,11 @@ void MapRenderer::draw(sf::RenderTarget& rt) {
             }
         }
 
-        // --- City Rewards panel (gameplay view only) ---
-        if (!showOverview) {
+        // City reward choices are no longer shown as a permanent top-right
+        // reference panel; that area is reserved for the File menu.
+        g_rewardHitValid = false;
+        g_rewardHits.clear();
+        if (false) {
         g_rewardHitValid = false;
         g_rewardHits.clear();
 
@@ -3022,7 +3015,7 @@ if (!showOverview) {
                     addLine(ty, std::string("Road: ") + (st.getRoadBridge() == RoadBridgeEnum::Road ? "yes" : "no"), 14);
                     addLine(ty, std::string("Water path: ") + (st.getRoadBridge() == RoadBridgeEnum::WaterConnection ? "yes" : "no"), 14);
                     const SettlementTypeEnum displaySettlement = displaySettlementForTile(st);
-                    const ResourcesEnum displayResource = displayResourceForTile(st);
+                    const ResourcesEnum displayResource = displayResourceForTile(selectedPos, st);
 
                     addLine(ty, std::string("Settlement: ") + settlementName(displaySettlement), 14);
                     addLine(ty, std::string("Building: ") + buildingTypeName(st.getBuildingType()), 14);
