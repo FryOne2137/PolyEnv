@@ -22,6 +22,13 @@ constexpr float kLakesDryEdgeValue = 1.0f;
 constexpr float kLakesMinWaterFraction = 0.25f;
 constexpr float kLakesMaxBaseWaterFraction = 0.28f;
 
+// The documented 50% fish rate applies only to shallow water.  Ocean fish
+// are allowed near a city's territory (and its immediate outer ring), but at
+// a deliberately lower density.  The public documentation does not define a
+// numeric ocean rate, so keep this separate and easy to tune.
+constexpr float kShallowFishSpawnChance = 0.50f;
+constexpr float kOceanFishSpawnChance = 0.10f;
+
 bool isWater(BaseTerrainEnum terrain) {
     return terrain == BaseTerrainEnum::Water || terrain == BaseTerrainEnum::Ocean;
 }
@@ -103,12 +110,12 @@ MapGenerator::TribeProbs MapGenerator::probsForTribe(TribeType tribe) {
     TribeProbs probabilities{};
     switch (tribe) {
         case TribeType::Kickoo: probabilities.fish = 1.5f; probabilities.mountain = 0.5f; break;
-        case TribeType::Aquarion: probabilities.fish = 1.2f; probabilities.forest = 0.5f; break;
+        case TribeType::Aquarion: probabilities.forest = 0.5f; break;
         case TribeType::Bardur: probabilities.forest = 0.8f; probabilities.crops = 0.0f; break;
         case TribeType::XinXi: probabilities.mountain = 1.5f; probabilities.metal = 1.5f; break;
         case TribeType::AiMo: probabilities.mountain = 1.5f; probabilities.crops = 0.1f; break;
         case TribeType::Oumaji: probabilities.forest = 0.2f; probabilities.mountain = 0.5f; probabilities.animals = 0.2f; break;
-        case TribeType::Vengir: probabilities.metal = 2.0f; probabilities.animals = 0.1f; probabilities.fruit = 0.1f; break;
+        case TribeType::Vengir: probabilities.metal = 2.0f; probabilities.animals = 0.1f; probabilities.fruit = 0.1f; probabilities.fish = 0.1f; break;
         case TribeType::Imperius: probabilities.fruit = 2.0f; probabilities.animals = 0.5f; break;
         case TribeType::Hoodrick: probabilities.forest = 1.5f; probabilities.mountain = 0.5f; break;
         case TribeType::Zebasi: probabilities.forest = 0.5f; probabilities.mountain = 0.5f; probabilities.fruit = 0.5f; break;
@@ -416,8 +423,16 @@ void MapGenerator::generate(Map& map, const Params& params) {
         tile.setTribe(tribes[static_cast<size_t>(owner)]);
         if (tile.getSettlementType() != SettlementTypeEnum::None) continue;
         const TribeProbs probabilities = probsForTribe(tile.getTribe());
-        const float mountain = std::min(1.0f, 0.14f * probabilities.mountain);
-        const float forest = std::min(1.0f - mountain, 0.38f * probabilities.forest);
+        // Standard terrain shares are 14% mountains, 38% forest and 48%
+        // fields. A mountain modifier redistributes its difference between
+        // forest and field before the forest modifier is applied.
+        constexpr float kBaseMountain = 0.14f;
+        constexpr float kBaseForest = 0.38f;
+        constexpr float kBaseField = 0.48f;
+        const float mountain = std::clamp(kBaseMountain * probabilities.mountain, 0.0f, 1.0f);
+        const float forestBeforeModifier = kBaseForest + (kBaseMountain - mountain) *
+            (kBaseForest / (kBaseForest + kBaseField));
+        const float forest = std::clamp(forestBeforeModifier * probabilities.forest, 0.0f, 1.0f - mountain);
         const float roll = rand01(rng);
         if (roll < mountain) tile.setBaseTerrain(BaseTerrainEnum::Mountain);
         else if (roll < mountain + forest) tile.setBaseTerrain(BaseTerrainEnum::Forest);
@@ -436,22 +451,60 @@ void MapGenerator::generate(Map& map, const Params& params) {
     };
     makeOcean();
 
-    // 8. AddResources: resources are considered only in a city's/village's 5x5 area.
+    // 8. AddResources. Resources occur only within two tiles of a city or
+    // village. The adjacent ring is the inner-city area and uses the higher
+    // spawn rates from the map-generation table.
     std::vector<uint8_t> resourceArea(static_cast<size_t>(tileCount), 0);
-    for (int city : reservedCities) for (int cell : round(city, 2, size)) resourceArea[static_cast<size_t>(cell)] = 1;
+    std::vector<uint8_t> innerResourceArea(static_cast<size_t>(tileCount), 0);
+    for (int city : reservedCities) {
+        for (int cell : round(city, 2, size)) resourceArea[static_cast<size_t>(cell)] = 1;
+        for (int cell : round(city, 1, size)) innerResourceArea[static_cast<size_t>(cell)] = 1;
+    }
+    const auto resourceProbabilities = [&](int cell, const Tile& tile) {
+        if (tile.getTribe() != TribeType::Unknown) return probsForTribe(tile.getTribe());
+
+        // Water has no displayed tribe. Use the nearest generated land biome
+        // so shore fish retain the fish modifier of their local climate.
+        int closestOwner = -1;
+        int closestDistance = size * 2;
+        for (int candidate = 0; candidate < tileCount; ++candidate) {
+            const int owner = landOwner[static_cast<size_t>(candidate)];
+            if (owner < 0) continue;
+            const int distance = chebyshevDistance(cell, candidate, size);
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestOwner = owner;
+            }
+        }
+        return closestOwner >= 0 ? probsForTribe(tribes[static_cast<size_t>(closestOwner)]) : TribeProbs{};
+    };
     for (int cell = 0; cell < tileCount; ++cell) {
         Tile& tile = tiles[static_cast<size_t>(cell)];
-        const bool waterTile = isWater(tile.getBaseTerrain());
+        // The 50% fish rate applies to shallow water only. Ocean tiles in the
+        // same resource area are also candidates, but with a lower rate.
+        const bool shallowWaterTile = tile.getBaseTerrain() == BaseTerrainEnum::Water;
+        const bool oceanTile = tile.getBaseTerrain() == BaseTerrainEnum::Ocean;
         if (isCorner(cell) || tile.getSettlementType() != SettlementTypeEnum::None ||
-            (!resourceArea[static_cast<size_t>(cell)] && !waterTile)) continue;
-        const TribeProbs probabilities = probsForTribe(tile.getTribe());
+            !resourceArea[static_cast<size_t>(cell)]) continue;
+        const TribeProbs probabilities = resourceProbabilities(cell, tile);
+        const bool innerCity = innerResourceArea[static_cast<size_t>(cell)] != 0;
         const float roll = rand01(rng);
         if (tile.getBaseTerrain() == BaseTerrainEnum::Land) {
-            if (roll < 0.06f * probabilities.fruit) tile.setResource(ResourcesEnum::Fruit);
-            else if (roll < 0.12f * probabilities.crops) tile.setResource(ResourcesEnum::Crops);
-        } else if (tile.getBaseTerrain() == BaseTerrainEnum::Forest && roll < 0.10f * probabilities.animals) tile.setResource(ResourcesEnum::Animal);
-        else if (tile.getBaseTerrain() == BaseTerrainEnum::Mountain && roll < 0.10f * probabilities.metal) tile.setResource(ResourcesEnum::Metal);
-        else if (waterTile && roll < 0.08f) tile.setResource(ResourcesEnum::Fish);
+            const float fruit = (innerCity ? 0.18f : 0.06f) * probabilities.fruit;
+            const float crops = (innerCity ? 0.18f : 0.06f) * probabilities.crops;
+            if (roll < fruit) tile.setResource(ResourcesEnum::Fruit);
+            else if (roll < fruit + crops) tile.setResource(ResourcesEnum::Crops);
+        } else if (tile.getBaseTerrain() == BaseTerrainEnum::Forest &&
+                   roll < (innerCity ? 0.19f : 0.06f) * probabilities.animals) {
+            tile.setResource(ResourcesEnum::Animal);
+        } else if (tile.getBaseTerrain() == BaseTerrainEnum::Mountain &&
+                   roll < (innerCity ? 0.11f : 0.03f) * probabilities.metal) {
+            tile.setResource(ResourcesEnum::Metal);
+        } else if (shallowWaterTile && roll < kShallowFishSpawnChance * probabilities.fish) {
+            tile.setResource(ResourcesEnum::Fish);
+        } else if (oceanTile && roll < kOceanFishSpawnChance * probabilities.fish) {
+            tile.setResource(ResourcesEnum::Fish);
+        }
     }
 
     // 9. Guaranteed opening resources are added after normal resource generation.
