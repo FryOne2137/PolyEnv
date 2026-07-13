@@ -8,7 +8,10 @@ use_directory_urls: false
 theme:
   name: material
   features:
-    - navigation.sections
+    # Keep every documentation page in the left navigation visible.  With
+    # navigation.sections Material collapses inactive groups, which made
+    # "Visible Event History" disappear after opening e.g. Overview.
+    - navigation.expand
     - navigation.instant
     - content.code.copy
 
