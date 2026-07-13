@@ -18,6 +18,7 @@
 #include "MapRenderer.h"
 
 #include "../game/Game.h"
+#include "../runtime/GameSession.h"
 #include "../content/tribes/Tribe.h"
 #include "../ai/ModelClient.h"
 #include "../replay/ReplayRecorder.h"
@@ -57,7 +58,7 @@ private:
     TribeSelectScreen selectScreen;
     std::unique_ptr<MapRenderer> mapRenderer;
 
-    Game game;
+    std::unique_ptr<GameSession> session;
     bool autoRandomEnabled = false;
     sf::Clock autoRandomClock;
     std::mt19937 rng;

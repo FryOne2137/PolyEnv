@@ -19,15 +19,18 @@
 #include "content/units/UnitFactory.h"
 #include "game/Game.h"
 #include "replay/ReplayRecorder.h"
+#include "runtime/GameSession.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
 #include "systems/DisbandSystem.h"
 #include "systems/GameDataSystem.h"
 #include "systems/StarsSystem.h"
 #include "world/Tile.h"
+#include "ObservedEventJournal.h"
 
 namespace py = pybind11;
 using json = nlohmann::json;
+using namespace polyenv_events;
 
 namespace {
 
@@ -774,18 +777,13 @@ public:
         , seed_(other.seed_)
         , unitsJsonPath_(other.unitsJsonPath_)
         , mapType_(other.mapType_)
-        , replayRecorder_(other.replayRecorder_)
-        , observationKnownByPlayer_(other.observationKnownByPlayer_)
         , legalIdsCacheValid_(other.legalIdsCacheValid_)
         , legalIdsCachePid_(other.legalIdsCachePid_)
         , legalIdsCache_(other.legalIdsCache_)
         , legalMaskCacheValid_(other.legalMaskCacheValid_)
         , legalMaskCachePid_(other.legalMaskCachePid_)
-        , legalMaskCache_(other.legalMaskCache_) {
-        if (other.state_) {
-            state_ = std::make_unique<GameStateAdapter>(other.state_->getGame());
-        }
-    }
+        , legalMaskCache_(other.legalMaskCache_)
+        , session_(other.session_ ? other.session_->clone() : nullptr) {}
 
     GameEnv& operator=(const GameEnv& other) {
         if (this == &other) return *this;
@@ -794,19 +792,13 @@ public:
         seed_ = other.seed_;
         unitsJsonPath_ = other.unitsJsonPath_;
         mapType_ = other.mapType_;
-        replayRecorder_ = other.replayRecorder_;
-        observationKnownByPlayer_ = other.observationKnownByPlayer_;
         legalIdsCacheValid_ = other.legalIdsCacheValid_;
         legalIdsCachePid_ = other.legalIdsCachePid_;
         legalIdsCache_ = other.legalIdsCache_;
         legalMaskCacheValid_ = other.legalMaskCacheValid_;
         legalMaskCachePid_ = other.legalMaskCachePid_;
         legalMaskCache_ = other.legalMaskCache_;
-        if (other.state_) {
-            state_ = std::make_unique<GameStateAdapter>(other.state_->getGame());
-        } else {
-            state_.reset();
-        }
+        session_ = other.session_ ? other.session_->clone() : nullptr;
         return *this;
     }
 
@@ -835,23 +827,24 @@ public:
         cfg.tribes = parseTribes(tribesRaw_.empty() ? std::vector<int>{3, 2} : tribesRaw_);
         game.newGame(cfg);
 
-        state_ = std::make_unique<GameStateAdapter>(std::move(game));
-        replayRecorder_.clear();
+        session_ = std::make_shared<GameSession>(std::move(game));
+        session_->replay.clear();
         initializeObservationKnowledgeFromCurrentVisibility();
+        session_->events.reset(session_->state.getGame().getPlayers().size());
         invalidateCaches();
         return observation(std::nullopt, true, -1);
     }
 
     py::dict step(size_t actionId, std::optional<int> rewardPlayer) {
         ensureState();
-        const PlayerId actor = state_->currentPlayer();
-        const Game& gBefore = state_->getGame();
+        const PlayerId actor = session_->state.currentPlayer();
+        const Game& gBefore = session_->state.getGame();
         const int starsBefore = gBefore.getPlayer(actor).getStars();
-        const auto decoded = state_->decodeActionId(actor, actionId);
+        const auto decoded = session_->state.decodeActionId(actor, actionId);
         if (!decoded) {
             py::dict out;
             out["ok"] = false;
-            out["done"] = state_->isTerminal();
+            out["done"] = session_->state.isTerminal();
             out["reward"] = 0.0f;
             out["selected_action_id"] = static_cast<int>(actionId);
             out["stars_before"] = starsBefore;
@@ -863,14 +856,12 @@ public:
             return out;
         }
         const ActionModelFields actionFeatures = buildActionModelFields(gBefore, *decoded);
-
-        state_->apply(*decoded);
-        replayRecorder_.record(actionId);
+        session_->apply(*decoded, actionId);
         revealObservedTilesForAllPlayers();
         invalidateCaches();
 
-        const bool done = state_->isTerminal();
-        const Game& g = state_->getGame();
+        const bool done = session_->state.isTerminal();
+        const Game& g = session_->state.getGame();
         const int starsAfter = g.getPlayer(actor).getStars();
         int rp = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
@@ -883,7 +874,7 @@ public:
         out["done"] = done;
         out["reward"] = reward;
         out["winner"] = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
-        out["current_player"] = static_cast<int>(state_->currentPlayer());
+        out["current_player"] = static_cast<int>(session_->state.currentPlayer());
         out["selected_action_id"] = static_cast<int>(actionId);
         out["stars_before"] = starsBefore;
         out["stars_after"] = starsAfter;
@@ -897,59 +888,240 @@ public:
 
     py::tuple stepFast(size_t actionId, std::optional<int> rewardPlayer) {
         ensureState();
-        const PlayerId actor = state_->currentPlayer();
-        const auto decoded = state_->decodeActionId(actor, actionId);
+        const PlayerId actor = session_->state.currentPlayer();
+        const auto decoded = session_->state.decodeActionId(actor, actionId);
         if (!decoded) {
-            return py::make_tuple(false, state_->isTerminal(), 0.0f, -1, static_cast<int>(state_->currentPlayer()));
+            return py::make_tuple(false, session_->state.isTerminal(), 0.0f, -1, static_cast<int>(session_->state.currentPlayer()));
         }
-
-        state_->apply(*decoded);
-        replayRecorder_.record(actionId);
+        const ActionModelFields actionFeatures = buildActionModelFields(session_->state.getGame(), *decoded);
+        session_->apply(*decoded, actionId);
         revealObservedTilesForAllPlayers();
         invalidateCaches();
 
-        const bool done = state_->isTerminal();
-        const Game& g = state_->getGame();
+        const bool done = session_->state.isTerminal();
+        const Game& g = session_->state.getGame();
         int rp = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
         if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
             reward = (g.getWinner() == static_cast<PlayerId>(rp)) ? 1.0f : -1.0f;
         }
         const int winner = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
-        return py::make_tuple(true, done, reward, winner, static_cast<int>(state_->currentPlayer()));
+        return py::make_tuple(true, done, reward, winner, static_cast<int>(session_->state.currentPlayer()));
     }
 
     py::tuple stepFastNoReveal(size_t actionId, std::optional<int> rewardPlayer) {
         ensureState();
-        const PlayerId actor = state_->currentPlayer();
-        const auto decoded = state_->decodeActionId(actor, actionId);
+        const PlayerId actor = session_->state.currentPlayer();
+        const auto decoded = session_->state.decodeActionId(actor, actionId);
         if (!decoded) {
-            return py::make_tuple(false, state_->isTerminal(), 0.0f, -1, static_cast<int>(state_->currentPlayer()));
+            return py::make_tuple(false, session_->state.isTerminal(), 0.0f, -1, static_cast<int>(session_->state.currentPlayer()));
         }
-
-        state_->apply(*decoded);
-        replayRecorder_.record(actionId);
+        const ActionModelFields actionFeatures = buildActionModelFields(session_->state.getGame(), *decoded);
+        session_->apply(*decoded, actionId);
         // Keep mechanics/FOW updates from the core engine, but do not expose newly visible
         // tile content to the acting player's visible_only observation layers.
         revealObservedTilesForAllPlayersExcept(actor);
         invalidateCaches();
 
-        const bool done = state_->isTerminal();
-        const Game& g = state_->getGame();
+        const bool done = session_->state.isTerminal();
+        const Game& g = session_->state.getGame();
         int rp = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
         if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
             reward = (g.getWinner() == static_cast<PlayerId>(rp)) ? 1.0f : -1.0f;
         }
         const int winner = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
-        return py::make_tuple(true, done, reward, winner, static_cast<int>(state_->currentPlayer()));
+        return py::make_tuple(true, done, reward, winner, static_cast<int>(session_->state.currentPlayer()));
+    }
+
+    py::dict visibleEventsNumpy(uint64_t since) const {
+        py::dict out;
+        // The public Python API may read only the current player's stream.
+        const size_t perspective = static_cast<size_t>(session_->state.currentPlayer());
+        const PlayerEventJournal* journal = session_->events.stream(perspective);
+
+        size_t first = 0;
+        size_t eventCount = 0;
+        size_t affectedCount = 0;
+        uint64_t nextCursor = since;
+        if (journal) {
+            while (first < journal->events.size() && journal->events[first].sequence < since) ++first;
+            eventCount = journal->events.size() - first;
+            for (size_t i = first; i < journal->events.size(); ++i) {
+                affectedCount += journal->events[i].affectedUnits.size();
+            }
+            nextCursor = journal->nextSequence;
+        }
+
+        auto sequence = makeArray1D<uint64_t>(eventCount);
+        auto actionSequence = makeArray1D<uint64_t>(eventCount);
+        auto round = makeArray1D<int32_t>(eventCount);
+        auto turn = makeArray1D<int32_t>(eventCount);
+        auto typeId = makeArray1D<int16_t>(eventCount);
+        auto flags = makeArray1D<uint16_t>(eventCount);
+        auto sourceIndex = makeArray1D<int32_t>(eventCount);
+        auto targetIndex = makeArray1D<int32_t>(eventCount);
+        auto damage = makeArray1D<int16_t>(eventCount);
+        auto hpBefore = makeArray1D<int16_t>(eventCount);
+        auto hpAfter = makeArray1D<int16_t>(eventCount);
+        auto actorPlayer = makeArray1D<int16_t>(eventCount);
+        auto actorTribe = makeArray1D<int16_t>(eventCount);
+        auto tileActionKind = makeArray1D<int16_t>(eventCount);
+        auto buildingType = makeArray1D<int16_t>(eventCount);
+        auto spawnType = makeArray1D<int16_t>(eventCount);
+        auto sourceUnitType = makeArray1D<int16_t>(eventCount);
+        auto targetUnitType = makeArray1D<int16_t>(eventCount);
+        auto sourceObservedUnitId = makeArray1D<int32_t>(eventCount);
+        auto targetObservedUnitId = makeArray1D<int32_t>(eventCount);
+        auto sourceUnitHpBefore = makeArray1D<int16_t>(eventCount);
+        auto sourceUnitHpAfter = makeArray1D<int16_t>(eventCount);
+        auto targetUnitHpBefore = makeArray1D<int16_t>(eventCount);
+        auto targetUnitHpAfter = makeArray1D<int16_t>(eventCount);
+        auto unitUpgradeKind = makeArray1D<int16_t>(eventCount);
+        auto upgradedUnitType = makeArray1D<int16_t>(eventCount);
+        auto unitDestroyed = makeArray1D<uint8_t>(eventCount);
+        auto sourceUnitDestroyed = makeArray1D<uint8_t>(eventCount);
+        auto affectedOffsets = makeArray1D<int64_t>(eventCount + 1);
+        auto affectedObservedUnitId = makeArray1D<int32_t>(affectedCount);
+        auto affectedTileIndex = makeArray1D<int32_t>(affectedCount);
+        auto affectedUnitType = makeArray1D<int16_t>(affectedCount);
+        auto affectedDamage = makeArray1D<int16_t>(affectedCount);
+        auto affectedHpBefore = makeArray1D<int16_t>(affectedCount);
+        auto affectedHpAfter = makeArray1D<int16_t>(affectedCount);
+        auto affectedDestroyed = makeArray1D<uint8_t>(affectedCount);
+        auto affectedSplash = makeArray1D<uint8_t>(affectedCount);
+        affectedOffsets.mutable_unchecked<1>()(0) = 0;
+        if (journal) {
+            auto sequenceOut = sequence.mutable_unchecked<1>();
+            auto actionSequenceOut = actionSequence.mutable_unchecked<1>();
+            auto roundOut = round.mutable_unchecked<1>();
+            auto turnOut = turn.mutable_unchecked<1>();
+            auto typeOut = typeId.mutable_unchecked<1>();
+            auto flagsOut = flags.mutable_unchecked<1>();
+            auto sourceOut = sourceIndex.mutable_unchecked<1>();
+            auto targetOut = targetIndex.mutable_unchecked<1>();
+            auto damageOut = damage.mutable_unchecked<1>();
+            auto hpBeforeOut = hpBefore.mutable_unchecked<1>();
+            auto hpAfterOut = hpAfter.mutable_unchecked<1>();
+            auto actorPlayerOut = actorPlayer.mutable_unchecked<1>();
+            auto actorTribeOut = actorTribe.mutable_unchecked<1>();
+            auto tileActionKindOut = tileActionKind.mutable_unchecked<1>();
+            auto buildingTypeOut = buildingType.mutable_unchecked<1>();
+            auto spawnTypeOut = spawnType.mutable_unchecked<1>();
+            auto sourceUnitTypeOut = sourceUnitType.mutable_unchecked<1>();
+            auto targetUnitTypeOut = targetUnitType.mutable_unchecked<1>();
+            auto sourceObservedUnitIdOut = sourceObservedUnitId.mutable_unchecked<1>();
+            auto targetObservedUnitIdOut = targetObservedUnitId.mutable_unchecked<1>();
+            auto sourceUnitHpBeforeOut = sourceUnitHpBefore.mutable_unchecked<1>();
+            auto sourceUnitHpAfterOut = sourceUnitHpAfter.mutable_unchecked<1>();
+            auto targetUnitHpBeforeOut = targetUnitHpBefore.mutable_unchecked<1>();
+            auto targetUnitHpAfterOut = targetUnitHpAfter.mutable_unchecked<1>();
+            auto unitUpgradeKindOut = unitUpgradeKind.mutable_unchecked<1>();
+            auto upgradedUnitTypeOut = upgradedUnitType.mutable_unchecked<1>();
+            auto unitDestroyedOut = unitDestroyed.mutable_unchecked<1>();
+            auto sourceUnitDestroyedOut = sourceUnitDestroyed.mutable_unchecked<1>();
+            auto affectedOffsetsOut = affectedOffsets.mutable_unchecked<1>();
+            auto affectedObservedUnitIdOut = affectedObservedUnitId.mutable_unchecked<1>();
+            auto affectedTileIndexOut = affectedTileIndex.mutable_unchecked<1>();
+            auto affectedUnitTypeOut = affectedUnitType.mutable_unchecked<1>();
+            auto affectedDamageOut = affectedDamage.mutable_unchecked<1>();
+            auto affectedHpBeforeOut = affectedHpBefore.mutable_unchecked<1>();
+            auto affectedHpAfterOut = affectedHpAfter.mutable_unchecked<1>();
+            auto affectedDestroyedOut = affectedDestroyed.mutable_unchecked<1>();
+            auto affectedSplashOut = affectedSplash.mutable_unchecked<1>();
+            size_t affectedOut = 0;
+            affectedOffsetsOut(0) = 0;
+            for (size_t i = 0; i < eventCount; ++i) {
+                const ObservedEventRecord& event = journal->events[first + i];
+                sequenceOut(i) = event.sequence;
+                actionSequenceOut(i) = event.actionSequence;
+                roundOut(i) = event.round;
+                turnOut(i) = event.turn;
+                typeOut(i) = event.typeId;
+                flagsOut(i) = event.flags;
+                sourceOut(i) = event.sourceIndex;
+                targetOut(i) = event.targetIndex;
+                damageOut(i) = event.damage;
+                hpBeforeOut(i) = event.hpBefore;
+                hpAfterOut(i) = event.hpAfter;
+                actorPlayerOut(i) = event.actorPlayer;
+                actorTribeOut(i) = event.actorTribe;
+                tileActionKindOut(i) = event.tileActionKind;
+                buildingTypeOut(i) = event.buildingType;
+                spawnTypeOut(i) = event.spawnType;
+                sourceUnitTypeOut(i) = event.sourceUnitType;
+                targetUnitTypeOut(i) = event.targetUnitType;
+                sourceObservedUnitIdOut(i) = event.sourceObservedUnitId;
+                targetObservedUnitIdOut(i) = event.targetObservedUnitId;
+                sourceUnitHpBeforeOut(i) = event.sourceUnitHpBefore;
+                sourceUnitHpAfterOut(i) = event.sourceUnitHpAfter;
+                targetUnitHpBeforeOut(i) = event.targetUnitHpBefore;
+                targetUnitHpAfterOut(i) = event.targetUnitHpAfter;
+                unitUpgradeKindOut(i) = event.unitUpgradeKind;
+                upgradedUnitTypeOut(i) = event.upgradedUnitType;
+                unitDestroyedOut(i) = event.unitDestroyed ? 1 : 0;
+                sourceUnitDestroyedOut(i) = event.sourceUnitDestroyed ? 1 : 0;
+                for (const auto& affected : event.affectedUnits) {
+                    affectedObservedUnitIdOut(affectedOut) = affected.observedUnitId;
+                    affectedTileIndexOut(affectedOut) = affected.tileIndex;
+                    affectedUnitTypeOut(affectedOut) = affected.unitType;
+                    affectedDamageOut(affectedOut) = affected.damage;
+                    affectedHpBeforeOut(affectedOut) = affected.hpBefore;
+                    affectedHpAfterOut(affectedOut) = affected.hpAfter;
+                    affectedDestroyedOut(affectedOut) = affected.destroyed ? 1 : 0;
+                    affectedSplashOut(affectedOut) = affected.splash ? 1 : 0;
+                    ++affectedOut;
+                }
+                affectedOffsetsOut(i + 1) = static_cast<int64_t>(affectedOut);
+            }
+        }
+
+        out["sequence"] = std::move(sequence);
+        out["action_sequence"] = std::move(actionSequence);
+        out["round"] = std::move(round);
+        out["turn"] = std::move(turn);
+        out["type_id"] = std::move(typeId);
+        out["flags"] = std::move(flags);
+        out["source_index"] = std::move(sourceIndex);
+        out["target_index"] = std::move(targetIndex);
+        out["damage"] = std::move(damage);
+        out["hp_before"] = std::move(hpBefore);
+        out["hp_after"] = std::move(hpAfter);
+        out["actor_player"] = std::move(actorPlayer);
+        out["actor_tribe"] = std::move(actorTribe);
+        out["tile_action_kind"] = std::move(tileActionKind);
+        out["building_type"] = std::move(buildingType);
+        out["spawn_type"] = std::move(spawnType);
+        out["source_unit_type"] = std::move(sourceUnitType);
+        out["target_unit_type"] = std::move(targetUnitType);
+        out["source_observed_unit_id"] = std::move(sourceObservedUnitId);
+        out["target_observed_unit_id"] = std::move(targetObservedUnitId);
+        out["source_unit_hp_before"] = std::move(sourceUnitHpBefore);
+        out["source_unit_hp_after"] = std::move(sourceUnitHpAfter);
+        out["target_unit_hp_before"] = std::move(targetUnitHpBefore);
+        out["target_unit_hp_after"] = std::move(targetUnitHpAfter);
+        out["unit_upgrade_kind"] = std::move(unitUpgradeKind);
+        out["upgraded_unit_type"] = std::move(upgradedUnitType);
+        out["unit_destroyed"] = std::move(unitDestroyed);
+        out["source_unit_destroyed"] = std::move(sourceUnitDestroyed);
+        out["affected_offsets"] = std::move(affectedOffsets);
+        out["affected_observed_unit_id"] = std::move(affectedObservedUnitId);
+        out["affected_tile_index"] = std::move(affectedTileIndex);
+        out["affected_unit_type"] = std::move(affectedUnitType);
+        out["affected_damage"] = std::move(affectedDamage);
+        out["affected_hp_before"] = std::move(affectedHpBefore);
+        out["affected_hp_after"] = std::move(affectedHpAfter);
+        out["affected_destroyed"] = std::move(affectedDestroyed);
+        out["affected_splash"] = std::move(affectedSplash);
+        out["next_cursor"] = nextCursor;
+        return out;
     }
 
     py::dict observation(std::optional<int> playerId,
                          bool visibleOnly,
                          int hiddenValue) const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
@@ -1046,7 +1218,7 @@ public:
         if (visibleOnly) {
             ensureObservationKnowledgeLayout();
         }
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
@@ -1054,8 +1226,8 @@ public:
         const std::vector<uint8_t>* knownObs = nullptr;
         if (visibleOnly && perspective >= 0) {
             const size_t perspectiveIdx = static_cast<size_t>(perspective);
-            if (perspectiveIdx < observationKnownByPlayer_.size()) {
-                knownObs = &observationKnownByPlayer_[perspectiveIdx];
+            if (perspectiveIdx < session_->observations.knownByPlayer.size()) {
+                knownObs = &session_->observations.knownByPlayer[perspectiveIdx];
             }
         }
         bool hasClimbing = false;
@@ -1236,7 +1408,7 @@ public:
 
     std::vector<std::vector<int>> fullMap() const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
@@ -1320,7 +1492,7 @@ public:
 
     std::vector<int> lighthouseDiscoveredByMasks() const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         std::vector<int> out(4, 0);
         for (uint8_t i = 0; i < 4; ++i) {
             out[i] = static_cast<int>(g.getLighthouseDiscoveredByMask(i));
@@ -1344,7 +1516,7 @@ public:
 
     py::dict lighthouseVisibility(std::optional<int> playerId) const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const int perspective = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
 
         std::vector<int> knownMasks(4, 0);
@@ -1395,7 +1567,7 @@ public:
 
     py::dict actionParamSpec() const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         py::dict spec;
         spec["type_vocab_size"] = kActionTypeCount;
@@ -1428,12 +1600,12 @@ public:
     std::vector<py::dict> legalParamActions() const {
         ensureState();
         ensureLegalIdsCache();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         std::vector<py::dict> out;
         out.reserve(legalIdsCache_.size());
         const int currentStars = g.getPlayer(g.getCurrentPlayerId()).getStars();
         for (size_t aid : legalIdsCache_) {
-            const auto a = state_->decodeActionId(state_->currentPlayer(), aid);
+            const auto a = session_->state.decodeActionId(session_->state.currentPlayer(), aid);
             if (!a) continue;
             const ActionModelFields f = buildActionModelFields(g, *a);
             py::dict d;
@@ -1471,7 +1643,7 @@ public:
 
     py::dict modelRequest() {
         ensureState();
-        json req = GameStateSerializer::buildRequest(state_->getGame(), *state_);
+        json req = GameStateSerializer::buildRequest(session_->state.getGame(), session_->state);
 
         py::dict out;
         out["map_tokens"] = playerMap(std::nullopt, -1);
@@ -1487,7 +1659,7 @@ public:
 
     py::dict modelRequestNumpy() {
         ensureState();
-        json req = GameStateSerializer::buildRequest(state_->getGame(), *state_);
+        json req = GameStateSerializer::buildRequest(session_->state.getGame(), session_->state);
 
         py::dict out;
         out["map_tokens"] = playerMapNumpy(std::nullopt, -1);
@@ -1509,7 +1681,7 @@ public:
     py::dict legalParamMasks() const {
         ensureState();
         ensureLegalIdsCache();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const int tileCount = m.getWidth() * m.getHeight();
         const int unitIdVocabSize = static_cast<int>(g.getUnits().size());
@@ -1539,11 +1711,11 @@ public:
         std::unordered_map<long long, std::vector<uint8_t>> targetMaskByTypeSource;
 
         const int currentStars = g.getPlayer(g.getCurrentPlayerId()).getStars();
-        std::vector<int> actionCostById(state_->actionSpace().size(), -1);
-        std::vector<uint8_t> affordableMask(state_->actionSpace().size(), 0);
+        std::vector<int> actionCostById(session_->state.actionSpace().size(), -1);
+        std::vector<uint8_t> affordableMask(session_->state.actionSpace().size(), 0);
 
         for (size_t aid : legalIdsCache_) {
-            const auto a = state_->decodeActionId(state_->currentPlayer(), aid);
+            const auto a = session_->state.decodeActionId(session_->state.currentPlayer(), aid);
             if (!a) continue;
             const ActionModelFields f = buildActionModelFields(g, *a);
             if (f.typeId < 0 || f.typeId >= kActionTypeCount) continue;
@@ -1677,7 +1849,7 @@ public:
         if (!param.contains("type_id")) {
             py::dict out;
             out["ok"] = false;
-            out["done"] = state_->isTerminal();
+            out["done"] = session_->state.isTerminal();
             out["reward"] = 0.0f;
             out["selected_action_id"] = -1;
             out["observation"] = observation(std::nullopt, true, -1);
@@ -1690,9 +1862,9 @@ public:
         auto getInt = [&param](const char* key) { return py::cast<int>(param[key]); };
 
         int selected = -1;
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         for (size_t aid : legalIdsCache_) {
-            const auto a = state_->decodeActionId(state_->currentPlayer(), aid);
+            const auto a = session_->state.decodeActionId(session_->state.currentPlayer(), aid);
             if (!a) continue;
             const ActionModelFields f = buildActionModelFields(g, *a);
             if (f.typeId != wantedType) continue;
@@ -1714,7 +1886,7 @@ public:
         if (selected < 0) {
             py::dict out;
             out["ok"] = false;
-            out["done"] = state_->isTerminal();
+            out["done"] = session_->state.isTerminal();
             out["reward"] = 0.0f;
             out["selected_action_id"] = -1;
             out["observation"] = observation(std::nullopt, true, -1);
@@ -1754,9 +1926,9 @@ public:
 
     py::dict decodeAction(size_t actionId) const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
-        const auto a = state_->decodeActionId(state_->currentPlayer(), actionId);
+        const auto a = session_->state.decodeActionId(session_->state.currentPlayer(), actionId);
         if (!a) return py::dict();
 
         const ActionModelFields f = buildActionModelFields(g, *a);
@@ -1801,22 +1973,22 @@ public:
 
     size_t actionSpaceSize() const {
         ensureState();
-        return state_->actionSpace().size();
+        return session_->state.actionSpace().size();
     }
 
     int currentPlayer() const {
         ensureState();
-        return static_cast<int>(state_->currentPlayer());
+        return static_cast<int>(session_->state.currentPlayer());
     }
 
     uint32_t worldSeed() const {
         ensureState();
-        return state_->getGame().getWorldSeed();
+        return session_->state.getGame().getWorldSeed();
     }
 
     std::vector<int> playerTribes() const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         std::vector<int> out;
         out.reserve(g.getPlayers().size());
         for (const Player& player : g.getPlayers()) {
@@ -1826,12 +1998,12 @@ public:
     }
 
     std::vector<size_t> replayActionIds() const {
-        return replayRecorder_.actionIds();
+        return session_->replay.actionIds();
     }
 
     void saveReplay(const std::string& path) const {
         ensureState();
-        const Game& game = state_->getGame();
+        const Game& game = session_->state.getGame();
         ReplayMetadata metadata;
         metadata.seed = game.getWorldSeed();
         metadata.mapSize = game.getMap().getWidth();
@@ -1841,7 +2013,7 @@ public:
             metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
         }
         std::string error;
-        if (!ReplayRecorder::save(path, metadata, replayRecorder_.actionIds(), error)) {
+        if (!ReplayRecorder::save(path, metadata, session_->replay.actionIds(), error)) {
             throw std::runtime_error("Could not save .polygame: " + error);
         }
     }
@@ -1872,7 +2044,7 @@ public:
 
     std::vector<int> getTechs(std::optional<int> playerId) const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const int pid = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
         if (pid < 0 || static_cast<size_t>(pid) >= g.getPlayers().size()) return {};
 
@@ -1888,7 +2060,7 @@ public:
 
     std::vector<int> seenLighthouses(std::optional<int> playerId) const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const int pid = playerId.value_or(static_cast<int>(g.getCurrentPlayerId()));
         if (pid < 0 || pid >= 16) return {};
 
@@ -1919,7 +2091,7 @@ public:
 
     bool isDone() const {
         ensureState();
-        return state_->isTerminal();
+        return session_->state.isTerminal();
     }
 
     // Returns tile indices revealed by the most recent step for the given player.
@@ -1930,27 +2102,27 @@ public:
     {
         ensureState();
         const int perspective = perspectiveOpt.value_or(
-            static_cast<int>(state_->getGame().getCurrentPlayerId()));
+            static_cast<int>(session_->state.getGame().getCurrentPlayerId()));
         if (perspective < 0 ||
-            static_cast<size_t>(perspective) >= lastRevealedByPlayer_.size())
+            static_cast<size_t>(perspective) >= session_->observations.lastRevealedByPlayer.size())
             return {};
-        return lastRevealedByPlayer_[static_cast<size_t>(perspective)];
+        return session_->observations.lastRevealedByPlayer[static_cast<size_t>(perspective)];
     }
 
     // Returns tile indices that are hidden (not yet observed) for the given perspective.
     std::vector<int> hiddenTileIndices(std::optional<int> perspectiveOpt = std::nullopt) const {
         ensureState();
         ensureObservationKnowledgeLayout();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const int tileCount = m.getWidth() * m.getHeight();
         const int perspective = perspectiveOpt.value_or(
             static_cast<int>(g.getCurrentPlayerId()));
         std::vector<int> result;
         if (perspective < 0 ||
-            static_cast<size_t>(perspective) >= observationKnownByPlayer_.size())
+            static_cast<size_t>(perspective) >= session_->observations.knownByPlayer.size())
             return result;
-        const auto& known = observationKnownByPlayer_[static_cast<size_t>(perspective)];
+        const auto& known = session_->observations.knownByPlayer[static_cast<size_t>(perspective)];
         result.reserve(static_cast<size_t>(tileCount) / 2);
         for (int i = 0; i < tileCount; ++i) {
             if (!known[static_cast<size_t>(i)]) result.push_back(i);
@@ -1985,7 +2157,7 @@ public:
     {
         ensureState();
         ensureObservationKnowledgeLayout();
-        Game& g = state_->getGame();
+        Game& g = session_->state.getGame();
         Map& m = g.getMap();
         const int tileCount = m.getWidth() * m.getHeight();
         const int perspective = perspectiveOpt.value_or(
@@ -1993,8 +2165,8 @@ public:
 
         const std::vector<uint8_t>* knownObs = nullptr;
         if (perspective >= 0 &&
-            static_cast<size_t>(perspective) < observationKnownByPlayer_.size())
-            knownObs = &observationKnownByPlayer_[static_cast<size_t>(perspective)];
+            static_cast<size_t>(perspective) < session_->observations.knownByPlayer.size())
+            knownObs = &session_->observations.knownByPlayer[static_cast<size_t>(perspective)];
 
         int patched = 0;
         for (const auto& [idx, features] : predictions) {
@@ -2041,7 +2213,7 @@ public:
 
 private:
     void ensureState() const {
-        if (!state_) throw std::runtime_error("GameEnv is not initialized.");
+        if (!session_) throw std::runtime_error("GameEnv is not initialized.");
     }
 
     void invalidateCaches() {
@@ -2055,16 +2227,16 @@ private:
 
     void ensureObservationKnowledgeLayout() const {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const size_t playerCount = g.getPlayers().size();
         const size_t tileCount = static_cast<size_t>(std::max(0, m.getWidth())) * static_cast<size_t>(std::max(0, m.getHeight()));
 
-        if (observationKnownByPlayer_.size() != playerCount) {
+        if (session_->observations.knownByPlayer.size() != playerCount) {
             const_cast<GameEnv*>(this)->initializeObservationKnowledgeFromCurrentVisibility();
             return;
         }
-        for (const auto& row : observationKnownByPlayer_) {
+        for (const auto& row : session_->observations.knownByPlayer) {
             if (row.size() != tileCount) {
                 const_cast<GameEnv*>(this)->initializeObservationKnowledgeFromCurrentVisibility();
                 return;
@@ -2074,14 +2246,14 @@ private:
 
     void initializeObservationKnowledgeFromCurrentVisibility() {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         const int w = m.getWidth();
         const int h = m.getHeight();
         const size_t playerCount = g.getPlayers().size();
         const size_t tileCount = static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h));
 
-        observationKnownByPlayer_.assign(playerCount, std::vector<uint8_t>(tileCount, 0));
+        session_->observations.knownByPlayer.assign(playerCount, std::vector<uint8_t>(tileCount, 0));
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
                 const Pos p{x, y};
@@ -2091,7 +2263,7 @@ private:
 
                 for (size_t pid = 0; pid < playerCount && pid < 16; ++pid) {
                     if ((visMask & (uint16_t(1) << pid)) == 0) continue;
-                    observationKnownByPlayer_[pid][static_cast<size_t>(idx)] = 1;
+                    session_->observations.knownByPlayer[pid][static_cast<size_t>(idx)] = 1;
                 }
             }
         }
@@ -2099,18 +2271,18 @@ private:
 
     void revealObservedTilesForPlayer(PlayerId pid) {
         ensureState();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const Map& m = g.getMap();
         if (pid == kNoPlayer) return;
 
         const size_t pidIdx = static_cast<size_t>(pid);
-        if (pidIdx >= observationKnownByPlayer_.size()) return;
-        auto& known = observationKnownByPlayer_[pidIdx];
+        if (pidIdx >= session_->observations.knownByPlayer.size()) return;
+        auto& known = session_->observations.knownByPlayer[pidIdx];
 
         // Ensure the per-player revealed list exists for this player.
-        if (lastRevealedByPlayer_.size() <= pidIdx)
-            lastRevealedByPlayer_.resize(pidIdx + 1);
-        auto& revealed = lastRevealedByPlayer_[pidIdx];
+        if (session_->observations.lastRevealedByPlayer.size() <= pidIdx)
+            session_->observations.lastRevealedByPlayer.resize(pidIdx + 1);
+        auto& revealed = session_->observations.lastRevealedByPlayer[pidIdx];
 
         const int w = m.getWidth();
         const int h = m.getHeight();
@@ -2132,10 +2304,10 @@ private:
 
     void revealObservedTilesForAllPlayers() {
         ensureObservationKnowledgeLayout();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const size_t playerCount = g.getPlayers().size();
         // Reset per-player revealed lists for this step before accumulating.
-        lastRevealedByPlayer_.assign(playerCount, {});
+        session_->observations.lastRevealedByPlayer.assign(playerCount, {});
         for (size_t pid = 0; pid < playerCount; ++pid) {
             revealObservedTilesForPlayer(static_cast<PlayerId>(pid));
         }
@@ -2143,10 +2315,10 @@ private:
 
     void revealObservedTilesForAllPlayersExcept(PlayerId excluded) {
         ensureObservationKnowledgeLayout();
-        const Game& g = state_->getGame();
+        const Game& g = session_->state.getGame();
         const size_t playerCount = g.getPlayers().size();
         // Reset per-player revealed lists. The excluded player's list stays empty.
-        lastRevealedByPlayer_.assign(playerCount, {});
+        session_->observations.lastRevealedByPlayer.assign(playerCount, {});
         for (size_t pid = 0; pid < playerCount; ++pid) {
             if (static_cast<PlayerId>(pid) == excluded) continue;
             revealObservedTilesForPlayer(static_cast<PlayerId>(pid));
@@ -2154,21 +2326,21 @@ private:
     }
 
     void ensureLegalIdsCache() const {
-        const PlayerId pid = state_->currentPlayer();
+        const PlayerId pid = session_->state.currentPlayer();
         if (legalIdsCacheValid_ && legalIdsCachePid_ == pid) return;
-        legalIdsCache_ = state_->legalActionIds(pid);
+        legalIdsCache_ = session_->state.legalActionIds(pid);
         legalIdsCachePid_ = pid;
         legalIdsCacheValid_ = true;
         legalMaskCacheValid_ = false;
     }
 
     void ensureLegalMaskCache() const {
-        const PlayerId pid = state_->currentPlayer();
+        const PlayerId pid = session_->state.currentPlayer();
         if (legalMaskCacheValid_ && legalMaskCachePid_ == pid) return;
 
         ensureLegalIdsCache();
 
-        legalMaskCache_.assign(state_->actionSpace().size(), 0);
+        legalMaskCache_.assign(session_->state.actionSpace().size(), 0);
         for (size_t id : legalIdsCache_) {
             if (id < legalMaskCache_.size()) legalMaskCache_[id] = 1;
         }
@@ -2176,18 +2348,12 @@ private:
         legalMaskCacheValid_ = true;
     }
 
-    mutable std::unique_ptr<GameStateAdapter> state_;
+    std::shared_ptr<GameSession> session_;
     int mapSize_ = 16;
     std::vector<int> tribesRaw_{3, 2};
     uint32_t seed_ = 1;
     std::string unitsJsonPath_;
     MapType mapType_ = MapType::Lakes;
-    ReplayRecorder replayRecorder_;
-    std::vector<std::vector<uint8_t>> observationKnownByPlayer_;
-    // Per-player list of tile indices revealed by the most recent step (0→1 transitions).
-    // Reset at the start of every revealObservedTilesForAll*() call.
-    std::vector<std::vector<int>> lastRevealedByPlayer_;
-
     mutable bool legalIdsCacheValid_ = false;
     mutable PlayerId legalIdsCachePid_ = kNoPlayer;
     mutable std::vector<size_t> legalIdsCache_;
@@ -2277,6 +2443,9 @@ PYBIND11_MODULE(_game_engine, m) {
              "Returns the canonical model request packet with map/actions as NumPy arrays.")
         .def("request_packet_numpy", &GameEnv::requestPacketNumpy,
              "Alias for model_request_numpy().")
+        .def("visible_events_numpy", &GameEnv::visibleEventsNumpy,
+             py::arg("since") = 0u,
+             "Returns only the current player's perspective-filtered event journal as NumPy arrays.")
         .def("legal_param_masks", &GameEnv::legalParamMasks)
         .def("step_param", &GameEnv::stepParam,
              py::arg("param"),

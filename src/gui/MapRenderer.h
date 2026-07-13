@@ -21,6 +21,7 @@
 #include "TextureStore.h"
 
 #include "ai/Action.h"
+#include "runtime/GameSession.h"
 #include "../game/Game.h"
 #include "world/Map.h"
 #include "world/Pos.h"
@@ -38,7 +39,7 @@ public:
     void handleEvent(const sf::Event& ev);
     explicit MapRenderer(TextureStore& store);
 
-    void setGame(Game* g);
+    void setSession(GameSession* session);
 
     void setTileSizePx(int px);
     void setOrigin(sf::Vector2f o);
@@ -55,6 +56,7 @@ public:
     bool consumeReplayAutoPlayToggleRequested();
     std::optional<size_t> consumeReplaySeekRequested();
     void toggleOverview();
+    void showVisibleActions();
     void setAutoPlayActive(bool active);
     void setActionAppliedCallback(std::function<void(size_t)> callback);
     void setReplayViewer(bool active);
@@ -76,6 +78,7 @@ private:
 
     TextureStore& tex;
     Game* game = nullptr;
+    GameSession* session_ = nullptr;
 
     int tilePx = 48;
     sf::Vector2f origin{24.f, 24.f};
@@ -101,6 +104,12 @@ private:
 
     // --- UI state ---
     bool showOverview = false;
+    bool showVisibleActionsPanel = false;
+    bool showVisibleActionJsonModal_ = false;
+    int visibleActionJsonScrollLines_ = 0;
+    int selectedVisibleAction_ = -1;
+    std::vector<size_t> visibleActionRowIndices_;
+    std::vector<sf::FloatRect> visibleActionRows_;
     bool endTurnClicked = false;
     bool toggleOverviewRequested = false;
     bool autoPlayToggleRequested = false;
@@ -130,7 +139,9 @@ private:
     sf::FloatRect btnEndTurn{};
     sf::FloatRect btnAutoPlay{};
     sf::FloatRect btnOverview{};
+    sf::FloatRect btnVisibleActions{};
     sf::FloatRect btnBack{};
+    sf::FloatRect visibleActionJsonCloseRect_{};
     sf::FloatRect btnReplayNext{};
     sf::FloatRect btnReplayAuto{};
     sf::FloatRect replayTimelineRect{};

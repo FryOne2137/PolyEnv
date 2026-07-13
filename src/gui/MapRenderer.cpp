@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Keyboard.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
@@ -36,6 +37,12 @@
 
 #include <SFML/Graphics/Text.hpp>
 #include <SFML/Graphics/Font.hpp>
+
+static const char* unitTypeName(UnitType t);
+static const char* buildingTypeName(BuildingTypeEnum b);
+static const char* cityRewardName(CityUpgradeChoice c);
+static const char* tileActionName(Action::TileActionKind kind);
+static const char* unitUpgradeName(Action::UnitUpgradeKind kind);
 
 // --- simple perf logger (GUI + game actions) ---
 struct ScopedPerfLog {
@@ -507,8 +514,9 @@ static void buildFixedTechTreeLayout(const std::vector<TechId>& techs,
 
 MapRenderer::MapRenderer(TextureStore& store) : tex(store) {}
 
-void MapRenderer::setGame(Game* g) {
-    game = g;
+void MapRenderer::setSession(GameSession* session) {
+    session_ = session;
+    game = session ? &session->game() : nullptr;
     notifyGameStateChanged();
 }
 
@@ -673,16 +681,18 @@ float MapRenderer::replayIntervalSeconds() const {
 }
 
 bool MapRenderer::applyRecordedEngineAction(const Action& action) {
-    if (!game || replayViewer) return false;
-    GameStateAdapter adapter(*game);
-    const std::optional<size_t> actionId = adapter.encodeActionId(action);
-    const bool ok = applyEngineAction(*game, action);
+    if (!session_ || replayViewer) return false;
+    const std::optional<size_t> actionId = session_->state.encodeActionId(action);
+    const bool ok = actionId.has_value();
+    if (ok) session_->apply(action, actionId);
     if (ok && actionId && actionAppliedCallback) actionAppliedCallback(*actionId);
     return ok;
 }
 
 void MapRenderer::toggleOverview() {
     showOverview = !showOverview;
+    showVisibleActionsPanel = false;
+    showVisibleActionJsonModal_ = false;
 
     // Clear movement and attack selection/overlay when switching views.
     g_moveSelectedUnit = kNoUnit;
@@ -690,7 +700,27 @@ void MapRenderer::toggleOverview() {
     invalidateContextActionCache();
 }
 
+void MapRenderer::showVisibleActions() {
+    showOverview = true;
+    showVisibleActionsPanel = true;
+    selectedVisibleAction_ = -1;
+    showVisibleActionJsonModal_ = false;
+    visibleActionJsonScrollLines_ = 0;
+    visibleActionRows_.clear();
+    visibleActionRowIndices_.clear();
+    invalidateContextActionCache();
+}
+
 void MapRenderer::handleEvent(const sf::Event& ev) {
+    if (showVisibleActionJsonModal_ && ev.type == sf::Event::MouseWheelScrolled) {
+        // SFML reports negative delta when scrolling down.
+        visibleActionJsonScrollLines_ = std::max(0, visibleActionJsonScrollLines_ - int(ev.mouseWheelScroll.delta * 3.f));
+        return;
+    }
+    if (showVisibleActionJsonModal_ && ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Escape) {
+        showVisibleActionJsonModal_ = false;
+        return;
+    }
     if (replayViewer && replayIntervalInputActive && ev.type == sf::Event::TextEntered) {
         if (ev.text.unicode >= '0' && ev.text.unicode <= '9') {
             if (replayIntervalText.size() < 5) replayIntervalText.push_back(static_cast<char>(ev.text.unicode));
@@ -726,6 +756,12 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
 
             if (!dragMoved && dist2 < 25.f) {
 
+                if (showVisibleActionJsonModal_) {
+                    showVisibleActionJsonModal_ = false;
+                    visibleActionJsonScrollLines_ = 0;
+                    return;
+                }
+
                 if (replayViewer) {
                     if (btnReplayNext.contains(up)) {
                         replayNextMoveRequested = true;
@@ -756,9 +792,12 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                         // Spawn na aktualnie zaznaczonym tile (bez walidacji w GUI)
                         if (selectedValid && game->getMap().inBounds(selectedPos)) {
                             perfLog("SpawnUnit", [&] {
-                                const PlayerId pid = game->getCurrentPlayerId();
-                                const UnitId uid = game->spawnUnit(g_spawnSelectedType, pid, selectedPos, /*canActImmediately=*/false);
-                                (void)uid;
+                                Action action{};
+                                action.type = Action::Type::SpawnUnit;
+                                action.pid = game->getCurrentPlayerId();
+                                action.pos = selectedPos;
+                                action.spawnType = g_spawnSelectedType;
+                                (void)applyRecordedEngineAction(action);
                             });
                             notifyGameStateChanged();
                         }
@@ -782,6 +821,13 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                             notifyGameStateChanged();
                             return; // consume click
                         }
+                        // All currently constructed action buttons carry an
+                        // Action from GameStateAdapter.  Never fall back to a
+                        // direct Game mutation here: that would bypass
+                        // GameSession, replay and the private event journals.
+                        std::cerr << "[gui] ignored legacy action button without GameSession action\n";
+                        return;
+#if 0 // Legacy direct Game mutations: retained temporarily as reference only.
                         if (ab.kind == ActionKind::CaptureVillage || ab.kind == ActionKind::CaptureCity) {
                             // For capture actions we require a unit on the selected tile.
                             const UnitId uOn = game->getMap().unitOn(g_actionPos);
@@ -922,6 +968,7 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                                 }
                             });
                         }
+#endif
                         // Clear overlays after action.
                         g_moveSelectedUnit = kNoUnit;
                         selectedValid = false;
@@ -998,10 +1045,25 @@ const bool ok = game->heal(game->getCurrentPlayerId(), uid);                    
                         toggleOverviewRequested = true;
                         return;
                     }
+                    if (btnVisibleActions.contains(up)) {
+                        showVisibleActions();
+                        return;
+                    }
                 } else {
                     if (btnBack.contains(up)) {
                         toggleOverviewRequested = true;
                         return;
+                    }
+                    if (showVisibleActionsPanel) {
+                        for (size_t i = 0; i < visibleActionRows_.size(); ++i) {
+                            if (visibleActionRows_[i].contains(up)) {
+                                const int next = static_cast<int>(visibleActionRowIndices_[i]);
+                                showVisibleActionJsonModal_ = selectedVisibleAction_ == next;
+                                if (showVisibleActionJsonModal_) visibleActionJsonScrollLines_ = 0;
+                                selectedVisibleAction_ = next;
+                                return;
+                            }
+                        }
                     }
                 }
 
@@ -2939,6 +3001,7 @@ if (!showOverview) {
                 btnEndTurn = sf::FloatRect();
                 btnAutoPlay = sf::FloatRect();
                 btnOverview = sf::FloatRect();
+                btnVisibleActions = sf::FloatRect();
 
                 // Back button
                 {
@@ -2963,6 +3026,227 @@ if (!showOverview) {
                         );
                         rt.draw(t);
                     }
+                }
+
+                if (showVisibleActionsPanel) {
+                    visibleActionRows_.clear();
+                    visibleActionRowIndices_.clear();
+                    float ty = panelRect.top + panelPad + 12.f;
+                    if (hasFont) {
+                        sf::Text header("Visible actions", uiFont, 20);
+                        header.setFillColor(sf::Color::White);
+                        header.setPosition(panelRect.left + panelPad, ty);
+                        rt.draw(header);
+                    }
+                    ty += 34.f;
+                    const auto* journal = session_ ? session_->eventsForCurrentPlayer() : nullptr;
+                    const auto eventName = [](int16_t type) {
+                        using polyenv_events::ObservedEventType;
+                        switch (static_cast<ObservedEventType>(type)) {
+                            case ObservedEventType::TileRevealed: return "Tile revealed";
+                            case ObservedEventType::TileChanged: return "Tile action";
+                            case ObservedEventType::UnitDamaged: return "Unit damaged";
+                            case ObservedEventType::UnitDestroyed: return "Unit destroyed";
+                            case ObservedEventType::StarsChanged: return "Stars changed";
+                            case ObservedEventType::TechsChanged: return "Techs changed";
+                            case ObservedEventType::GameOver: return "Game over";
+                            case ObservedEventType::Move: return "Move";
+                            case ObservedEventType::SpawnUnit: return "Spawn unit";
+                            case ObservedEventType::Attack: return "Attack";
+                            case ObservedEventType::Heal: return "Heal";
+                            case ObservedEventType::Fishing: return "Fishing";
+                            case ObservedEventType::BuildRoad: return "Build Road";
+                            case ObservedEventType::Build: return "Build";
+                            case ObservedEventType::UnitRemoved: return "Unit removed";
+                            case ObservedEventType::UnitUpgraded: return "Unit upgraded";
+                        }
+                        return "Event";
+                    };
+                    const auto tribeName = [](int16_t tribe) {
+                        switch (static_cast<TribeType>(tribe)) {
+                            case TribeType::XinXi: return "Xin-Xi";
+                            case TribeType::Imperius: return "Imperius";
+                            case TribeType::Bardur: return "Bardur";
+                            case TribeType::Oumaji: return "Oumaji";
+                            case TribeType::Kickoo: return "Kickoo";
+                            case TribeType::Hoodrick: return "Hoodrick";
+                            case TribeType::Luxidoor: return "Luxidoor";
+                            case TribeType::Vengir: return "Vengir";
+                            case TribeType::Zebasi: return "Zebasi";
+                            case TribeType::AiMo: return "Ai-Mo";
+                            case TribeType::Quetzali: return "Quetzali";
+                            case TribeType::Yadakk: return "Yadakk";
+                            case TribeType::Aquarion: return "Aquarion";
+                            case TribeType::Elyrion: return "Elyrion";
+                            case TribeType::Polaris: return "Polaris";
+                            case TribeType::Cymanti: return "Cymanti";
+                            default: return "?";
+                        }
+                    };
+                    const int eventMapWidth = game ? game->getMap().getWidth() : 0;
+                    const auto eventTileText = [eventMapWidth](int tileIndex) {
+                        if (tileIndex < 0 || eventMapWidth <= 0) return std::string("?");
+                        return "(" + std::to_string(tileIndex % eventMapWidth) + "," +
+                            std::to_string(tileIndex / eventMapWidth) + ")";
+                    };
+                    const size_t count = journal ? journal->events.size() : 0;
+                    int shown = 0;
+                    for (size_t i = count; i > 0 && shown < 9; --i) {
+                        const size_t index = i - 1;
+                        const auto& entry = journal->events[index];
+                        std::string eventLabel = eventName(entry.typeId);
+                        if (entry.tileActionKind >= 0) eventLabel = tileActionName(static_cast<Action::TileActionKind>(entry.tileActionKind));
+                        if (entry.buildingType >= 0) eventLabel = std::string("Build ") + buildingTypeName(static_cast<BuildingTypeEnum>(entry.buildingType));
+                        if (entry.spawnType >= 0) eventLabel = std::string("Spawn ") + unitTypeName(static_cast<UnitType>(entry.spawnType));
+                        if (entry.unitUpgradeKind >= 0) eventLabel = unitUpgradeName(static_cast<Action::UnitUpgradeKind>(entry.unitUpgradeKind));
+                        if (entry.unitDestroyed || entry.sourceUnitDestroyed) {
+                            eventLabel = entry.unitDestroyed && entry.sourceUnitDestroyed
+                                ? "Attack: both units destroyed"
+                                : (entry.unitDestroyed ? "Attack: target destroyed" : "Attack: attacker destroyed");
+                        }
+                        const auto type = static_cast<polyenv_events::ObservedEventType>(entry.typeId);
+                        if (type == polyenv_events::ObservedEventType::Move || type == polyenv_events::ObservedEventType::Attack) {
+                            eventLabel += " from " + eventTileText(entry.sourceIndex) +
+                                " to " + eventTileText(entry.targetIndex);
+                        } else {
+                            eventLabel += " on tile " + eventTileText(entry.targetIndex);
+                        }
+                        sf::FloatRect row(panelRect.left + panelPad, ty, panelRect.width - 2.f * panelPad, 28.f);
+                        visibleActionRows_.push_back(row);
+                        visibleActionRowIndices_.push_back(index);
+                        sf::RectangleShape bg({row.width, row.height});
+                        bg.setPosition({row.left, row.top});
+                        bg.setFillColor((static_cast<int>(index) == selectedVisibleAction_) ? sf::Color(70, 95, 125, 230) : sf::Color(35, 35, 35, 220));
+                        rt.draw(bg);
+                        if (hasFont) {
+                            const std::string actor = entry.actorPlayer < 0
+                                ? "P?"
+                                : "P" + std::to_string(entry.actorPlayer);
+                            sf::Text text("R" + std::to_string(entry.round) + "  " + actor + "  " + tribeName(entry.actorTribe) + "  " + eventLabel, uiFont, 12);
+                            text.setFillColor(sf::Color::White);
+                            text.setPosition(row.left + 8.f, row.top + 6.f);
+                            rt.draw(text);
+                        }
+                        ty += 32.f;
+                        ++shown;
+                    }
+                    if (journal && selectedVisibleAction_ >= 0 && selectedVisibleAction_ < int(journal->events.size()) && hasFont) {
+                        const auto& entry = journal->events[static_cast<size_t>(selectedVisibleAction_)];
+                        const int mapWidth = game ? game->getMap().getWidth() : 0;
+                        const auto tileCoordinates = [mapWidth](int index) -> nlohmann::json {
+                            if (index < 0 || mapWidth <= 0) return nullptr;
+                            return nlohmann::json::array({index % mapWidth, index / mapWidth});
+                        };
+                        nlohmann::json detailsJson = {
+                            {"sequence", entry.sequence},
+                            {"action_sequence", entry.actionSequence},
+                            {"round", entry.round},
+                            {"turn", entry.turn},
+                            {"type_id", entry.typeId},
+                            {"type", eventName(entry.typeId)},
+                            {"flags", entry.flags},
+                            {"actor_player", entry.actorPlayer},
+                            {"actor_tribe", entry.actorTribe},
+                            {"actor_tribe_name", tribeName(entry.actorTribe)},
+                            {"source_index", entry.sourceIndex},
+                            {"source_xy", tileCoordinates(entry.sourceIndex)},
+                            {"target_index", entry.targetIndex},
+                            {"target_xy", tileCoordinates(entry.targetIndex)},
+                            {"damage", entry.damage},
+                            {"attacker_hp_before", entry.attackerHpBefore},
+                            {"attacker_hp_after", entry.attackerHpAfter},
+                            {"hp_before", entry.hpBefore},
+                            {"hp_after", entry.hpAfter},
+                            {"unit_destroyed", entry.unitDestroyed},
+                            {"source_unit_destroyed", entry.sourceUnitDestroyed},
+                            {"tile_action_kind", entry.tileActionKind},
+                            {"building_type", entry.buildingType},
+                            {"spawn_type", entry.spawnType},
+                            {"unit_upgrade_kind", entry.unitUpgradeKind},
+                            {"upgraded_unit_type", entry.upgradedUnitType},
+                            {"source_unit", {
+                                {"observed_id", entry.sourceObservedUnitId},
+                                {"type", entry.sourceUnitType},
+                                {"hp_before", entry.sourceUnitHpBefore},
+                                {"hp_after", entry.sourceUnitHpAfter},
+                            }},
+                            {"target_unit", {
+                                {"observed_id", entry.targetObservedUnitId},
+                                {"type", entry.targetUnitType},
+                                {"hp_before", entry.targetUnitHpBefore},
+                                {"hp_after", entry.targetUnitHpAfter},
+                            }},
+                            {"affected_units", nlohmann::json::array()},
+                        };
+                        for (const auto& affected : entry.affectedUnits) {
+                            detailsJson["affected_units"].push_back({
+                                {"observed_id", affected.observedUnitId},
+                                {"tile_index", affected.tileIndex},
+                                {"tile_xy", tileCoordinates(affected.tileIndex)},
+                                {"unit_type", affected.unitType},
+                                {"damage", affected.damage},
+                                {"hp_before", affected.hpBefore},
+                                {"hp_after", affected.hpAfter},
+                                {"destroyed", affected.destroyed},
+                                {"splash", affected.splash},
+                            });
+                        }
+                        const std::string details = detailsJson.dump(2);
+                        if (showVisibleActionJsonModal_) {
+                            const sf::Vector2u size = rt.getSize();
+                            sf::RectangleShape shade({static_cast<float>(size.x), static_cast<float>(size.y)});
+                            shade.setFillColor(sf::Color(0, 0, 0, 205));
+                            rt.draw(shade);
+
+                            const sf::FloatRect modal(48.f, 38.f,
+                                std::max(160.f, static_cast<float>(size.x) - 96.f),
+                                std::max(160.f, static_cast<float>(size.y) - 76.f));
+                            sf::RectangleShape box({modal.width, modal.height});
+                            box.setPosition({modal.left, modal.top});
+                            box.setFillColor(sf::Color(24, 24, 28, 250));
+                            box.setOutlineThickness(2.f);
+                            box.setOutlineColor(sf::Color(105, 130, 165));
+                            rt.draw(box);
+
+                            visibleActionJsonCloseRect_ = sf::FloatRect(modal.left + modal.width - 82.f, modal.top + 12.f, 68.f, 28.f);
+                            sf::RectangleShape close({visibleActionJsonCloseRect_.width, visibleActionJsonCloseRect_.height});
+                            close.setPosition({visibleActionJsonCloseRect_.left, visibleActionJsonCloseRect_.top});
+                            close.setFillColor(sf::Color(75, 55, 55));
+                            rt.draw(close);
+                            sf::Text closeText("Close", uiFont, 14);
+                            closeText.setPosition(visibleActionJsonCloseRect_.left + 11.f, visibleActionJsonCloseRect_.top + 5.f);
+                            rt.draw(closeText);
+
+                            sf::Text title("Visible event JSON", uiFont, 20);
+                            title.setPosition(modal.left + 18.f, modal.top + 14.f);
+                            title.setFillColor(sf::Color::White);
+                            rt.draw(title);
+                            std::vector<std::string> jsonLines;
+                            std::istringstream jsonStream(details);
+                            for (std::string line; std::getline(jsonStream, line);) jsonLines.push_back(std::move(line));
+                            constexpr float lineHeight = 17.f;
+                            const int visibleLines = std::max(1, static_cast<int>((modal.height - 70.f) / lineHeight));
+                            const int maxScroll = std::max(0, static_cast<int>(jsonLines.size()) - visibleLines);
+                            visibleActionJsonScrollLines_ = std::clamp(visibleActionJsonScrollLines_, 0, maxScroll);
+                            for (int line = 0; line < visibleLines && visibleActionJsonScrollLines_ + line < int(jsonLines.size()); ++line) {
+                                sf::Text jsonLine(jsonLines[static_cast<size_t>(visibleActionJsonScrollLines_ + line)], uiFont, 14);
+                                jsonLine.setFillColor(sf::Color(225, 225, 225));
+                                jsonLine.setPosition(modal.left + 20.f, modal.top + 52.f + float(line) * lineHeight);
+                                rt.draw(jsonLine);
+                            }
+                            sf::Text scrollHint("Scroll: " + std::to_string(visibleActionJsonScrollLines_ + 1) + "/" +
+                                std::to_string(std::max(1, int(jsonLines.size()))), uiFont, 12);
+                            scrollHint.setFillColor(sf::Color(160, 185, 215));
+                            scrollHint.setPosition(modal.left + modal.width - 180.f, modal.top + modal.height - 24.f);
+                            rt.draw(scrollHint);
+                        } else {
+                            sf::Text detailsText(details, uiFont, 15);
+                            detailsText.setFillColor(sf::Color(220, 220, 220));
+                            detailsText.setPosition(panelRect.left + panelPad, ty + 12.f);
+                            rt.draw(detailsText);
+                        }
+                    }
+                    return;
                 }
 
                 auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
@@ -3166,7 +3450,9 @@ if (!showOverview) {
 
                 btnEndTurn  = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
                 btnAutoPlay = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
-                btnOverview = sf::FloatRect(panelRect.left + panelPad, baseY + 2.f * (bh + 10.f), bw, bh);
+                const float mapButtonY = baseY + 2.f * (bh + 10.f);
+                btnVisibleActions = sf::FloatRect(panelRect.left + panelPad, mapButtonY, bw * 0.5f - 3.f, bh);
+                btnOverview = sf::FloatRect(btnVisibleActions.left + btnVisibleActions.width + 6.f, mapButtonY, bw - btnVisibleActions.width - 6.f, bh);
                 btnBack     = btnOverview;
                 btnReplayNext = btnEndTurn;
                 btnReplayAuto = btnAutoPlay;
@@ -3206,6 +3492,7 @@ if (!showOverview) {
                         ? (replayAutoPlayActive ? "Auto replay: ON" : "Auto replay: OFF")
                         : (autoPlayActive ? "Auto Random: ON" : "Auto Random: OFF")
                 );
+                drawBtn(btnVisibleActions, false, "Visible actions");
                 drawBtn(btnOverview, false, "Map View");
 
                 if (replayViewer) {

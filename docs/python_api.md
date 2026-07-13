@@ -97,3 +97,10 @@ for new model code is `model_request_numpy()` plus `step_fast(action_id)`.
 For MCTS rollouts that use fog-of-war predictions, see
 [Hidden-Map Predictions](hidden_map_predictions.md). The function described
 there is imported from `PolyEnv`, not called as a `GameEnv` method.
+
+## Visible Event History
+
+`visible_events_numpy(since=0)` returns only events observable by the current
+player. It uses compact NumPy arrays and a private cursor; no global event id,
+hidden source position, hidden unit type, or hidden owner is exported. See
+[Visible event history](visible_events_api.md) for the packet layout and event ids.

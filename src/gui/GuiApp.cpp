@@ -141,13 +141,12 @@ int GuiApp::run() {
                 mapRenderer->handleEvent(ev);
 
                 if (mode == Mode::InGame && mapRenderer->consumeEndTurnClicked()) {
-                    GameStateAdapter adapter(game);
+                    GameStateAdapter& adapter = session->state;
                     const PlayerId pid = adapter.currentPlayer();
                     const std::optional<Action> action = adapter.decodeActionId(pid, 0);
                     const std::vector<uint8_t> legal = adapter.legalActionMask(pid);
                     if (action && !legal.empty() && legal[0]) {
-                        adapter.apply(*action);
-                        game = adapter.getGame();
+                        session->apply(*action, 0);
                         recordActionId(0);
                     }
                     mapRenderer->notifyGameStateChanged();
@@ -176,7 +175,7 @@ int GuiApp::run() {
             if (ev.type == sf::Event::KeyPressed && ev.key.code == sf::Keyboard::Escape) {
                 if (mode == Mode::InGame || mode == Mode::ReplayViewer) {
                     mapRenderer.reset();
-                    game = Game();
+                    session.reset();
                     autoRandomEnabled = false;
                     replayAutoPlayEnabled_ = false;
                     replayFrames_.clear();
@@ -194,7 +193,7 @@ int GuiApp::run() {
                     const auto tribes = selectScreen.getSelectedTribes();
                     if (tribes.size() >= 2 && tribes.size() <= 16) {
                         mapRenderer.reset();
-                        game = Game();
+                        session.reset();
                         autoRandomEnabled = false;
                         startGameWithTribes(tribes);
                         mode = Mode::InGame;
@@ -206,7 +205,7 @@ int GuiApp::run() {
 
         // ── Auto-random (human demo mode) ─────────────────────────────────────
         if (mode == Mode::InGame && mapRenderer && autoRandomEnabled) {
-            if (game.isGameOver()) {
+            if (session->game().isGameOver()) {
                 autoRandomEnabled = false;
                 mapRenderer->setAutoPlayActive(false);
             } else if (autoRandomClock.getElapsedTime().asSeconds() >= 0.2f) {
@@ -219,8 +218,8 @@ int GuiApp::run() {
         }
 
         // ── Bot turn ──────────────────────────────────────────────────────────
-        if (mode == Mode::InGame && !autoRandomEnabled && !game.isGameOver() && modelClient_) {
-            const PlayerId pid = game.getCurrentPlayerId();
+        if (mode == Mode::InGame && !autoRandomEnabled && !session->game().isGameOver() && modelClient_) {
+            const PlayerId pid = session->game().getCurrentPlayerId();
             const bool isBot   = (static_cast<size_t>(pid) < playerIsBot_.size())
                                  && playerIsBot_[static_cast<size_t>(pid)];
 
@@ -272,7 +271,9 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
 
     using clock = std::chrono::high_resolution_clock;
     const auto t0 = clock::now();
+    Game game;
     game.newGame(cfg);
+    session = std::make_unique<GameSession>(std::move(game));
     currentGameConfig_ = cfg;
     replayRecorder_.clear();
     const auto t1 = clock::now();
@@ -311,7 +312,7 @@ GuiApp::GuiApp() {
 
 void GuiApp::configureRenderer(bool replayViewer) {
     mapRenderer = std::make_unique<MapRenderer>(*textures);
-    mapRenderer->setGame(&game);
+    mapRenderer->setSession(session.get());
     mapRenderer->setTileSizePx(48);
     mapRenderer->setOrigin({24.f, 24.f});
     mapRenderer->setAutoPlayActive(false);
@@ -332,10 +333,10 @@ void GuiApp::recordActionId(size_t actionId) {
 bool GuiApp::saveReplayFile(const std::string& path) {
     if (path.empty() || mode != Mode::InGame) return false;
     ReplayMetadata metadata;
-    metadata.seed = game.getWorldSeed();
-    metadata.mapSize = game.getMap().getWidth();
+    metadata.seed = session->game().getWorldSeed();
+    metadata.mapSize = session->game().getMap().getWidth();
     metadata.mapType = static_cast<uint8_t>(currentGameConfig_.mapType);
-    for (const Player& player : game.getPlayers()) {
+    for (const Player& player : session->game().getPlayers()) {
         metadata.tribes.push_back(static_cast<int>(player.getTribeType()));
     }
 
@@ -387,7 +388,7 @@ bool GuiApp::loadReplayFile(const std::string& path) {
 
         replayFrames_ = std::move(frames);
         replayMove_ = 0;
-        game = replayFrames_.front();
+        session = std::make_unique<GameSession>(replayFrames_.front());
         replayRecorder_.replace(actionIds);
         currentGameConfig_ = cfg;
         autoRandomEnabled = false;
@@ -413,8 +414,9 @@ bool GuiApp::advanceReplayMove() {
 void GuiApp::seekReplayMove(size_t move) {
     if (replayFrames_.empty()) return;
     replayMove_ = std::min(move, replayFrames_.size() - 1);
-    game = replayFrames_[replayMove_];
+    session = std::make_unique<GameSession>(replayFrames_[replayMove_]);
     if (mapRenderer) {
+        mapRenderer->setSession(session.get());
         mapRenderer->clearSelection();
         mapRenderer->notifyGameStateChanged();
         mapRenderer->setReplayProgress(replayMove_, replayFrames_.size() - 1);
@@ -569,9 +571,9 @@ void GuiApp::layoutFileUi() {
 }
 
 bool GuiApp::runRandomAutoActionStep() {
-    if (game.isGameOver()) return false;
+    if (!session || session->game().isGameOver()) return false;
 
-    GameStateAdapter adapter(game);
+    GameStateAdapter& adapter = session->state;
     const PlayerId pid = adapter.currentPlayer();
     const std::vector<uint8_t> mask = adapter.legalActionMask(pid);
 
@@ -585,23 +587,22 @@ bool GuiApp::runRandomAutoActionStep() {
     const std::optional<Action> action = adapter.decodeActionId(pid, chosen);
     if (!action) return false;
 
-    adapter.apply(*action);
-    game = adapter.getGame();
+    session->apply(*action, chosen);
     recordActionId(chosen);
     if (mapRenderer) mapRenderer->clearSelection();
     return true;
 }
 
 bool GuiApp::runBotActionStep() {
-    if (game.isGameOver() || !modelClient_) return false;
+    if (!session || session->game().isGameOver() || !modelClient_) return false;
 
-    GameStateAdapter adapter(game);
+    GameStateAdapter& adapter = session->state;
     const PlayerId pid = adapter.currentPlayer();
 
     // 1. Send full state → server returns one action_id (argmax)
     int actionId = -1;
     try {
-        actionId = modelClient_->queryAction(game, adapter);
+        actionId = modelClient_->queryAction(session->game(), adapter);
     } catch (const BotClientError& e) {
         std::cerr << "[bot] " << e.what() << "\n";
         return false;
@@ -619,8 +620,7 @@ bool GuiApp::runBotActionStep() {
     }
 
     // 3. Apply and update game state
-    adapter.apply(*action);
-    game = adapter.getGame();
+    session->apply(*action, static_cast<size_t>(actionId));
     recordActionId(static_cast<size_t>(actionId));
     if (mapRenderer) mapRenderer->clearSelection();
     return true;
