@@ -10,14 +10,18 @@ from ._game_engine import GameEnv as _GameEnv, MapType
 Lakes = MapType.Lakes
 Drylands = MapType.Drylands
 
-# Feature indices in the tokenized_map tile vector (19 features total).
+# Feature indices in the tokenized_map tile vector (23 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
 _FEAT_ROAD_BRIDGE      = 7
 _FEAT_BUILDING         = 8
-_FEAT_SETTLEMENT_TYPE  = 11
-_FEAT_RESOURCE         = 15
-_FEAT_BASE_TERRAIN     = 16
-_FEAT_TRIBE            = 17
+_FEAT_CITY_HAS_WORKSHOP  = 10
+_FEAT_CITY_HAS_WALL      = 11
+_FEAT_CITY_PARK_COUNT    = 12
+_FEAT_SETTLEMENT_TYPE    = 14
+_FEAT_RESOURCE           = 18
+_FEAT_BASE_TERRAIN       = 19
+_FEAT_TRIBE              = 20
+_FEAT_UNIT_ORIGIN_CITY   = 22
 
 from .tribes import (
     AiMo,
@@ -205,7 +209,7 @@ class GameEnv(_GameEnv):
             # indices + ground-truth feature vectors (19 ints each)
             revealed, features = env.last_revealed_tiles(return_features=True)
             for idx, feat in zip(revealed, features):
-                print(f"tile {idx}: terrain={feat[16]}, resource={feat[15]}")
+                print(f"tile {idx}: terrain={feat[19]}, resource={feat[18]}")
         """
         revealed: list[int] = self._last_revealed_indices(perspective)
         if not return_features:
@@ -229,8 +233,8 @@ def clone_with_predictions(
     ignored (enforced in C++).
 
     Safe tile features written per entry (index → 19-int feature vector):
-        [7]  roadBridge     [8]  buildingType   [11] settlementType (non-City)
-        [15] resource       [16] baseTerrain    [17] tribe
+        [7]  roadBridge     [8]  buildingType   [14] settlementType (non-City)
+        [18] resource       [19] baseTerrain    [20] tribe
 
     Features NOT written (require Game-level objects):
         visibility, units, city ownership, territoryCityId.

@@ -210,6 +210,12 @@ bool CitySystem::addUnitToCity(Game& game, UnitId unitId, CityId cityId,bool che
     }
 
     city->addUnit(unitId);
+    // City membership is also the authoritative moment at which a spawned
+    // unit receives its immutable origin city.  Units from ruins and other
+    // non-city sources are never registered here and therefore remain kNoCity.
+    if (UnitSystem::getOriginCityId(game, unitId) == kNoCity) {
+        (void)UnitSystem::setOriginCityId(game, unitId, cityId);
+    }
     return true;
 }
 

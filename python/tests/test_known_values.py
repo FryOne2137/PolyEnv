@@ -191,9 +191,9 @@ class TestDamageFormula:
                     if src < 0 or tgt < 0:
                         continue
                     atk_hp    = tmap[src][2]   # FEAT_UNIT_HP
-                    atk_max   = tmap[src][18]  # FEAT_UNIT_MAX_HP
+                    atk_max   = tmap[src][21]  # FEAT_UNIT_MAX_HP
                     def_hp    = tmap[tgt][2]
-                    def_max   = tmap[tgt][18]
+                    def_max   = tmap[tgt][21]
 
                     if atk_hp <= 0 or def_hp <= 0:
                         continue

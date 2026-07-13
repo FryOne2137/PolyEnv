@@ -27,6 +27,9 @@ public:
     static UnitType getType(const Game& game, UnitId uid);
     static bool setType(Game& game, UnitId uid, UnitType type);
 
+    static CityId getOriginCityId(const Game& game, UnitId uid);
+    static bool setOriginCityId(Game& game, UnitId uid, CityId cityId);
+
     static int getCost(const Game &game, UnitId uid);
 
     static bool setCost(Game &game, UnitId uid, int v);

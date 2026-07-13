@@ -22,7 +22,7 @@ visible = env.player_map_numpy()              # current player
 visible_p0 = env.player_map_numpy(player_id=0)
 ```
 
-Maps are flat arrays with shape `[map_width * map_height, 19]`. For a tile at
+Maps are flat arrays with shape `[map_width * map_height, 23]`. For a tile at
 `(x, y)`:
 
 ```python
@@ -59,5 +59,5 @@ separate domains:
 Each capital is placed near the center of a distinct domain, with seeded
 variation and a preference for suitable land.
 
-For the exact meaning of each of the 19 features, see
+For the exact meaning of each of the 23 features, see
 [Token Reference](token_reference.md).

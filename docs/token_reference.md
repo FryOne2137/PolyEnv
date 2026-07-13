@@ -6,7 +6,7 @@ This page lists numeric ids used in `map_tokens`, action fields, and model reque
 
 ## Tile Token Layout
 
-Every row in `map_tokens` describes one map tile and has exactly 19 integer
+Every row in `map_tokens` describes one map tile and has exactly 23 integer
 features. Tile index `i` addresses the row `map_tokens[i]`.
 
 | Index | Field | Meaning | No value / hidden |
@@ -21,15 +21,19 @@ features. Tile index `i` addresses the row `map_tokens[i]`.
 | 7 | `road_bridge` | Road / bridge state. See [Road And Bridge](#road-and-bridge). | `-1` when hidden. |
 | 8 | `building` | Building type. See [Buildings](#buildings). | `-1` when hidden. |
 | 9 | `is_capital` | `1` for a capital city, `0` for a non-capital city. | `-1` when the tile is not a city or is hidden. |
-| 10 | `city_level` | Level of the city on this tile. | `-1` when the tile is not a city or is hidden. |
-| 11 | `settlement_type` | None, village, city, starfish, or ruin. See [Settlements](#settlements). | `-1` when hidden. |
-| 12 | `settlement_id` | Runtime id of the settlement / city on this tile. | `-1` when no settlement exists or the value is hidden. |
-| 13 | `city_owner` | Player id of the city owner. | `-1` when the tile is not a city or is hidden. |
-| 14 | `own_city_units_occupied` | Number of the selected player's units occupying their own city. | `-1` for another player's city, a non-city tile, or hidden data. |
-| 15 | `resource` | Resource type. See [Resources](#resources). | `-1` when hidden. |
-| 16 | `base_terrain` | Base terrain type. See [Base Terrain](#base-terrain). | `-1` when hidden. |
-| 17 | `tribe` | Map-generation tribe type. See [Tribes](#tribes). | `-1` when hidden. |
-| 18 | `unit_max_hp` | Maximum health of the visible unit, including bonuses such as veteran status. | `-1` when no visible unit exists or the value is hidden. |
+| 10 | `city_has_workshop` | Whether the city on this tile has the Workshop upgrade: `1` yes, `0` no. | `-1` when the tile is not a visible city. |
+| 11 | `city_has_wall` | Whether the city on this tile has the City Wall upgrade: `1` yes, `0` no. | `-1` when the tile is not a visible city. |
+| 12 | `city_park_count` | Number of Parks owned by the city on this tile. | `-1` when the tile is not a visible city. |
+| 13 | `city_level` | Level of the city on this tile. | `-1` when the tile is not a city or is hidden. |
+| 14 | `settlement_type` | None, village, city, starfish, or ruin. See [Settlements](#settlements). | `-1` when hidden. |
+| 15 | `settlement_id` | Runtime id of the settlement / city on this tile. | `-1` when no settlement exists or the value is hidden. |
+| 16 | `city_owner` | Player id of the city owner. | `-1` when the tile is not a city or is hidden. |
+| 17 | `own_city_units_occupied` | Number of the selected player's units occupying their own city. | `-1` for another player's city, a non-city tile, or hidden data. |
+| 18 | `resource` | Resource type. See [Resources](#resources). | `-1` when hidden. |
+| 19 | `base_terrain` | Base terrain type. See [Base Terrain](#base-terrain). | `-1` when hidden. |
+| 20 | `tribe` | Map-generation tribe type. See [Tribes](#tribes). | `-1` when hidden. |
+| 21 | `unit_max_hp` | Maximum health of the visible unit, including bonuses such as veteran status. | `-1` when no visible unit exists or the value is hidden. |
+| 22 | `unit_origin_city_id` | Runtime id of the city that originally trained or rewarded the visible unit. For an enemy unit, it is exposed only after that city is known to the observer. | `-1` when no visible unit exists, it came from a non-city source (for example a ruin), the origin city is not known, or the value is hidden. |
 
 !!! note
     Runtime ids such as `territory_city_id` and `settlement_id` are useful for
@@ -72,7 +76,7 @@ Action fields use additional tables:
 
 ## Base Terrain
 
-Used by `map_tokens[*][16]`.
+Used by `map_tokens[*][19]`.
 
 | Id | Name |
 | ---: | --- |
@@ -84,7 +88,7 @@ Used by `map_tokens[*][16]`.
 
 ## Resources
 
-Used by `map_tokens[*][15]`.
+Used by `map_tokens[*][18]`.
 
 | Id | Name |
 | ---: | --- |
@@ -98,7 +102,7 @@ Used by `map_tokens[*][15]`.
 
 ## Settlements
 
-Used by `map_tokens[*][11]`.
+Used by `map_tokens[*][14]`.
 
 | Id | Name |
 | ---: | --- |
@@ -145,7 +149,7 @@ Used by `map_tokens[*][8]` and action field `building`.
 
 ## Tribes
 
-Used by `map_tokens[*][17]` and Python tribe constants.
+Used by `map_tokens[*][20]` and Python tribe constants.
 
 The supported public ruleset uses ids `1..12`. Ids `13..16` are reserved/internal and are not accepted by `GameEnv` in this release.
 

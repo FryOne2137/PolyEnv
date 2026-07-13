@@ -15,10 +15,10 @@ from PolyEnv import GameEnv, clone_with_predictions, tribes
 # Feature index constants (mirror __init__.py private constants).
 _FEAT_ROAD_BRIDGE     = 7
 _FEAT_BUILDING        = 8
-_FEAT_SETTLEMENT_TYPE = 11
-_FEAT_RESOURCE        = 15
-_FEAT_BASE_TERRAIN    = 16
-_FEAT_TRIBE           = 17
+_FEAT_SETTLEMENT_TYPE = 14
+_FEAT_RESOURCE        = 18
+_FEAT_BASE_TERRAIN    = 19
+_FEAT_TRIBE           = 20
 
 
 def _env(seed: int = 42) -> GameEnv:
@@ -75,8 +75,8 @@ class TestHiddenTileIndices:
 
 class TestApplyTilePredictions:
     def _make_prediction(self, base_terrain: int = 2) -> list[int]:
-        """Minimal 19-feature vector: only baseTerrain set, rest default/0."""
-        feat = [0] * 19
+        """Minimal 23-feature vector: only baseTerrain set, rest default/0."""
+        feat = [0] * 23
         feat[_FEAT_BASE_TERRAIN] = base_terrain   # Land
         feat[_FEAT_RESOURCE]     = 0              # None
         feat[_FEAT_BUILDING]     = 0              # None
@@ -189,7 +189,7 @@ class TestApplyTilePredictions:
 
 class TestCloneWithPredictions:
     def _pred_for(self, terrain: int = 2) -> list[int]:
-        feat = [0] * 19
+        feat = [0] * 23
         feat[_FEAT_BASE_TERRAIN] = terrain
         return feat
 
@@ -241,7 +241,7 @@ class TestCloneWithPredictions:
                 break
             targets = env.hidden_tile_indices()[:5]
             preds = {
-                idx: ([0] * 19)  # dummy 'model output' — all zeros
+                idx: ([0] * 23)  # dummy 'model output' — all zeros
                 for idx in targets
             }
             cloned = clone_with_predictions(env, preds)
@@ -314,13 +314,13 @@ class TestLastRevealedTiles:
             "Some revealed tiles are still reported as hidden."
         )
 
-    def test_features_length_is_19(self) -> None:
-        """Each feature vector must have exactly 19 elements."""
+    def test_features_length_is_23(self) -> None:
+        """Each feature vector must have exactly 23 elements."""
         env = _env(seed=13)
         env.step_fast(env.legal_action_ids_fast()[0])
         _, features = env.last_revealed_tiles(return_features=True)
         for feat in features:
-            assert len(feat) == 19
+            assert len(feat) == 23
 
     def test_features_terrain_in_valid_range(self) -> None:
         """baseTerrain (feature 16) must be 0-4 for revealed (now visible) tiles."""

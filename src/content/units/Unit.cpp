@@ -14,6 +14,9 @@ void Unit::setOwnerId(PlayerId v) { ownerId = v; }
 UnitType Unit::getType() const { return type; }
 void Unit::setType(UnitType v) { type = v; }
 
+CityId Unit::getOriginCityId() const { return originCityId; }
+void Unit::setOriginCityId(CityId v) { originCityId = v; }
+
 // ---- Position ----
 Pos Unit::getPos() const { return pos; }
 void Unit::setPos(Pos p) { pos = p; }

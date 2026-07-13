@@ -513,6 +513,16 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
         }
         return false;
     };
+    auto canRevealUnitOriginCity = [&](const Unit* u) -> bool {
+        if (!u || u->getOriginCityId() == kNoCity) return false;
+        if (perspective == kNoPlayer) return true;
+        if (u->getOwnerId() == perspective) return true;
+
+        const City* city = game.getCity(u->getOriginCityId());
+        if (!city || !m.inBounds(city->getPos())) return false;
+        const uint16_t cityVisibility = static_cast<uint16_t>(m.at(city->getPos()).getVisibility());
+        return (cityVisibility & (uint16_t(1) << perspective)) != 0;
+    };
 
     json tiles = json::array();
     for (int y = 0; y < h; ++y) {
@@ -533,12 +543,16 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
             int cityLevel        = -1;
             int ownUnitKills     = -1;
             int unitMaxHp        = -1;
+            int unitOriginCity   = -1;
             int resourceToken    = static_cast<int>(t.getResource());
             int settlementType   = static_cast<int>(t.getSettlementType());
             int settlementId_v   = (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement))
                                    ? -1 : static_cast<int>(t.getSettlementId());
             int cityOwner        = -1;
             int cityUnitsOccupied = -1;
+            int cityHasWorkshop  = -1;
+            int cityHasWall      = -1;
+            int cityParkCount    = -1;
 
             if (!hasClimbing && resourceToken == static_cast<int>(ResourcesEnum::Metal))
                 resourceToken = static_cast<int>(ResourcesEnum::None);
@@ -566,6 +580,9 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                         if (city->isCapitalCity()) {
                             capitalLayer = 1;
                         }
+                        cityHasWorkshop = city->hasWorkshopEnabled() ? 1 : 0;
+                        cityHasWall = city->hasCityWallEnabled() ? 1 : 0;
+                        cityParkCount = static_cast<int>(city->getParkCount());
                     }
                 }
             }
@@ -578,6 +595,9 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                         unitOwner = static_cast<int>(u->getOwnerId());
                         unitType  = static_cast<int>(u->getType());
                         unitMaxHp = u->getMaxHealth();
+                        if (canRevealUnitOriginCity(u)) {
+                            unitOriginCity = static_cast<int>(u->getOriginCityId());
+                        }
                         if (perspective != kNoPlayer &&
                             static_cast<int>(u->getOwnerId()) == static_cast<int>(perspective)) {
                             ownUnitKills = u->getKillCounter();
@@ -594,7 +614,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
             const int territoryCityId = (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity))
                                         ? -1 : static_cast<int>(t.getTerritoryCityId());
 
-            // 19 features per tile (as floats)
+            // 23 features per tile (as floats)
             tiles.push_back(json::array({
                 (float)visibility,
                 (float)isCloakAround,
@@ -606,6 +626,9 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                 (float)static_cast<int>(t.getRoadBridge()),
                 (float)static_cast<int>(t.getBuildingType()),
                 (float)capitalLayer,
+                (float)cityHasWorkshop,
+                (float)cityHasWall,
+                (float)cityParkCount,
                 (float)cityLevel,
                 (float)settlementType,
                 (float)settlementId_v,
@@ -615,6 +638,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                 (float)static_cast<int>(t.getBaseTerrain()),
                 (float)static_cast<int>(t.getTribe()),
                 (float)unitMaxHp,
+                (float)unitOriginCity,
             }));
         }
     }

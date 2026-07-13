@@ -8,7 +8,7 @@
 // Serializes game state to the JSON format expected by the Python inference server.
 namespace GameStateSerializer {
 
-    // Produces a 2D array (tiles × 19 features) matching Python's tokenized_map().
+    // Produces a 2D array (tiles × 23 features) matching Python's tokenized_map().
     // Perspective is the player id whose visibility / tech is used.
     nlohmann::json tokenizedMapAsJson(const Game& game, PlayerId perspective);
 

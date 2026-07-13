@@ -1147,8 +1147,8 @@ public:
             if (tile[3] == perspective) {
                 ++ownUnits;
             }
-            if (tile[11] != static_cast<int>(SettlementTypeEnum::City)) continue;
-            const int cityIdRaw = tile[12];
+            if (tile[14] != static_cast<int>(SettlementTypeEnum::City)) continue;
+            const int cityIdRaw = tile[15];
             if (cityIdRaw < 0) continue;
             const CityId cid = static_cast<CityId>(cityIdRaw);
             const City* city = g.getCity(cid);
@@ -1269,6 +1269,24 @@ public:
             return false;
         };
 
+        auto canRevealUnitOriginCity = [&](const Unit* u) -> bool {
+            if (!u || u->getOriginCityId() == kNoCity) return false;
+            if (!visibleOnly) return true;
+            if (perspective < 0 || perspective >= 16) return false;
+            if (static_cast<int>(u->getOwnerId()) == perspective) return true;
+
+            const City* city = g.getCity(u->getOriginCityId());
+            if (!city || !m.inBounds(city->getPos())) return false;
+            const Pos cityPos = city->getPos();
+            const uint16_t cityVisibility = static_cast<uint16_t>(m.at(cityPos).getVisibility());
+            if ((cityVisibility & (uint16_t(1) << perspective)) == 0) return false;
+
+            const int cityIndex = cityPos.y * w + cityPos.x;
+            return !knownObs || (cityIndex >= 0 &&
+                static_cast<size_t>(cityIndex) < knownObs->size() &&
+                (*knownObs)[static_cast<size_t>(cityIndex)] != 0);
+        };
+
         const size_t tileCount = static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h));
         std::vector<std::vector<int>> out;
         out.reserve(tileCount);
@@ -1300,6 +1318,7 @@ public:
                 int cityLevel = -1;
                 int ownUnitKills = -1;
                 int unitMaxHp = -1;
+                int unitOriginCity = -1;
                 int resourceToken = static_cast<int>(t.getResource());
                 int settlementTypeToken = static_cast<int>(t.getSettlementType());
                 int settlementIdToken =
@@ -1308,6 +1327,9 @@ public:
                         : static_cast<int>(t.getSettlementId());
                 int cityOwnerToken = -1;
                 int cityUnitsOccupiedToken = -1;
+                int cityHasWorkshopToken = -1;
+                int cityHasWallToken = -1;
+                int cityParkCountToken = -1;
 
                 if (!hasClimbing && resourceToken == static_cast<int>(ResourcesEnum::Metal)) {
                     resourceToken = static_cast<int>(ResourcesEnum::None);
@@ -1336,6 +1358,9 @@ public:
                             if (city->isCapitalCity()) {
                                 capitalLayer = 1;
                             }
+                            cityHasWorkshopToken = city->hasWorkshopEnabled() ? 1 : 0;
+                            cityHasWallToken = city->hasCityWallEnabled() ? 1 : 0;
+                            cityParkCountToken = static_cast<int>(city->getParkCount());
                         }
                     }
                 }
@@ -1350,6 +1375,9 @@ public:
                             unitOwner = static_cast<int>(u->getOwnerId());
                             unitType = static_cast<int>(u->getType());
                             unitMaxHp = u->getMaxHealth();
+                            if (canRevealUnitOriginCity(u)) {
+                                unitOriginCity = static_cast<int>(u->getOriginCityId());
+                            }
                             if (perspective >= 0 &&
                                 static_cast<int>(u->getOwnerId()) == perspective) {
                                 ownUnitKills = u->getKillCounter();
@@ -1374,6 +1402,9 @@ public:
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
                     capitalLayer,
+                    cityHasWorkshopToken,
+                    cityHasWallToken,
+                    cityParkCountToken,
                     cityLevel,
                     settlementTypeToken,
                     settlementIdToken,
@@ -1383,6 +1414,7 @@ public:
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
                     unitMaxHp,
+                    unitOriginCity,
                 };
                 if (visibleOnly && !knownToObservation) {
                     for (size_t i = 1; i < tileToken.size(); ++i) {
@@ -1426,6 +1458,7 @@ public:
                 int unitType = -1;
                 int ownUnitKills = -1;
                 int unitMaxHp = -1;
+                int unitOriginCity = -1;
                 const UnitId uid = m.unitOn(p);
                 if (uid != Map::kNoUnit) {
                     if (const Unit* u = g.getUnit(uid)) {
@@ -1433,6 +1466,9 @@ public:
                         unitOwner = static_cast<int>(u->getOwnerId());
                         unitType = static_cast<int>(u->getType());
                         unitMaxHp = u->getMaxHealth();
+                        if (u->getOriginCityId() != kNoCity) {
+                            unitOriginCity = static_cast<int>(u->getOriginCityId());
+                        }
                         ownUnitKills = u->getKillCounter();
                     }
                 }
@@ -1441,6 +1477,9 @@ public:
                 int cityLevel = -1;
                 int cityOwnerToken = -1;
                 int cityUnitsOccupiedToken = -1;
+                int cityHasWorkshopToken = -1;
+                int cityHasWallToken = -1;
+                int cityParkCountToken = -1;
                 if (t.getSettlementType() == SettlementTypeEnum::City) {
                     capitalLayer = 0;
                     const CityId cityId = static_cast<CityId>(t.getSettlementId());
@@ -1455,6 +1494,9 @@ public:
                             if (city->isCapitalCity()) {
                                 capitalLayer = 1;
                             }
+                            cityHasWorkshopToken = city->hasWorkshopEnabled() ? 1 : 0;
+                            cityHasWallToken = city->hasCityWallEnabled() ? 1 : 0;
+                            cityParkCountToken = static_cast<int>(city->getParkCount());
                         }
                     }
                 }
@@ -1470,6 +1512,9 @@ public:
                     static_cast<int>(t.getRoadBridge()),
                     static_cast<int>(t.getBuildingType()),
                     capitalLayer,
+                    cityHasWorkshopToken,
+                    cityHasWallToken,
+                    cityParkCountToken,
                     cityLevel,
                     static_cast<int>(t.getSettlementType()),
                     (static_cast<int>(t.getSettlementId()) == static_cast<int>(kNoSettlement)) ? -1 : static_cast<int>(t.getSettlementId()),
@@ -1479,6 +1524,7 @@ public:
                     static_cast<int>(t.getBaseTerrain()),
                     static_cast<int>(t.getTribe()),
                     unitMaxHp,
+                    unitOriginCity,
                 });
             }
         }
@@ -2132,23 +2178,24 @@ public:
 
     // Apply predicted tile features for hidden tiles only.
     //
-    // Accepts a sparse dict {tile_index → feature_vector_of_19_ints} produced by
+    // Accepts a sparse dict {tile_index → feature_vector_of_23_ints} produced by
     // the tile-prediction model (same layout as tokenized_map()).
     // Tiles already visible to `perspective` are silently skipped (guard in C++).
     //
     // Features written (safe to patch directly on Tile):
     //   [7]  roadBridge      : None=0, Road=1, Bridge=2, WaterConnection=3
     //   [8]  buildingType    : None=0, Farm=1..Windmill=8, monuments=9-15, Lighthouse=16
-    //   [11] settlementType  : None=0, Village=1, Starfish=3, Ruin=4
+    //   [14] settlementType  : None=0, Village=1, Starfish=3, Ruin=4
     //                          City=2 is intentionally skipped (requires a Game-level City object)
-    //   [15] resource        : None=0 … Metal=6
-    //   [16] baseTerrain     : Ocean=0 … Forest=4
-    //   [17] tribe           : Unknown=0, XinXi=1 … Cymanti=16
+    //   [18] resource        : None=0 … Metal=6
+    //   [19] baseTerrain     : Ocean=0 … Forest=4
+    //   [20] tribe           : Unknown=0, XinXi=1 … Cymanti=16
     //
     // Features NOT written (complex game-level state):
     //   [0]  visibility, [1] isCloakAround, [2-5] unit state,
     //   [6]  territoryCityId, [9-10] capitalLayer/cityLevel,
-    //   [12-14] settlementId/cityOwner/cityUnitsOccupied
+    //   [10-12] city workshop/wall/park state, [15-17] settlement/city state,
+    //   [21] unitMaxHp, [22] unitOriginCityId
     //
     // Returns the number of tiles actually patched.
     int applyTilePredictions(
@@ -2171,7 +2218,7 @@ public:
         int patched = 0;
         for (const auto& [idx, features] : predictions) {
             if (idx < 0 || idx >= tileCount) continue;
-            if (static_cast<int>(features.size()) < 19) continue;
+            if (static_cast<int>(features.size()) < 23) continue;
             // Guard: silently skip tiles already visible to this perspective.
             if (knownObs && (*knownObs)[static_cast<size_t>(idx)]) continue;
 
@@ -2185,23 +2232,23 @@ public:
             { const int v = features[8];
               if (v >= 0 && v <= 16)
                   tile.setBuildingType(static_cast<BuildingTypeEnum>(v)); }
-            // [11] settlementType — City=2 intentionally skipped
-            { const int v = features[11];
+            // [14] settlementType — City=2 intentionally skipped
+            { const int v = features[14];
               if (v == 0) {
                   tile.clearSettlement();
               } else if (v == 1 || v == 3 || v == 4) {
                   tile.setSettlement(static_cast<SettlementTypeEnum>(v), kNoSettlement);
               } }
-            // [15] resource
-            { const int v = features[15];
+            // [18] resource
+            { const int v = features[18];
               if (v >= 0 && v <= 6)
                   tile.setResource(static_cast<ResourcesEnum>(v)); }
-            // [16] baseTerrain
-            { const int v = features[16];
+            // [19] baseTerrain
+            { const int v = features[19];
               if (v >= 0 && v <= 4)
                   tile.setBaseTerrain(static_cast<BaseTerrainEnum>(v)); }
-            // [17] tribe
-            { const int v = features[17];
+            // [20] tribe
+            { const int v = features[20];
               if (v >= 0 && v <= 16)
                   tile.setTribe(static_cast<TribeType>(v)); }
 

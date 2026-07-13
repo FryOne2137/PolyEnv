@@ -106,6 +106,11 @@ public:
     UnitType getType() const;
     void setType(UnitType v);
 
+    // Immutable provenance: the city that originally trained/rewarded this
+    // unit. Units originating outside a city keep kNoCity.
+    CityId getOriginCityId() const;
+    void setOriginCityId(CityId v);
+
     // ---- Position ----
     Pos getPos() const;
     void setPos(Pos p);
@@ -179,6 +184,7 @@ private:
     UnitId id = kNoUnit;
     PlayerId ownerId = kNoPlayer;
     UnitType type = UnitType::Unknown;
+    CityId originCityId = kNoCity;
 
     // If the unit is currently embarked (e.g. Raft/Juggernaut), this stores the original land unit type.
     // UnitType::Unknown means "not embarked".

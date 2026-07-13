@@ -60,7 +60,7 @@ def _take_snapshot(env: GameEnv, step_i: int, chosen_action_id: int) -> dict[str
         "game_over": obs["game_over"],
         "legal_action_count": len(env.legal_action_ids_fast()),
         "action_types": sorted({a["type"] for a in params}),
-        "terrain_hash": sum(t[16] * (i + 1) for i, t in enumerate(obs["tokenized_map"])),
+        "terrain_hash": sum(t[19] * (i + 1) for i, t in enumerate(obs["tokenized_map"])),
         "chosen_action_id": int(chosen_action_id),
         "chosen_action_type": next(
             (a["type"] for a in params if a["action_id"] == chosen_action_id),
@@ -169,7 +169,7 @@ class TestGoldenTrajectory:
         """Hash terenu mapy musi być identyczny — weryfikuje generację mapy."""
         env = _make_env()
         obs = env.observation()
-        actual_hash = sum(t[16] * (i + 1) for i, t in enumerate(obs["tokenized_map"]))
+        actual_hash = sum(t[19] * (i + 1) for i, t in enumerate(obs["tokenized_map"]))
         expected_hash = golden_data["snapshots"][0]["terrain_hash"]
         assert actual_hash == expected_hash, (
             f"Hash terenu={actual_hash}, oczekiwano {expected_hash}. "

@@ -43,6 +43,18 @@ bool UnitSystem::setType(Game& game, UnitId uid, UnitType t) {
     return true;
 }
 
+CityId UnitSystem::getOriginCityId(const Game& game, UnitId uid) {
+    const Unit* u = game.getUnit(uid);
+    return u ? u->getOriginCityId() : kNoCity;
+}
+
+bool UnitSystem::setOriginCityId(Game& game, UnitId uid, CityId cityId) {
+    Unit* u = game.getUnit(uid);
+    if (!u) return false;
+    u->setOriginCityId(cityId);
+    return true;
+}
+
 int UnitSystem::getCost(const Game& game, UnitId uid) {
     const Unit* u = game.getUnit(uid);
     return u ? u->getCost() : 0;
@@ -58,7 +70,13 @@ bool UnitSystem::setCost(Game& game, UnitId uid, int v) {
 bool UnitSystem::replaceUnit(Game& game, UnitId uid, const Unit& value) {
     Unit* u = game.getUnit(uid);
     if (!u) return false;
+    const CityId originCityId = u->getOriginCityId();
     *u = value;
+    // Type changes (embark, naval upgrades) replace the Unit value but do not
+    // change where the unit originated.
+    if (u->getOriginCityId() == kNoCity) {
+        u->setOriginCityId(originCityId);
+    }
     return true;
 }
 

@@ -46,7 +46,7 @@ def test_observation_own_counts_match_tokenized_map() -> None:
     perspective = env.current_player()
     obs = env.observation(player_id=perspective, visible_only=True, hidden_value=-1)
     own_units_from_map = sum(1 for tile in obs["tokenized_map"] if tile[3] == perspective)
-    own_cities_from_map = {tile[12] for tile in obs["tokenized_map"] if tile[9] >= 0 and tile[12] >= 0}
+    own_cities_from_map = {tile[15] for tile in obs["tokenized_map"] if tile[9] >= 0 and tile[15] >= 0}
 
     assert obs["owns_units"] == own_units_from_map
     assert obs["own_cities"] == len(own_cities_from_map)
