@@ -2179,7 +2179,8 @@ public:
             if (observed[tile][0] != 1) continue;
             if (tokens[tile] != observed[tile]) {
                 throw std::invalid_argument(
-                    "completed_map_tokens differs from the source observation on visible tile " + std::to_string(tile));
+                    "revealed tiles differ: completed_map_tokens disagrees with the current observation at tile "
+                    + std::to_string(tile));
             }
         }
 

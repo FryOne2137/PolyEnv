@@ -28,7 +28,7 @@ rollout_env = env.make_belief_env(completed, perspective=player_id)
 The input must have one 23-integer row per map tile. The engine rejects:
 
 - a changed visibility mask;
-- any difference on a currently visible row;
+- any difference on a currently revealed row (`revealed tiles differ: ...`);
 - malformed token rows or invalid token values.
 
 The returned environment is a new `GameSession`. It preserves only runtime
