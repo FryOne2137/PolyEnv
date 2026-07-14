@@ -221,45 +221,6 @@ class GameEnv(_GameEnv):
         return revealed, features
 
 
-def clone_with_predictions(
-    env: "GameEnv",
-    predictions: dict[int, list[int]],
-    perspective: int | None = None,
-) -> "GameEnv":
-    """Clone *env* and apply partial tile predictions for hidden tiles.
-
-    The clone's ``Game`` state is a deep copy; only the hidden tiles listed in
-    *predictions* are overwritten.  Visible tiles in *predictions* are silently
-    ignored (enforced in C++).
-
-    Safe tile features written per entry (index → 19-int feature vector):
-        [7]  roadBridge     [8]  buildingType   [14] settlementType (non-City)
-        [18] resource       [19] baseTerrain    [20] tribe
-
-    Features NOT written (require Game-level objects):
-        visibility, units, city ownership, territoryCityId.
-
-    Args:
-        env:         Source environment (not mutated).
-        predictions: Sparse dict ``{tile_index: feature_vector}`` — only the
-                     tiles you want to predict, not the whole map.
-        perspective: Player whose hidden mask is used as the guard.
-                     Defaults to the current player.
-
-    Returns:
-        A new GameEnv clone with the predicted terrain applied.
-
-    Example::
-
-        predictions = {tile_index: feature_vector}
-        cloned = clone_with_predictions(env, predictions)
-        # run MCTS rollout on `cloned` …
-    """
-    cloned = env.clone()
-    cloned._apply_tile_predictions(predictions, perspective)
-    return cloned
-
-
 __all__ = [
     "GameEnv",
     "MapType",
@@ -270,7 +231,6 @@ __all__ = [
     "NAME_TO_TRIBE",
     "SUPPORTED_TRIBES",
     "tribes",
-    "clone_with_predictions",
     "XinXi",
     "Imperius",
     "Bardur",

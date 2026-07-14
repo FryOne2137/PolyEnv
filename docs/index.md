@@ -31,8 +31,8 @@ every step.
 | Player-view map | `env.player_map_numpy()` |
 | Full ground-truth map | `env.full_map_numpy()` |
 | Fast action execution | `env.step_fast(action_id)` |
-| MCTS branch | `env.clone()` |
-| Fog-of-war prediction rollout | [`clone_with_predictions()`](hidden_map_predictions.md) |
+| Perfect-information/debug branch | `env.clone()` |
+| Fog-of-war MCTS rollout | [`env.make_belief_env(completed_map_tokens)`](hidden_map_predictions.md) |
 | Portable replay | `env.save(path)` / `env.load(path)` |
 
 The normal model and observation APIs expose only the current player's view.

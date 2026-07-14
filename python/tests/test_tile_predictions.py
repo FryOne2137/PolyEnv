@@ -3,14 +3,13 @@
 Covers:
   - hidden_tile_indices()        : C++ binding
   - apply_tile_predictions()     : C++ binding
-  - clone_with_predictions()     : Python helper
   - last_revealed_tiles()        : Python method on GameEnv
 """
 from __future__ import annotations
 
 import pytest
 
-from PolyEnv import GameEnv, clone_with_predictions, tribes
+from PolyEnv import GameEnv, tribes
 
 # Feature index constants (mirror __init__.py private constants).
 _FEAT_ROAD_BRIDGE     = 7
@@ -181,74 +180,6 @@ class TestApplyTilePredictions:
         full = env.tokenized_map(visible_only=False, hidden_value=-1)
         for idx in targets:
             assert full[idx][_FEAT_BASE_TERRAIN] == 4
-
-
-# ---------------------------------------------------------------------------
-# clone_with_predictions  (Python helper)
-# ---------------------------------------------------------------------------
-
-class TestCloneWithPredictions:
-    def _pred_for(self, terrain: int = 2) -> list[int]:
-        feat = [0] * 23
-        feat[_FEAT_BASE_TERRAIN] = terrain
-        return feat
-
-    def test_returns_new_env_instance(self) -> None:
-        env = _env()
-        hidden = env.hidden_tile_indices()
-        cloned = clone_with_predictions(env, {hidden[0]: self._pred_for()})
-        assert cloned is not env
-
-    def test_prediction_visible_in_clone_full_map(self) -> None:
-        env = _env()
-        hidden = env.hidden_tile_indices()
-        target = hidden[0]
-        cloned = clone_with_predictions(env, {target: self._pred_for(terrain=3)})
-        full = cloned.tokenized_map(visible_only=False, hidden_value=-1)
-        assert full[target][_FEAT_BASE_TERRAIN] == 3
-
-    def test_source_env_unchanged(self) -> None:
-        env = _env()
-        hidden = env.hidden_tile_indices()
-        target = hidden[0]
-        terrain_orig = env.tokenized_map(visible_only=False)[target][_FEAT_BASE_TERRAIN]
-        clone_with_predictions(env, {target: self._pred_for(terrain=(terrain_orig + 1) % 5)})
-        terrain_after = env.tokenized_map(visible_only=False)[target][_FEAT_BASE_TERRAIN]
-        assert terrain_after == terrain_orig
-
-    def test_clone_legal_actions_still_valid(self) -> None:
-        """Cloned env must still return a valid (non-empty) action list."""
-        env = _env()
-        hidden = env.hidden_tile_indices()
-        preds = {idx: self._pred_for() for idx in hidden[:10]}
-        cloned = clone_with_predictions(env, preds)
-        assert len(cloned.legal_action_ids_fast()) > 0
-
-    def test_clone_game_mechanics_unchanged(self) -> None:
-        """Player state (stars, techs) must be identical in clone and source."""
-        env = _env()
-        hidden = env.hidden_tile_indices()
-        preds = {idx: self._pred_for() for idx in hidden[:5]}
-        cloned = clone_with_predictions(env, preds)
-        assert env.current_player() == cloned.current_player()
-        assert env.get_techs() == cloned.get_techs()
-
-    def test_sparse_prediction_rollout(self) -> None:
-        """A clone with sparse hidden-tile predictions remains playable."""
-        env = _env(seed=7)
-        for _ in range(10):
-            if env.is_done():
-                break
-            targets = env.hidden_tile_indices()[:5]
-            preds = {
-                idx: ([0] * 23)  # dummy 'model output' — all zeros
-                for idx in targets
-            }
-            cloned = clone_with_predictions(env, preds)
-            legal = cloned.legal_action_ids_fast()
-            assert len(legal) > 0
-            # Step the *original* env forward (not the clone).
-            env.step_fast_no_reveal(legal[0])
 
 
 def test_legal_actions_never_target_hidden_tiles() -> None:

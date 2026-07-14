@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -19,6 +20,7 @@
 #include "content/units/UnitFactory.h"
 #include "game/Game.h"
 #include "replay/ReplayRecorder.h"
+#include "runtime/BeliefWorldBuilder.h"
 #include "runtime/GameSession.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
@@ -97,6 +99,30 @@ static py::array_t<int32_t> mapRowsToNumpy(const std::vector<std::vector<int>>& 
         }
     }
     return arr;
+}
+
+static std::vector<std::vector<int>> completedMapTokensFromPy(const py::object& value) {
+    if (py::isinstance<py::array>(value)) {
+        auto array = py::array_t<int64_t, py::array::c_style | py::array::forcecast>::ensure(value);
+        if (!array || array.ndim() != 2) {
+            throw std::invalid_argument("completed_map_tokens must be a two-dimensional integer array");
+        }
+        const py::ssize_t rows = array.shape(0);
+        const py::ssize_t cols = array.shape(1);
+        std::vector<std::vector<int>> result(static_cast<size_t>(rows), std::vector<int>(static_cast<size_t>(cols)));
+        auto view = array.unchecked<2>();
+        for (py::ssize_t row = 0; row < rows; ++row) {
+            for (py::ssize_t col = 0; col < cols; ++col) {
+                const int64_t item = view(row, col);
+                if (item < std::numeric_limits<int>::min() || item > std::numeric_limits<int>::max()) {
+                    throw std::invalid_argument("completed_map_tokens contains an out-of-range integer");
+                }
+                result[static_cast<size_t>(row)][static_cast<size_t>(col)] = static_cast<int>(item);
+            }
+        }
+        return result;
+    }
+    return value.cast<std::vector<std::vector<int>>>();
 }
 
 static py::array_t<int64_t> actionFieldToNumpy(
@@ -2125,6 +2151,45 @@ public:
         return *this;
     }
 
+    // Creates a detached rollout world from a complete token hypothesis.  This
+    // deliberately does not call clone(): hidden source-world state is never
+    // copied into the returned environment.
+    GameEnv makeBeliefEnv(py::object completedMapTokens,
+                          std::optional<int> perspectiveOpt = std::nullopt) const {
+        ensureState();
+        ensureObservationKnowledgeLayout();
+        const Game& source = session_->state.getGame();
+        const int perspectiveInt = perspectiveOpt.value_or(static_cast<int>(source.getCurrentPlayerId()));
+        if (perspectiveInt < 0 || static_cast<size_t>(perspectiveInt) >= source.getPlayers().size()) {
+            throw std::invalid_argument("perspective must identify a player in this game");
+        }
+        const PlayerId perspective = static_cast<PlayerId>(perspectiveInt);
+        const auto tokens = completedMapTokensFromPy(completedMapTokens);
+        const auto observed = tokenizedMap(perspectiveInt, true, -1);
+        if (tokens.size() != observed.size()) {
+            throw std::invalid_argument("completed_map_tokens has an invalid tile count");
+        }
+        for (size_t tile = 0; tile < tokens.size(); ++tile) {
+            if (tokens[tile].size() != 23) {
+                throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+            }
+            if (observed[tile].empty() || tokens[tile][0] != observed[tile][0]) {
+                throw std::invalid_argument("completed_map_tokens must preserve the source visibility mask");
+            }
+            if (observed[tile][0] != 1) continue;
+            if (tokens[tile] != observed[tile]) {
+                throw std::invalid_argument(
+                    "completed_map_tokens differs from the source observation on visible tile " + std::to_string(tile));
+            }
+        }
+
+        auto beliefSession = std::make_shared<GameSession>(
+            BeliefWorldBuilder::build(source, perspective, tokens));
+        GameEnv result(std::move(beliefSession), source.getMap().getWidth(), tribesRaw_, seed_, unitsJsonPath_, mapType_);
+        result.initializeObservationKnowledgeFromCurrentVisibility();
+        return result;
+    }
+
     GameEnv saveState() const {
         ensureState();
         return *this;
@@ -2259,6 +2324,19 @@ public:
     }
 
 private:
+    GameEnv(std::shared_ptr<GameSession> session,
+            int mapSize,
+            std::vector<int> tribes,
+            uint32_t seed,
+            std::string unitsJsonPath,
+            MapType mapType)
+        : session_(std::move(session))
+        , mapSize_(mapSize)
+        , tribesRaw_(std::move(tribes))
+        , seed_(seed)
+        , unitsJsonPath_(std::move(unitsJsonPath))
+        , mapType_(mapType) {}
+
     void ensureState() const {
         if (!session_) throw std::runtime_error("GameEnv is not initialized.");
     }
@@ -2518,6 +2596,10 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("is_done", &GameEnv::isDone)
         .def("clone", &GameEnv::clone)
         .def("copy", &GameEnv::clone)
+        .def("make_belief_env", &GameEnv::makeBeliefEnv,
+             py::arg("completed_map_tokens"),
+             py::arg("perspective") = std::nullopt,
+             "Builds a detached hypothetical world from complete map tokens without copying hidden source state.")
         .def("save_state", &GameEnv::saveState)
         .def("load_state", &GameEnv::loadState, py::arg("snapshot"))
         .def("_last_revealed_indices", &GameEnv::lastRevealedIndices,
@@ -2531,8 +2613,5 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("predictions"),
              py::arg("perspective") = std::nullopt,
              "Applies sparse predicted tile features to hidden tiles only.")
-        .def("_apply_tile_predictions", &GameEnv::applyTilePredictions,
-             py::arg("predictions"),
-             py::arg("perspective") = std::nullopt,
-             "Internal. Use clone_with_predictions() instead.");
+        ;
 }

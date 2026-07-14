@@ -62,6 +62,8 @@ endif()
 set(ENGINE_SOURCES
         src/runtime/GameSession.cpp
         src/runtime/GameSession.h
+        src/runtime/BeliefWorldBuilder.cpp
+        src/runtime/BeliefWorldBuilder.h
         src/replay/ReplayRecorder.cpp
         src/replay/ReplayRecorder.h
         src/ai/GameStateSerializer.cpp

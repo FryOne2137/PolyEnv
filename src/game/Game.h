@@ -30,6 +30,7 @@ class TurnSystem;
 class InteractionSystem;
 class VisionSystem;
 class City;
+class BeliefWorldBuilder;
 
 class Game {
 public:
@@ -215,6 +216,7 @@ public:
 
 private:
     friend class UnitSpawnSystem;
+    friend class BeliefWorldBuilder;
 
     uint32_t worldSeed = 1;
 

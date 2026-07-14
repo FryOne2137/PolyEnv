@@ -190,17 +190,6 @@ class GameEnv(_GameEnv):
         return revealed, features
 
 
-def clone_with_predictions(
-    env: "GameEnv",
-    predictions: dict[int, list[int]],
-    perspective: int | None = None,
-) -> "GameEnv":
-    """Clone *env* and apply partial tile predictions for hidden tiles."""
-    cloned = env.clone()
-    cloned._apply_tile_predictions(predictions, perspective)
-    return cloned
-
-
 __all__ = [
     "GameEnv",
     "MapType",
@@ -211,7 +200,6 @@ __all__ = [
     "NAME_TO_TRIBE",
     "SUPPORTED_TRIBES",
     "tribes",
-    "clone_with_predictions",
     "XinXi",
     "Imperius",
     "Bardur",
