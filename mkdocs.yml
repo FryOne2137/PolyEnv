@@ -29,6 +29,7 @@ nav:
       - GUI: gui.md
       - Training Pattern: training_loop.md
       - VectorGameEnv: vector_env.md
+      - MctsPool: mcts_pool.md
   - Reference:
       - Game Data And IDs: token_reference.md
       - Troubleshooting: troubleshooting.md

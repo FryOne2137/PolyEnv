@@ -33,6 +33,10 @@ public:
     PlayerId currentPlayer() const { return state.currentPlayer(); }
     bool apply(const Action& action, std::optional<size_t> actionId = std::nullopt);
     std::shared_ptr<GameSession> clone() const;
+    // A lightweight branch for native MCTS. It preserves the authoritative
+    // game and fog-of-war knowledge, but intentionally drops replay and
+    // observer event history that are not part of the MCTS model packet.
+    std::shared_ptr<GameSession> cloneForSearch() const;
 
     const polyenv_events::PlayerEventJournal* eventsFor(PlayerId player) const;
     const polyenv_events::PlayerEventJournal* eventsForCurrentPlayer() const {

@@ -292,6 +292,18 @@ std::shared_ptr<GameSession> GameSession::clone() const {
     return std::make_shared<GameSession>(*this);
 }
 
+std::shared_ptr<GameSession> GameSession::cloneForSearch() const {
+    // Do not start from the default copy constructor: replay and per-observer
+    // event vectors can grow with a real match, while native MCTS never reads
+    // them. Copy only the authoritative Game plus fog-of-war knowledge.
+    Game gameCopy = state.getGame();
+    auto result = std::make_shared<GameSession>(std::move(gameCopy));
+    result->observations = observations;
+    result->events.reset(result->game().getPlayers().size());
+    result->observations.lastRevealedByPlayer.assign(result->game().getPlayers().size(), {});
+    return result;
+}
+
 const polyenv_events::PlayerEventJournal* GameSession::eventsFor(PlayerId player) const {
     if (player == kNoPlayer) return nullptr;
     return events.stream(static_cast<size_t>(player));

@@ -32,6 +32,7 @@ every step.
 | Full ground-truth map | `env.full_map_numpy()` |
 | Fast action execution | `env.step_fast(action_id)` |
 | Batched high-throughput RL | `VectorGameEnv(num_envs=...).step(action_ids)` |
+| Batched neural MCTS | [`MctsPool`](mcts_pool.md) |
 | Perfect-information/debug branch | `env.clone()` |
 | Fog-of-war MCTS rollout | [`env.make_belief_env(completed_map_tokens)`](hidden_map_predictions.md) |
 | Portable replay | `env.save(path)` / `env.load(path)` |
@@ -49,6 +50,7 @@ supervised hidden-map prediction.
 5. [Hidden-map predictions](hidden_map_predictions.md)
 6. [Replays](replays.md) and [GUI](gui.md)
 7. [VectorGameEnv: Native Batched Training](vector_env.md)
+8. [MctsPool: Native Batched PUCT](mcts_pool.md)
 
 ## Attribution
 

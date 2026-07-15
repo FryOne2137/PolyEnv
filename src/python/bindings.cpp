@@ -1,10 +1,12 @@
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -937,6 +939,82 @@ public:
         }
         return {true, done, reward, g.isGameOver() ? static_cast<int>(g.getWinner()) : -1,
                 static_cast<int>(session_->state.currentPlayer())};
+    }
+
+    // Native MCTS branches preserve authoritative state and fog-of-war
+    // knowledge while discarding replay/event history that is irrelevant to
+    // its dense model packet. This prevents each tree node from copying its
+    // complete path history.
+    GameEnv cloneForMcts() const {
+        ensureState();
+        return GameEnv(session_->cloneForSearch(), mapSize_, tribesRaw_, seed_, unitsJsonPath_, mapType_);
+    }
+
+    GameEnv mctsChild(size_t actionId) const {
+        GameEnv child = cloneForMcts();
+        const NativeStepResult result = child.stepNative(actionId);
+        if (!result.ok) {
+            throw std::logic_error("MCTS attempted to expand a non-legal action id");
+        }
+        return child;
+    }
+
+    size_t legalActionCountNative() const {
+        ensureState();
+        const PlayerId pid = session_->state.currentPlayer();
+        return session_->state.legalActionIdsRef(pid).size();
+    }
+
+    const std::vector<size_t>& legalActionIdsRefNative() const {
+        ensureState();
+        const PlayerId pid = session_->state.currentPlayer();
+        return session_->state.legalActionIdsRef(pid);
+    }
+
+    bool isTerminalNative() const {
+        ensureState();
+        return session_->state.isTerminal();
+    }
+
+    PlayerId currentPlayerNative() const {
+        ensureState();
+        return session_->state.currentPlayer();
+    }
+
+    int playerCountNative() const {
+        ensureState();
+        return static_cast<int>(session_->state.getGame().getPlayers().size());
+    }
+
+    int mapSizeNative() const { return mapSize_; }
+
+    // MctsPool currently implements two-player, zero-sum PUCT. The returned
+    // value is from the current player's point of view and is valid only for
+    // terminal states.
+    float terminalValueForCurrentPlayer() const {
+        ensureState();
+        if (!session_->state.isTerminal()) {
+            throw std::logic_error("terminal value requested for a non-terminal MCTS node");
+        }
+
+        const Game& game = session_->state.getGame();
+        PlayerId winner = kNoPlayer;
+        if (game.isGameOver()) {
+            winner = game.getWinner();
+        } else {
+            int alive = 0;
+            for (size_t index = 0; index < game.getPlayers().size(); ++index) {
+                const Player& player = game.getPlayer(static_cast<PlayerId>(index));
+                if (!player.getCities().empty() || !player.getUnits().empty()) {
+                    ++alive;
+                    winner = static_cast<PlayerId>(index);
+                }
+            }
+            if (alive != 1) winner = kNoPlayer;
+        }
+
+        if (winner == kNoPlayer) return 0.0f;
+        return winner == session_->state.currentPlayer() ? 1.0f : -1.0f;
     }
 
     py::dict step(size_t actionId, std::optional<int> rewardPlayer) {
@@ -3334,6 +3412,600 @@ private:
     std::mutex apiMutex_;
 };
 
+// Native multi-root PUCT scheduler. Python sees only whole leaf batches and
+// submits one policy/value result per leaf; selection, state branching and
+// backup never cross the Python boundary.
+class MctsPool {
+public:
+    MctsPool(py::iterable roots, int numThreads, int maxActions, float cPuct)
+        : maxActions_(maxActions)
+        , cPuct_(cPuct)
+    {
+        if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
+        if (numThreads < 0) throw std::invalid_argument("num_threads must be non-negative");
+        if (!std::isfinite(cPuct_) || cPuct_ <= 0.0f) {
+            throw std::invalid_argument("c_puct must be finite and positive");
+        }
+
+        for (py::handle item : roots) {
+            const GameEnv& source = item.cast<const GameEnv&>();
+            if (source.playerCountNative() != 2) {
+                throw std::invalid_argument(
+                    "MctsPool currently supports exactly two players; multi-player values require a vector-valued evaluator");
+            }
+            if (trees_.empty()) {
+                mapSize_ = source.mapSizeNative();
+            } else if (source.mapSizeNative() != mapSize_) {
+                throw std::invalid_argument("all MctsPool roots must use the same map_size");
+            }
+            if (source.actionSpaceSize() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+                throw std::invalid_argument("map_size produces action ids too large for MctsPool int32 batches");
+            }
+            trees_.emplace_back(source.cloneForMcts());
+        }
+        if (trees_.empty()) throw std::invalid_argument("MctsPool requires at least one GameEnv root");
+
+        pool_ = std::make_unique<BatchThreadPool>(resolveThreadCount(trees_.size(), numThreads));
+    }
+
+    MctsPool(const MctsPool&) = delete;
+    MctsPool& operator=(const MctsPool&) = delete;
+
+    py::dict selectLeaves(int maxLeaves = 0) {
+        if (maxLeaves < 0) throw std::invalid_argument("max_leaves must be non-negative");
+
+        std::unique_lock lock(apiMutex_, std::defer_lock);
+        std::vector<Selection> selections;
+        {
+            py::gil_scoped_release release;
+            lock.lock();
+            const size_t limit = maxLeaves == 0
+                ? trees_.size()
+                : std::min(trees_.size(), static_cast<size_t>(maxLeaves));
+            selections = selectPendingLeaves(limit);
+        }
+
+        LeafBatch out(selections.size(), tileCount(), static_cast<size_t>(maxActions_));
+        try {
+            py::gil_scoped_release release;
+            writeLeafBatch(out, selections);
+        } catch (...) {
+            cancelSelections(selections);
+            throw;
+        }
+        lock.unlock();
+        return out.intoDict();
+    }
+
+    void expandAndBackup(py::array leafIds, py::array policyLogits, py::array values) {
+        auto ids = py::array_t<uint64_t, py::array::c_style | py::array::forcecast>::ensure(leafIds);
+        auto logits = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(policyLogits);
+        auto valueArray = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(values);
+        if (!ids || ids.ndim() != 1) {
+            throw std::invalid_argument("leaf_ids must be a contiguous one-dimensional uint64-compatible array");
+        }
+        if (!logits || logits.ndim() != 2 || logits.shape(0) != ids.shape(0) || logits.shape(1) != maxActions_) {
+            throw std::invalid_argument("policy_logits must have shape [leaf_count, max_actions]");
+        }
+        if (!valueArray || valueArray.ndim() != 1 || valueArray.shape(0) != ids.shape(0)) {
+            throw std::invalid_argument("values must have shape [leaf_count]");
+        }
+
+        const size_t count = static_cast<size_t>(ids.shape(0));
+        const uint64_t* idData = ids.data();
+        const float* logitsData = logits.data();
+        const float* valueData = valueArray.data();
+        for (size_t row = 0; row < count; ++row) {
+            if (!std::isfinite(valueData[row]) || valueData[row] < -1.0f || valueData[row] > 1.0f) {
+                throw std::invalid_argument("every MCTS value must be finite and in [-1, 1]");
+            }
+            for (int col = 0; col < maxActions_; ++col) {
+                const float logit = logitsData[row * static_cast<size_t>(maxActions_) + static_cast<size_t>(col)];
+                if (std::isnan(logit) || logit == std::numeric_limits<float>::infinity()) {
+                    throw std::invalid_argument("policy_logits may contain finite values or -inf, but not NaN/+inf");
+                }
+            }
+        }
+
+        std::unique_lock lock(apiMutex_, std::defer_lock);
+        std::vector<PendingLeaf> pending;
+        {
+            py::gil_scoped_release release;
+            lock.lock();
+            pending = resolvePendingLeaves(idData, count);
+            try {
+                pool_->parallelFor(pending.size(), [&](size_t begin, size_t end) {
+                    for (size_t row = begin; row < end; ++row) {
+                        expandOne(pending[row],
+                                  logitsData + row * static_cast<size_t>(maxActions_),
+                                  valueData[row]);
+                    }
+                });
+            } catch (...) {
+                clearPending(pending);
+                throw;
+            }
+            clearPending(pending);
+        }
+    }
+
+    py::dict rootPolicy(float temperature = 1.0f) {
+        if (!std::isfinite(temperature) || temperature < 0.0f) {
+            throw std::invalid_argument("temperature must be finite and non-negative");
+        }
+
+        RootBatch out(trees_.size(), static_cast<size_t>(maxActions_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            pool_->parallelFor(trees_.size(), [&](size_t begin, size_t end) {
+                for (size_t tree = begin; tree < end; ++tree) {
+                    writeRootPolicy(out, tree, temperature);
+                }
+            });
+        }
+        return out.intoDict();
+    }
+
+    int numTrees() const { return static_cast<int>(trees_.size()); }
+    int numThreads() const { return static_cast<int>(pool_->workerCount()); }
+    int maxActions() const { return maxActions_; }
+    int mapSize() const { return mapSize_; }
+    float cPuct() const { return cPuct_; }
+    int pendingCount() const {
+        std::lock_guard lock(apiMutex_);
+        return static_cast<int>(pending_.size());
+    }
+
+private:
+    struct Node;
+
+    // Edges are expanded eagerly from policy priors, but their GameEnv child
+    // state is materialized only when PUCT selects that edge. This is crucial
+    // for wide Polytopia action spaces: memory is proportional to visited
+    // nodes, not every legal action at every expanded node.
+    struct Edge {
+        int32_t actionId = -1;
+        float prior = 0.0f;
+        double valueSum = 0.0;
+        uint32_t visits = 0;
+        Node* child = nullptr;
+    };
+
+    struct Node {
+        Node(GameEnv environment, Node* parentNode, Edge* incomingEdge)
+            : env(std::move(environment))
+            , parent(parentNode)
+            , parentEdge(incomingEdge)
+            , toPlay(env.currentPlayerNative())
+            , terminal(env.isTerminalNative()) {}
+
+        GameEnv env;
+        Node* parent = nullptr;
+        Edge* parentEdge = nullptr;
+        std::vector<Edge> edges;
+        double valueSum = 0.0;
+        uint32_t visits = 0;
+        PlayerId toPlay = kNoPlayer;
+        bool expanded = false;
+        bool pending = false;
+        bool terminal = false;
+    };
+
+    struct Tree {
+        explicit Tree(GameEnv root) {
+            nodes.emplace_back(std::make_unique<Node>(std::move(root), nullptr, nullptr));
+        }
+
+        Node& root() { return *nodes.front(); }
+        const Node& root() const { return *nodes.front(); }
+
+        std::vector<std::unique_ptr<Node>> nodes;
+        uint64_t pendingLeafId = 0;
+    };
+
+    struct PendingLeaf {
+        uint64_t id = 0;
+        size_t treeIndex = 0;
+        Node* node = nullptr;
+    };
+
+    struct Selection {
+        uint64_t id = 0;
+        size_t treeIndex = 0;
+        Node* node = nullptr;
+    };
+
+    struct LeafBatch {
+        LeafBatch(size_t rows, size_t tiles, size_t maxActions)
+            : mapTokens({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
+                         static_cast<py::ssize_t>(kMapTokenFeatureCount)})
+            , state({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
+            , actionIds({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
+            , actionFeatures({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                              static_cast<py::ssize_t>(kVectorActionFeatureCount)})
+            , actionArgMasks({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                              static_cast<py::ssize_t>(kVectorActionArgMaskCount)})
+            , actionMask({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
+            , legalActionCount(static_cast<py::ssize_t>(rows))
+            , leafId(static_cast<py::ssize_t>(rows))
+            , treeId(static_cast<py::ssize_t>(rows))
+            , toPlay(static_cast<py::ssize_t>(rows)) {}
+
+        py::dict intoDict() {
+            py::dict out;
+            out["map_tokens"] = std::move(mapTokens);
+            out["state"] = std::move(state);
+            out["action_id"] = std::move(actionIds);
+            out["action_features"] = std::move(actionFeatures);
+            out["action_arg_mask"] = std::move(actionArgMasks);
+            out["action_mask"] = std::move(actionMask);
+            out["legal_action_count"] = std::move(legalActionCount);
+            out["leaf_id"] = std::move(leafId);
+            out["tree_id"] = std::move(treeId);
+            out["to_play"] = std::move(toPlay);
+            return out;
+        }
+
+        py::array_t<int32_t> mapTokens;
+        py::array_t<int32_t> state;
+        py::array_t<int32_t> actionIds;
+        py::array_t<int32_t> actionFeatures;
+        py::array_t<uint8_t> actionArgMasks;
+        py::array_t<uint8_t> actionMask;
+        py::array_t<int32_t> legalActionCount;
+        py::array_t<uint64_t> leafId;
+        py::array_t<int32_t> treeId;
+        py::array_t<int32_t> toPlay;
+    };
+
+    struct RootBatch {
+        RootBatch(size_t trees, size_t maxActions)
+            : actionIds({static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)})
+            , actionMask({static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)})
+            , visitCounts({static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)})
+            , policy({static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)})
+            , rootValue(static_cast<py::ssize_t>(trees))
+            , rootVisitCount(static_cast<py::ssize_t>(trees))
+            , rootPlayer(static_cast<py::ssize_t>(trees)) {}
+
+        py::dict intoDict() {
+            py::dict out;
+            out["action_id"] = std::move(actionIds);
+            out["action_mask"] = std::move(actionMask);
+            out["visit_count"] = std::move(visitCounts);
+            out["policy"] = std::move(policy);
+            out["root_value"] = std::move(rootValue);
+            out["root_visit_count"] = std::move(rootVisitCount);
+            out["root_player"] = std::move(rootPlayer);
+            return out;
+        }
+
+        py::array_t<int32_t> actionIds;
+        py::array_t<uint8_t> actionMask;
+        py::array_t<int32_t> visitCounts;
+        py::array_t<float> policy;
+        py::array_t<float> rootValue;
+        py::array_t<int32_t> rootVisitCount;
+        py::array_t<int32_t> rootPlayer;
+    };
+
+    static size_t resolveThreadCount(size_t treeCount, int requested) {
+        const unsigned int hardware = std::max(1u, std::thread::hardware_concurrency());
+        const size_t wanted = requested > 0 ? static_cast<size_t>(requested) : static_cast<size_t>(hardware);
+        return std::max<size_t>(1, std::min(treeCount, wanted));
+    }
+
+    size_t tileCount() const {
+        return static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
+    }
+
+    void backup(Node& leaf, float valueFromLeafPlayer) {
+        const PlayerId leafPlayer = leaf.toPlay;
+        for (Node* node = &leaf; node; node = node->parent) {
+            const float nodeValue = node->toPlay == leafPlayer ? valueFromLeafPlayer : -valueFromLeafPlayer;
+            ++node->visits;
+            node->valueSum += nodeValue;
+            if (node->parentEdge) {
+                const float parentValue = node->parent->toPlay == leafPlayer
+                    ? valueFromLeafPlayer : -valueFromLeafPlayer;
+                ++node->parentEdge->visits;
+                node->parentEdge->valueSum += parentValue;
+            }
+        }
+    }
+
+    Node* selectNode(Tree& tree) {
+        Node* node = &tree.root();
+        while (node->expanded && !node->terminal) {
+            Edge* best = nullptr;
+            float bestScore = -std::numeric_limits<float>::infinity();
+            const float rootVisits = std::sqrt(static_cast<float>(std::max<uint32_t>(1, node->visits)));
+            for (Edge& edge : node->edges) {
+                const float edgeValue = edge.visits == 0
+                    ? 0.0f
+                    : static_cast<float>(edge.valueSum / static_cast<double>(edge.visits));
+                const float score = edgeValue +
+                    cPuct_ * edge.prior * rootVisits / static_cast<float>(1 + edge.visits);
+                if (!best || score > bestScore ||
+                    (score == bestScore && edge.actionId < best->actionId)) {
+                    best = &edge;
+                    bestScore = score;
+                }
+            }
+            if (!best) return nullptr;
+            if (!best->child) {
+                tree.nodes.emplace_back(std::make_unique<Node>(
+                    node->env.mctsChild(static_cast<size_t>(best->actionId)), node, best));
+                best->child = tree.nodes.back().get();
+            }
+            node = best->child;
+        }
+
+        if (node->terminal || node->env.isTerminalNative()) {
+            node->terminal = true;
+            backup(*node, node->env.terminalValueForCurrentPlayer());
+            return nullptr;
+        }
+        return node->pending ? nullptr : node;
+    }
+
+    std::vector<Selection> selectPendingLeaves(size_t limit) {
+        std::vector<Selection> selections;
+        selections.reserve(limit);
+        if (limit == 0) return selections;
+
+        const size_t treeCount = trees_.size();
+        size_t examined = 0;
+        try {
+            while (examined < treeCount && selections.size() < limit) {
+                const size_t treeIndex = (nextTree_ + examined) % treeCount;
+                ++examined;
+                Tree& tree = trees_[treeIndex];
+                if (tree.pendingLeafId != 0) continue;
+
+                Node* node = selectNode(tree);
+                if (!node) continue;
+                const size_t legalCount = node->env.legalActionCountNative();
+                if (legalCount == 0) {
+                    node->terminal = true;
+                    backup(*node, node->env.terminalValueForCurrentPlayer());
+                    continue;
+                }
+                if (legalCount > static_cast<size_t>(maxActions_)) {
+                    throw std::runtime_error(
+                        "MctsPool max_actions=" + std::to_string(maxActions_) +
+                        " is too small for tree " + std::to_string(treeIndex) +
+                        ": its selected leaf has " + std::to_string(legalCount) + " legal actions");
+                }
+
+                const uint64_t id = nextLeafId_++;
+                if (id == 0) throw std::overflow_error("MctsPool leaf id counter overflowed");
+                node->pending = true;
+                tree.pendingLeafId = id;
+                PendingLeaf pending{id, treeIndex, node};
+                pending_.emplace(id, pending);
+                selections.push_back({id, treeIndex, node});
+            }
+        } catch (...) {
+            cancelSelections(selections);
+            throw;
+        }
+        nextTree_ = (nextTree_ + examined) % treeCount;
+        return selections;
+    }
+
+    void writeLeafBatch(LeafBatch& out, const std::vector<Selection>& selections) {
+        const size_t rows = selections.size();
+        const size_t actionSlots = rows * static_cast<size_t>(maxActions_);
+        std::fill_n(out.actionIds.mutable_data(), actionSlots, int32_t{-1});
+        std::fill_n(out.actionFeatures.mutable_data(), actionSlots * kVectorActionFeatureCount, int32_t{0});
+        std::fill_n(out.actionArgMasks.mutable_data(), actionSlots * kVectorActionArgMaskCount, uint8_t{0});
+        std::fill_n(out.actionMask.mutable_data(), actionSlots, uint8_t{0});
+
+        const size_t tiles = tileCount();
+        int32_t* mapData = out.mapTokens.mutable_data();
+        int32_t* stateData = out.state.mutable_data();
+        int32_t* actionIdData = out.actionIds.mutable_data();
+        int32_t* actionFeatureData = out.actionFeatures.mutable_data();
+        uint8_t* actionArgMaskData = out.actionArgMasks.mutable_data();
+        uint8_t* actionMaskData = out.actionMask.mutable_data();
+        int32_t* legalCountData = out.legalActionCount.mutable_data();
+        uint64_t* leafIdData = out.leafId.mutable_data();
+        int32_t* treeIdData = out.treeId.mutable_data();
+        int32_t* toPlayData = out.toPlay.mutable_data();
+
+        pool_->parallelFor(rows, [&](size_t begin, size_t end) {
+            for (size_t row = begin; row < end; ++row) {
+                const Selection& selection = selections[row];
+                selection.node->env.writeTrainingPacket(
+                    mapData + row * tiles * kMapTokenFeatureCount,
+                    stateData + row * kVectorStateFeatureCount,
+                    actionIdData + row * static_cast<size_t>(maxActions_),
+                    actionFeatureData + row * static_cast<size_t>(maxActions_) * kVectorActionFeatureCount,
+                    actionArgMaskData + row * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
+                    actionMaskData + row * static_cast<size_t>(maxActions_),
+                    legalCountData + row,
+                    static_cast<size_t>(maxActions_),
+                    false);
+                leafIdData[row] = selection.id;
+                treeIdData[row] = static_cast<int32_t>(selection.treeIndex);
+                toPlayData[row] = static_cast<int32_t>(selection.node->toPlay);
+            }
+        });
+    }
+
+    std::vector<PendingLeaf> resolvePendingLeaves(const uint64_t* ids, size_t count) const {
+        std::vector<PendingLeaf> pending;
+        pending.reserve(count);
+        std::unordered_set<uint64_t> seen;
+        seen.reserve(count);
+        for (size_t row = 0; row < count; ++row) {
+            if (!seen.insert(ids[row]).second) {
+                throw std::invalid_argument("leaf_ids must not contain duplicates");
+            }
+            const auto found = pending_.find(ids[row]);
+            if (found == pending_.end()) {
+                throw std::invalid_argument("leaf_ids contains an unknown, stale or already-expanded leaf");
+            }
+            const PendingLeaf& item = found->second;
+            if (!item.node || !item.node->pending || trees_[item.treeIndex].pendingLeafId != item.id) {
+                throw std::logic_error("MctsPool pending leaf state is inconsistent");
+            }
+            pending.push_back(item);
+        }
+        return pending;
+    }
+
+    static std::vector<float> softmaxPriors(const float* logits, size_t count) {
+        std::vector<float> priors(count, 0.0f);
+        float maximum = -std::numeric_limits<float>::infinity();
+        for (size_t index = 0; index < count; ++index) {
+            if (std::isfinite(logits[index])) maximum = std::max(maximum, logits[index]);
+        }
+        if (!std::isfinite(maximum)) {
+            std::fill(priors.begin(), priors.end(), 1.0f / static_cast<float>(count));
+            return priors;
+        }
+
+        double sum = 0.0;
+        for (size_t index = 0; index < count; ++index) {
+            if (!std::isfinite(logits[index])) continue; // permitted -inf
+            priors[index] = std::exp(logits[index] - maximum);
+            sum += priors[index];
+        }
+        if (!(sum > 0.0) || !std::isfinite(sum)) {
+            std::fill(priors.begin(), priors.end(), 1.0f / static_cast<float>(count));
+            return priors;
+        }
+        for (float& prior : priors) prior = static_cast<float>(prior / sum);
+        return priors;
+    }
+
+    void expandOne(const PendingLeaf& pending, const float* logits, float value) {
+        Tree& tree = trees_[pending.treeIndex];
+        Node& node = *pending.node;
+        if (!node.pending || node.expanded || tree.pendingLeafId != pending.id) {
+            throw std::logic_error("MctsPool leaf was modified before expansion");
+        }
+
+        const auto& legalIds = node.env.legalActionIdsRefNative();
+        if (legalIds.empty()) {
+            node.terminal = true;
+            node.pending = false;
+            tree.pendingLeafId = 0;
+            backup(node, node.env.terminalValueForCurrentPlayer());
+            return;
+        }
+        const std::vector<float> priors = softmaxPriors(logits, legalIds.size());
+        node.edges.clear();
+        node.edges.reserve(legalIds.size());
+        for (size_t index = 0; index < legalIds.size(); ++index) {
+            node.edges.push_back({static_cast<int32_t>(legalIds[index]), priors[index], 0.0, 0, nullptr});
+        }
+        node.expanded = true;
+        node.pending = false;
+        tree.pendingLeafId = 0;
+        backup(node, value);
+    }
+
+    void clearPending(const std::vector<PendingLeaf>& pending) {
+        for (const PendingLeaf& item : pending) {
+            auto found = pending_.find(item.id);
+            if (found == pending_.end()) continue;
+            if (item.node->pending) item.node->pending = false;
+            if (trees_[item.treeIndex].pendingLeafId == item.id) {
+                trees_[item.treeIndex].pendingLeafId = 0;
+            }
+            pending_.erase(found);
+        }
+    }
+
+    void cancelSelections(const std::vector<Selection>& selections) {
+        for (const Selection& selection : selections) {
+            const auto found = pending_.find(selection.id);
+            if (found == pending_.end()) continue;
+            if (selection.node->pending) selection.node->pending = false;
+            if (trees_[selection.treeIndex].pendingLeafId == selection.id) {
+                trees_[selection.treeIndex].pendingLeafId = 0;
+            }
+            pending_.erase(found);
+        }
+    }
+
+    void writeRootPolicy(RootBatch& out, size_t treeIndex, float temperature) const {
+        const Node& root = trees_[treeIndex].root();
+        const size_t offset = treeIndex * static_cast<size_t>(maxActions_);
+        int32_t* actionIds = out.actionIds.mutable_data() + offset;
+        uint8_t* actionMask = out.actionMask.mutable_data() + offset;
+        int32_t* visitCounts = out.visitCounts.mutable_data() + offset;
+        float* policy = out.policy.mutable_data() + offset;
+        std::fill_n(actionIds, static_cast<size_t>(maxActions_), int32_t{-1});
+        std::fill_n(actionMask, static_cast<size_t>(maxActions_), uint8_t{0});
+        std::fill_n(visitCounts, static_cast<size_t>(maxActions_), int32_t{0});
+        std::fill_n(policy, static_cast<size_t>(maxActions_), 0.0f);
+        out.rootValue.mutable_data()[treeIndex] = root.visits == 0
+            ? 0.0f : static_cast<float>(root.valueSum / static_cast<double>(root.visits));
+        out.rootVisitCount.mutable_data()[treeIndex] = root.visits > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+            ? std::numeric_limits<int32_t>::max() : static_cast<int32_t>(root.visits);
+        out.rootPlayer.mutable_data()[treeIndex] = static_cast<int32_t>(root.toPlay);
+
+        if (!root.expanded) return;
+        const size_t count = root.edges.size();
+        if (count > static_cast<size_t>(maxActions_)) {
+            throw std::logic_error("MctsPool root has more edges than its fixed action capacity");
+        }
+        double weightSum = 0.0;
+        std::vector<double> weights(count, 0.0);
+        if (temperature == 0.0f) {
+            size_t best = 0;
+            for (size_t index = 1; index < count; ++index) {
+                const Edge& candidate = root.edges[index];
+                const Edge& current = root.edges[best];
+                if (candidate.visits > current.visits ||
+                    (candidate.visits == current.visits && candidate.prior > current.prior) ||
+                    (candidate.visits == current.visits && candidate.prior == current.prior &&
+                     candidate.actionId < current.actionId)) {
+                    best = index;
+                }
+            }
+            weights[best] = 1.0;
+            weightSum = 1.0;
+        } else {
+            const double exponent = 1.0 / static_cast<double>(temperature);
+            for (size_t index = 0; index < count; ++index) {
+                const uint32_t visits = root.edges[index].visits;
+                if (visits > 0) weights[index] = std::pow(static_cast<double>(visits), exponent);
+                weightSum += weights[index];
+            }
+            if (weightSum == 0.0) {
+                for (size_t index = 0; index < count; ++index) {
+                    weights[index] = root.edges[index].prior;
+                    weightSum += weights[index];
+                }
+            }
+        }
+        for (size_t index = 0; index < count; ++index) {
+            const Edge& edge = root.edges[index];
+            actionIds[index] = edge.actionId;
+            actionMask[index] = 1;
+            visitCounts[index] = edge.visits > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+                ? std::numeric_limits<int32_t>::max() : static_cast<int32_t>(edge.visits);
+            policy[index] = weightSum > 0.0 ? static_cast<float>(weights[index] / weightSum) : 0.0f;
+        }
+    }
+
+    int mapSize_ = 0;
+    int maxActions_ = 0;
+    float cPuct_ = 1.5f;
+    std::vector<Tree> trees_;
+    std::unordered_map<uint64_t, PendingLeaf> pending_;
+    uint64_t nextLeafId_ = 1;
+    size_t nextTree_ = 0;
+    std::unique_ptr<BatchThreadPool> pool_;
+    mutable std::mutex apiMutex_;
+};
+
 } // namespace
 
 PYBIND11_MODULE(_game_engine, m) {
@@ -3493,5 +4165,29 @@ PYBIND11_MODULE(_game_engine, m) {
         .def_property_readonly("state_feature_names", &VectorGameEnv::stateFeatureNames)
         .def_property_readonly("visible_event_feature_names", &VectorGameEnv::visibleEventFeatureNames)
         .def_property_readonly("visible_event_affected_feature_names", &VectorGameEnv::visibleEventAffectedFeatureNames)
+        ;
+
+    py::class_<MctsPool>(m, "MctsPool")
+        .def(py::init<py::iterable, int, int, float>(),
+             py::arg("roots"),
+             py::arg("num_threads") = 0,
+             py::arg("max_actions") = 512,
+             py::arg("c_puct") = 1.5f,
+             "Native multi-root two-player PUCT scheduler with batched leaf evaluation.")
+        .def("select_leaves", &MctsPool::selectLeaves,
+             py::arg("max_leaves") = 0,
+             "Return at most one pending leaf per tree as a dense model batch.")
+        .def("expand_and_backup", &MctsPool::expandAndBackup,
+             py::arg("leaf_ids"), py::arg("policy_logits"), py::arg("values"),
+             "Expand pending leaves from batched policy logits and back up values.")
+        .def("root_policy", &MctsPool::rootPolicy,
+             py::arg("temperature") = 1.0f,
+             "Return root visit counts and a masked action policy for every tree.")
+        .def_property_readonly("num_trees", &MctsPool::numTrees)
+        .def_property_readonly("num_threads", &MctsPool::numThreads)
+        .def_property_readonly("max_actions", &MctsPool::maxActions)
+        .def_property_readonly("map_size", &MctsPool::mapSize)
+        .def_property_readonly("c_puct", &MctsPool::cPuct)
+        .def_property_readonly("pending_count", &MctsPool::pendingCount)
         ;
 }

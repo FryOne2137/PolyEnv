@@ -23,6 +23,18 @@ rollout_env = env.make_belief_env(completed)
 rollout_env = env.make_belief_env(completed, perspective=player_id)
 ```
 
+For many parallel searches over that hypothesis, pass the detached belief
+environment to `MctsPool`, never the original hidden-state source:
+
+```python
+from PolyEnv import MctsPool
+
+pool = MctsPool(rollout_env, num_trees=128)
+```
+
+See [MctsPool: Native Batched PUCT](mcts_pool.md) for the batched evaluator
+loop.
+
 ## Validation and isolation
 
 The input must have one 23-integer row per map tile. The engine rejects:

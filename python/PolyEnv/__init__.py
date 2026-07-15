@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from . import tribes
-from ._game_engine import GameEnv as _GameEnv, MapType, VectorGameEnv as _VectorGameEnv
+from ._game_engine import (
+    GameEnv as _GameEnv,
+    MapType,
+    MctsPool as _MctsPool,
+    VectorGameEnv as _VectorGameEnv,
+)
 
 Lakes = MapType.Lakes
 Drylands = MapType.Drylands
@@ -230,9 +235,48 @@ class VectorGameEnv(_VectorGameEnv):
         )
 
 
+class MctsPool(_MctsPool):
+    """Native multi-root PUCT scheduler for batched GPU leaf evaluation.
+
+    Pass either a sequence of independent two-player ``GameEnv`` roots, or a
+    single root plus ``num_trees`` to create independent search copies. The
+    original environments are never mutated by the search.
+    """
+
+    def __init__(
+        self,
+        roots: GameEnv | list[GameEnv] | tuple[GameEnv, ...],
+        num_trees: int | None = None,
+        num_threads: int | None = None,
+        max_actions: int = 512,
+        c_puct: float = 1.5,
+    ) -> None:
+        if isinstance(roots, GameEnv):
+            copies = 1 if num_trees is None else num_trees
+            if copies <= 0:
+                raise ValueError("num_trees must be positive")
+            root_list = [roots] * copies
+        else:
+            if num_trees is not None:
+                raise ValueError("num_trees is available only when roots is one GameEnv")
+            root_list = list(roots)
+        super().__init__(
+            root_list,
+            0 if num_threads is None else num_threads,
+            max_actions,
+            c_puct,
+        )
+
+
+# Conventional spelling for callers accustomed to the MCTS acronym.
+MCTSPool = MctsPool
+
+
 __all__ = [
     "GameEnv",
     "VectorGameEnv",
+    "MctsPool",
+    "MCTSPool",
     "MapType",
     "Lakes",
     "Drylands",

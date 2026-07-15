@@ -37,6 +37,25 @@ See [VectorGameEnv: Native Batched Training](vector_env.md) for its complete
 API and tensor layouts. Use `GameEnv` for a single game, debugging, replays,
 or MCTS cloning.
 
+## Batched MCTS
+
+`MctsPool` keeps many two-player PUCT trees in C++ and exchanges only dense
+leaf batches with a policy/value model. Construct it from one root plus
+`num_trees`, or from a sequence of independent roots:
+
+```python
+from PolyEnv import MctsPool
+
+pool = MctsPool(env, num_trees=256, num_threads=8)
+leaves = pool.select_leaves()
+# Run one GPU policy/value forward pass for leaves.
+pool.expand_and_backup(leaves["leaf_id"], policy_logits, values)
+root_policy = pool.root_policy()
+```
+
+See [MctsPool: Native Batched PUCT](mcts_pool.md) for evaluator shapes,
+value-perspective rules, fog-of-war requirements, and search-loop details.
+
 ## Map Type
 
 The supported map types are `Lakes` and `Drylands`. Pass either the exported

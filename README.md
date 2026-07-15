@@ -62,6 +62,10 @@ Set `visible_event_history=K` when the policy needs the last `K` events that
 are visible under fog of war. The vector API returns these as fixed-size masked
 arrays; leaving the default `K=0` keeps that encoding disabled.
 
+For batched neural MCTS, `MctsPool` keeps PUCT trees and game branches in C++
+and exchanges only one dense leaf batch per GPU inference round. See
+[native batched MCTS](docs/mcts_pool.md).
+
 `map_type` accepts `Lakes` / `"lakes"` or `Drylands` / `"drylands"`.
 
 ```python
@@ -81,6 +85,7 @@ env.save("match.polygame")
 - [Installation](docs/installation.md)
 - [Core Python API](docs/python_api.md)
 - [Native batched training](docs/vector_env.md)
+- [Native batched MCTS](docs/mcts_pool.md)
 - [Model input and legal actions](docs/model_request_api.md)
 - [GUI build and replay viewer](docs/gui.md)
 
