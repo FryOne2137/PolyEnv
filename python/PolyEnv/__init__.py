@@ -212,6 +212,7 @@ class VectorGameEnv(_VectorGameEnv):
         max_actions: int = 512,
         auto_reset: bool = True,
         include_combat_preview: bool = False,
+        visible_event_history: int = 0,
     ) -> None:
         selected_players = tribes if tribes is not None else players
         super().__init__(
@@ -225,6 +226,7 @@ class VectorGameEnv(_VectorGameEnv):
             max_actions,
             auto_reset,
             include_combat_preview,
+            visible_event_history,
         )
 
 

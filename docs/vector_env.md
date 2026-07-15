@@ -23,6 +23,7 @@ env = VectorGameEnv(
     num_threads=8,       # None: use up to the logical CPU count
     max_actions=512,
     auto_reset=True,
+    visible_event_history=16,  # last K visible world events per environment
 )
 
 batch = env.reset(seed=1234)
@@ -42,6 +43,12 @@ single-environment random-seed behavior.
 | `action_features` | `int32` | `[B, Amax, 17]` | Numeric fields for each action row |
 | `action_arg_mask` | `uint8` | `[B, Amax, 12]` | Applicable action-argument fields |
 | `action_mask` | `uint8` | `[B, Amax]` | `1` for a legal row, `0` for padding |
+| `visible_event_features` | `int32` | `[B, K, 26]` | Right-aligned history of visible world events |
+| `visible_event_sequence` | `uint64` | `[B, K]` | Private event-stream sequence id |
+| `visible_event_action_sequence` | `uint64` | `[B, K]` | World-action id shared by observers that saw it |
+| `visible_event_mask` | `uint8` | `[B, K]` | `1` for an event row, `0` for history padding |
+| `visible_event_affected` | `int32` | `[B, K, 9, 8]` | Affected-unit details for every event row |
+| `visible_event_affected_mask` | `uint8` | `[B, K, 9]` | Valid affected-unit rows |
 | `legal_action_count` | `int32` | `[B]` | Number of legal, unpadded rows |
 | `reward` | `float32` | `[B]` | Terminal reward from the preceding action |
 | `terminated` | `uint8` | `[B]` | Terminal flag from the preceding action |
@@ -49,7 +56,8 @@ single-environment random-seed behavior.
 | `env_id` | `int32` | `[B]` | Stable row-to-environment index |
 
 `B` is `num_envs`, `tiles` is `map_size * map_size`, and `Amax` is
-`max_actions`. Padding rows have `action_id == -1` and `action_mask == 0`.
+`max_actions`. `K` is `visible_event_history`. Padding action rows have
+`action_id == -1` and `action_mask == 0`.
 On `reset()`, `action_valid`, `reward`, and `terminated` are all zero because
 no action has yet been supplied.
 
@@ -73,6 +81,50 @@ For maximum throughput `include_combat_preview` defaults to `False`; in that
 mode the final two action fields are `-1`. Set it to `True` only if the policy
 needs exact attack previews: computing one requires a simulated combat branch
 per attack action.
+
+## Visible Event Window
+
+Set `visible_event_history=K` to include the last `K` world events observable
+by the player whose observation is in that batch row. This uses exactly the
+same fog-of-war filtering as `GameEnv.visible_events_numpy()`: hidden source
+positions, hidden units and hidden victims are never reconstructed from the
+chosen action id.
+
+The valid event rows are chronological and **right-aligned**. Thus the newest
+event is always at index `K - 1`; use `visible_event_mask` to ignore left-side
+padding. `visible_event_features` has this layout, also available through
+`env.visible_event_feature_names`:
+
+```text
+round, turn, type_id, flags, source_index, target_index, damage, hp_before,
+hp_after, actor_player, actor_tribe, tile_action_kind, building_type,
+spawn_type, source_unit_type, target_unit_type, source_observed_unit_id,
+target_observed_unit_id, source_unit_hp_before, source_unit_hp_after,
+target_unit_hp_before, target_unit_hp_after, unit_upgrade_kind,
+upgraded_unit_type, unit_destroyed, source_unit_destroyed
+```
+
+`visible_event_affected` has at most nine rows per event because an attack can
+touch only its target tile and the eight neighboring tiles. Its feature order
+is exposed as `env.visible_event_affected_feature_names` and is:
+
+```text
+observed_unit_id, tile_index, unit_type, damage, hp_before, hp_after,
+destroyed, splash
+```
+
+The default `visible_event_history=0` disables history encoding to keep the
+fastest existing training path. The event keys are still returned with a
+zero-sized `K` dimension, so batch schemas stay stable. With a positive `K`,
+the native vector implementation retains only the last `K` private records of
+each player; memory remains bounded for long-running training. It is a model
+input window, not an unbounded replay log. Use scalar `GameEnv` and
+`visible_events_numpy(cursor)` when a complete cursor-based journal is needed.
+
+When `auto_reset=True`, a terminal row is reset before its observation is
+encoded. Its returned visible-event window is therefore the empty history of
+the new episode, while `reward` and `terminated` still describe the terminal
+transition.
 
 ## Select And Step Batched Actions
 

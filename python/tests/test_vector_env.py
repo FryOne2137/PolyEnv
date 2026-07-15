@@ -6,6 +6,23 @@ import pytest
 from PolyEnv import Bardur, GameEnv, Imperius, VectorGameEnv
 
 
+_VISIBLE_EVENT_FEATURE_COLUMNS = (
+    "round", "turn", "type_id", "flags", "source_index", "target_index",
+    "damage", "hp_before", "hp_after", "actor_player", "actor_tribe",
+    "tile_action_kind", "building_type", "spawn_type", "source_unit_type",
+    "target_unit_type", "source_observed_unit_id", "target_observed_unit_id",
+    "source_unit_hp_before", "source_unit_hp_after", "target_unit_hp_before",
+    "target_unit_hp_after", "unit_upgrade_kind", "upgraded_unit_type",
+    "unit_destroyed", "source_unit_destroyed",
+)
+
+_VISIBLE_EVENT_AFFECTED_COLUMNS = (
+    "affected_observed_unit_id", "affected_tile_index", "affected_unit_type",
+    "affected_damage", "affected_hp_before", "affected_hp_after",
+    "affected_destroyed", "affected_splash",
+)
+
+
 def _single(seed: int) -> GameEnv:
     return GameEnv(seed=seed, map_size=11, players=(Bardur, Imperius))
 
@@ -29,6 +46,10 @@ def test_vector_reset_matches_single_environments() -> None:
     assert batch["action_features"].shape == (4, 128, 17)
     assert batch["action_arg_mask"].shape == (4, 128, 12)
     assert batch["action_mask"].dtype == np.uint8
+    assert batch["visible_event_features"].shape == (4, 0, 26)
+    assert batch["visible_event_sequence"].dtype == np.uint64
+    assert batch["visible_event_affected"].shape == (4, 0, 9, 8)
+    assert batch["visible_event_mask"].dtype == np.uint8
     assert np.all(batch["action_valid"] == 0)
     assert np.array_equal(batch["env_id"], np.arange(4, dtype=np.int32))
 
@@ -106,3 +127,92 @@ def test_vector_reports_action_capacity_overflow() -> None:
     vector = VectorGameEnv(num_envs=1, seed=11, max_actions=1)
     with pytest.raises(RuntimeError, match="max_actions=1"):
         vector.reset(seed=11)
+
+
+def test_vector_visible_event_history_matches_single_game_env() -> None:
+    history = 3
+    vector = VectorGameEnv(
+        num_envs=2,
+        seed=2137,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+        visible_event_history=history,
+    )
+    batch = vector.reset(seed=2137)
+    singles = [_single(2137 + index) for index in range(2)]
+
+    assert vector.visible_event_history == history
+    assert tuple(vector.visible_event_feature_names) == _VISIBLE_EVENT_FEATURE_COLUMNS
+    assert tuple(vector.visible_event_affected_feature_names) == (
+        "observed_unit_id", "tile_index", "unit_type", "damage", "hp_before",
+        "hp_after", "destroyed", "splash",
+    )
+    assert batch["visible_event_features"].shape == (2, history, 26)
+    assert batch["visible_event_affected"].shape == (2, history, 9, 8)
+    assert np.all(batch["visible_event_mask"] == 0)
+
+    # Select a move whenever it exists. Once a unit has spent its move, end
+    # the turn so it becomes available again. This produces more than K
+    # visible records while exercising changing player perspectives.
+    for _ in range(12):
+        actions = []
+        for single in singles:
+            legal = single.legal_param_actions()
+            selected = next((action for action in legal if action["type"] == "move"), None)
+            if selected is None:
+                selected = next(action for action in legal if action["type"] == "end_turn")
+            actions.append(selected["action_id"])
+        actions = np.asarray(actions, dtype=np.int32)
+        batch = vector.step(actions)
+        assert np.all(batch["action_valid"] == 1)
+        for single, action_id in zip(singles, actions):
+            ok, _, _, _, _ = single.step_fast(int(action_id))
+            assert ok is True
+
+    assert np.any(batch["visible_event_mask"] == 1)
+    for index, single in enumerate(singles):
+        packet = single.visible_events_numpy(0)
+        event_count = len(packet["sequence"])
+        kept = min(history, event_count)
+        first_row = history - kept
+
+        mask = batch["visible_event_mask"][index]
+        assert np.all(mask[:first_row] == 0)
+        assert np.all(mask[first_row:] == 1)
+        assert np.array_equal(
+            batch["visible_event_sequence"][index, first_row:], packet["sequence"][-kept:]
+        )
+        assert np.array_equal(
+            batch["visible_event_action_sequence"][index, first_row:],
+            packet["action_sequence"][-kept:],
+        )
+
+        expected_features = np.stack(
+            [packet[column][-kept:] for column in _VISIBLE_EVENT_FEATURE_COLUMNS], axis=-1
+        ).astype(np.int32, copy=False)
+        assert np.array_equal(batch["visible_event_features"][index, first_row:], expected_features)
+
+        for local_event, packet_event in enumerate(range(event_count - kept, event_count)):
+            row = first_row + local_event
+            affected_start = int(packet["affected_offsets"][packet_event])
+            affected_end = int(packet["affected_offsets"][packet_event + 1])
+            affected_count = affected_end - affected_start
+            assert affected_count <= 9
+            assert np.all(batch["visible_event_affected_mask"][index, row, :affected_count] == 1)
+            assert np.all(batch["visible_event_affected_mask"][index, row, affected_count:] == 0)
+            if affected_count:
+                expected_affected = np.stack(
+                    [packet[column][affected_start:affected_end] for column in _VISIBLE_EVENT_AFFECTED_COLUMNS],
+                    axis=-1,
+                ).astype(np.int32, copy=False)
+                assert np.array_equal(
+                    batch["visible_event_affected"][index, row, :affected_count], expected_affected
+                )
+
+
+def test_vector_rejects_negative_visible_event_history() -> None:
+    with pytest.raises(ValueError, match="visible_event_history"):
+        VectorGameEnv(num_envs=1, visible_event_history=-1)

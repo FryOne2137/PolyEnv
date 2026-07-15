@@ -536,6 +536,12 @@ static constexpr int kMapTokenFeatureCount = 23;
 static constexpr int kVectorStateFeatureCount = 11;
 static constexpr int kVectorActionFeatureCount = 17;
 static constexpr int kVectorActionArgMaskCount = 12;
+// A fixed-size visible-event window keeps vector batches dense and GPU-ready.
+// Event sequence ids stay in separate uint64 arrays so they never lose
+// precision in the int32 model feature tensor.
+static constexpr int kVisibleEventFeatureCount = 26;
+static constexpr int kVisibleEventAffectedUnitCount = 9;
+static constexpr int kVisibleEventAffectedFeatureCount = 8;
 
 struct ActionModelFields {
     int typeId = -1;
@@ -1575,6 +1581,93 @@ public:
             dst[16] = damageReceived;
             writeActionArgMask(*action, actionArgMasksOut + row * kVectorActionArgMaskCount);
         }
+    }
+
+    // Encodes the suffix of the *current player's* private observed-event
+    // stream. The fixed layout is intentional: it lets vectorized policies
+    // transfer a complete history window to a GPU without ragged Python data.
+    // Valid records are right-aligned so the newest event is always at
+    // historyLength - 1. All padding is marked by eventMaskOut == 0.
+    void writeVisibleEventHistory(
+        int32_t* eventFeaturesOut,
+        uint64_t* sequenceOut,
+        uint64_t* actionSequenceOut,
+        uint8_t* eventMaskOut,
+        int32_t* affectedOut,
+        uint8_t* affectedMaskOut,
+        size_t historyLength) const
+    {
+        if (historyLength == 0) return;
+        ensureState();
+        const size_t perspective = static_cast<size_t>(session_->state.currentPlayer());
+        const PlayerEventJournal* journal = session_->events.stream(perspective);
+        if (!journal || journal->events.empty()) return;
+
+        const size_t eventCount = std::min(historyLength, journal->events.size());
+        const size_t journalStart = journal->events.size() - eventCount;
+        const size_t outputStart = historyLength - eventCount;
+        for (size_t item = 0; item < eventCount; ++item) {
+            const ObservedEventRecord& event = journal->events[journalStart + item];
+            if (event.affectedUnits.size() > kVisibleEventAffectedUnitCount) {
+                throw std::runtime_error(
+                    "visible event has more affected units than the fixed vector batch layout supports");
+            }
+
+            const size_t row = outputStart + item;
+            int32_t* fields = eventFeaturesOut + row * kVisibleEventFeatureCount;
+            fields[0] = event.round;
+            fields[1] = event.turn;
+            fields[2] = event.typeId;
+            fields[3] = event.flags;
+            fields[4] = event.sourceIndex;
+            fields[5] = event.targetIndex;
+            fields[6] = event.damage;
+            fields[7] = event.hpBefore;
+            fields[8] = event.hpAfter;
+            fields[9] = event.actorPlayer;
+            fields[10] = event.actorTribe;
+            fields[11] = event.tileActionKind;
+            fields[12] = event.buildingType;
+            fields[13] = event.spawnType;
+            fields[14] = event.sourceUnitType;
+            fields[15] = event.targetUnitType;
+            fields[16] = event.sourceObservedUnitId;
+            fields[17] = event.targetObservedUnitId;
+            fields[18] = event.sourceUnitHpBefore;
+            fields[19] = event.sourceUnitHpAfter;
+            fields[20] = event.targetUnitHpBefore;
+            fields[21] = event.targetUnitHpAfter;
+            fields[22] = event.unitUpgradeKind;
+            fields[23] = event.upgradedUnitType;
+            fields[24] = event.unitDestroyed ? 1 : 0;
+            fields[25] = event.sourceUnitDestroyed ? 1 : 0;
+            sequenceOut[row] = event.sequence;
+            actionSequenceOut[row] = event.actionSequence;
+            eventMaskOut[row] = 1;
+
+            for (size_t affectedIndex = 0; affectedIndex < event.affectedUnits.size(); ++affectedIndex) {
+                const ObservedEventRecord::AffectedUnit& affected = event.affectedUnits[affectedIndex];
+                int32_t* affectedFields = affectedOut +
+                    (row * kVisibleEventAffectedUnitCount + affectedIndex) *
+                    kVisibleEventAffectedFeatureCount;
+                affectedFields[0] = affected.observedUnitId;
+                affectedFields[1] = affected.tileIndex;
+                affectedFields[2] = affected.unitType;
+                affectedFields[3] = affected.damage;
+                affectedFields[4] = affected.hpBefore;
+                affectedFields[5] = affected.hpAfter;
+                affectedFields[6] = affected.destroyed ? 1 : 0;
+                affectedFields[7] = affected.splash ? 1 : 0;
+                affectedMaskOut[row * kVisibleEventAffectedUnitCount + affectedIndex] = 1;
+            }
+        }
+    }
+
+    // This is only used by VectorGameEnv. A scalar GameEnv keeps its complete
+    // journal because its cursor-based visible_events_numpy() API promises it.
+    void retainVisibleEventHistory(size_t maxEventsPerPlayer) {
+        ensureState();
+        session_->events.retainLast(maxEventsPerPlayer);
     }
 
     std::vector<std::vector<int>> fullMap() const {
@@ -2930,7 +3023,8 @@ public:
         int numThreads,
         int maxActions,
         bool autoReset,
-        bool includeCombatPreview)
+        bool includeCombatPreview,
+        int visibleEventHistory)
         : numEnvs_(numEnvs)
         , mapSize_(mapSize)
         , tribes_(tribes.empty() ? std::vector<int>{3, 2} : tribes)
@@ -2940,11 +3034,13 @@ public:
         , maxActions_(maxActions)
         , autoReset_(autoReset)
         , includeCombatPreview_(includeCombatPreview)
+        , visibleEventHistory_(visibleEventHistory)
         , pool_(resolveThreadCount(numEnvs, numThreads))
     {
         if (numEnvs_ <= 0) throw std::invalid_argument("num_envs must be positive");
         if (mapSize_ <= 0) throw std::invalid_argument("map_size must be positive");
         if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
+        if (visibleEventHistory_ < 0) throw std::invalid_argument("visible_event_history must be non-negative");
 
         // Unit templates are process-global and immutable during vectorized
         // execution. Load them before any environment worker can begin.
@@ -2963,7 +3059,8 @@ public:
     VectorGameEnv& operator=(const VectorGameEnv&) = delete;
 
     py::dict reset(std::optional<uint32_t> seed = std::nullopt) {
-        BatchArrays out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        BatchArrays out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_),
+                        static_cast<size_t>(visibleEventHistory_));
         {
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
@@ -2983,7 +3080,8 @@ public:
             throw std::invalid_argument("action_ids must be a contiguous one-dimensional int32-compatible array with num_envs entries");
         }
 
-        BatchArrays out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        BatchArrays out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_),
+                        static_cast<size_t>(visibleEventHistory_));
         const int32_t* actionData = actions.data();
         {
             py::gil_scoped_release release;
@@ -2999,6 +3097,7 @@ public:
     int maxActions() const { return maxActions_; }
     bool autoReset() const { return autoReset_; }
     bool includeCombatPreview() const { return includeCombatPreview_; }
+    int visibleEventHistory() const { return visibleEventHistory_; }
 
     std::vector<std::string> actionFeatureNames() const {
         return {
@@ -3017,9 +3116,28 @@ public:
         };
     }
 
+    std::vector<std::string> visibleEventFeatureNames() const {
+        return {
+            "round", "turn", "type_id", "flags", "source_index", "target_index",
+            "damage", "hp_before", "hp_after", "actor_player", "actor_tribe",
+            "tile_action_kind", "building_type", "spawn_type", "source_unit_type",
+            "target_unit_type", "source_observed_unit_id", "target_observed_unit_id",
+            "source_unit_hp_before", "source_unit_hp_after", "target_unit_hp_before",
+            "target_unit_hp_after", "unit_upgrade_kind", "upgraded_unit_type",
+            "unit_destroyed", "source_unit_destroyed",
+        };
+    }
+
+    std::vector<std::string> visibleEventAffectedFeatureNames() const {
+        return {
+            "observed_unit_id", "tile_index", "unit_type", "damage", "hp_before",
+            "hp_after", "destroyed", "splash",
+        };
+    }
+
 private:
     struct BatchArrays {
-        BatchArrays(size_t numEnvs, size_t tiles, size_t maxActions)
+        BatchArrays(size_t numEnvs, size_t tiles, size_t maxActions, size_t visibleEventHistory)
             : mapTokens({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(tiles),
                          static_cast<py::ssize_t>(kMapTokenFeatureCount)})
             , state({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
@@ -3029,6 +3147,16 @@ private:
             , actionArgMasks({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions),
                               static_cast<py::ssize_t>(kVectorActionArgMaskCount)})
             , actionMask({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)})
+            , visibleEventFeatures({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory),
+                                    static_cast<py::ssize_t>(kVisibleEventFeatureCount)})
+            , visibleEventSequence({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory)})
+            , visibleEventActionSequence({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory)})
+            , visibleEventMask({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory)})
+            , visibleEventAffected({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory),
+                                    static_cast<py::ssize_t>(kVisibleEventAffectedUnitCount),
+                                    static_cast<py::ssize_t>(kVisibleEventAffectedFeatureCount)})
+            , visibleEventAffectedMask({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory),
+                                        static_cast<py::ssize_t>(kVisibleEventAffectedUnitCount)})
             , legalActionCount(static_cast<py::ssize_t>(numEnvs))
             , reward(static_cast<py::ssize_t>(numEnvs))
             , terminated(static_cast<py::ssize_t>(numEnvs))
@@ -3043,6 +3171,12 @@ private:
             out["action_features"] = std::move(actionFeatures);
             out["action_arg_mask"] = std::move(actionArgMasks);
             out["action_mask"] = std::move(actionMask);
+            out["visible_event_features"] = std::move(visibleEventFeatures);
+            out["visible_event_sequence"] = std::move(visibleEventSequence);
+            out["visible_event_action_sequence"] = std::move(visibleEventActionSequence);
+            out["visible_event_mask"] = std::move(visibleEventMask);
+            out["visible_event_affected"] = std::move(visibleEventAffected);
+            out["visible_event_affected_mask"] = std::move(visibleEventAffectedMask);
             out["legal_action_count"] = std::move(legalActionCount);
             out["reward"] = std::move(reward);
             out["terminated"] = std::move(terminated);
@@ -3057,6 +3191,12 @@ private:
         py::array_t<int32_t> actionFeatures;
         py::array_t<uint8_t> actionArgMasks;
         py::array_t<uint8_t> actionMask;
+        py::array_t<int32_t> visibleEventFeatures;
+        py::array_t<uint64_t> visibleEventSequence;
+        py::array_t<uint64_t> visibleEventActionSequence;
+        py::array_t<uint8_t> visibleEventMask;
+        py::array_t<int32_t> visibleEventAffected;
+        py::array_t<uint8_t> visibleEventAffectedMask;
         py::array_t<int32_t> legalActionCount;
         py::array_t<float> reward;
         py::array_t<uint8_t> terminated;
@@ -3088,10 +3228,20 @@ private:
     void fillBatch(BatchArrays& out, const int32_t* actions, bool advance) {
         const size_t numEnvs = envs_.size();
         const size_t actionSlots = numEnvs * static_cast<size_t>(maxActions_);
+        const size_t historyLength = static_cast<size_t>(visibleEventHistory_);
+        const size_t historyRows = numEnvs * historyLength;
         std::fill_n(out.actionIds.mutable_data(), actionSlots, int32_t{-1});
         std::fill_n(out.actionFeatures.mutable_data(), actionSlots * kVectorActionFeatureCount, int32_t{0});
         std::fill_n(out.actionArgMasks.mutable_data(), actionSlots * kVectorActionArgMaskCount, uint8_t{0});
         std::fill_n(out.actionMask.mutable_data(), actionSlots, uint8_t{0});
+        std::fill_n(out.visibleEventFeatures.mutable_data(), historyRows * kVisibleEventFeatureCount, int32_t{0});
+        std::fill_n(out.visibleEventSequence.mutable_data(), historyRows, uint64_t{0});
+        std::fill_n(out.visibleEventActionSequence.mutable_data(), historyRows, uint64_t{0});
+        std::fill_n(out.visibleEventMask.mutable_data(), historyRows, uint8_t{0});
+        std::fill_n(out.visibleEventAffected.mutable_data(),
+                    historyRows * kVisibleEventAffectedUnitCount * kVisibleEventAffectedFeatureCount, int32_t{0});
+        std::fill_n(out.visibleEventAffectedMask.mutable_data(),
+                    historyRows * kVisibleEventAffectedUnitCount, uint8_t{0});
         std::fill_n(out.reward.mutable_data(), numEnvs, 0.0f);
         std::fill_n(out.terminated.mutable_data(), numEnvs, uint8_t{0});
         std::fill_n(out.actionValid.mutable_data(), numEnvs, uint8_t{0});
@@ -3102,6 +3252,12 @@ private:
         int32_t* featuresData = out.actionFeatures.mutable_data();
         uint8_t* argMasksData = out.actionArgMasks.mutable_data();
         uint8_t* maskData = out.actionMask.mutable_data();
+        int32_t* visibleEventFeaturesData = out.visibleEventFeatures.mutable_data();
+        uint64_t* visibleEventSequenceData = out.visibleEventSequence.mutable_data();
+        uint64_t* visibleEventActionSequenceData = out.visibleEventActionSequence.mutable_data();
+        uint8_t* visibleEventMaskData = out.visibleEventMask.mutable_data();
+        int32_t* visibleEventAffectedData = out.visibleEventAffected.mutable_data();
+        uint8_t* visibleEventAffectedMaskData = out.visibleEventAffectedMask.mutable_data();
         int32_t* countData = out.legalActionCount.mutable_data();
         float* rewardData = out.reward.mutable_data();
         uint8_t* terminatedData = out.terminated.mutable_data();
@@ -3132,6 +3288,22 @@ private:
                     countData + i,
                     static_cast<size_t>(maxActions_),
                     includeCombatPreview_);
+                if (historyLength > 0) {
+                    envs_[i].writeVisibleEventHistory(
+                        visibleEventFeaturesData + i * historyLength * kVisibleEventFeatureCount,
+                        visibleEventSequenceData + i * historyLength,
+                        visibleEventActionSequenceData + i * historyLength,
+                        visibleEventMaskData + i * historyLength,
+                        visibleEventAffectedData +
+                            i * historyLength * kVisibleEventAffectedUnitCount * kVisibleEventAffectedFeatureCount,
+                        visibleEventAffectedMaskData + i * historyLength * kVisibleEventAffectedUnitCount,
+                        historyLength);
+                }
+                // A vector environment exposes a bounded model input rather
+                // than GameEnv's unbounded cursor API. Trim every observer's
+                // stream after encoding so long training jobs keep O(B * K)
+                // event memory.
+                envs_[i].retainVisibleEventHistory(historyLength);
                 envIdData[i] = static_cast<int32_t>(i);
             }
         });
@@ -3155,6 +3327,7 @@ private:
     int maxActions_ = 0;
     bool autoReset_ = true;
     bool includeCombatPreview_ = false;
+    int visibleEventHistory_ = 0;
     std::vector<GameEnv> envs_;
     std::vector<uint64_t> resetCounts_;
     BatchThreadPool pool_;
@@ -3290,7 +3463,7 @@ PYBIND11_MODULE(_game_engine, m) {
         ;
 
     py::class_<VectorGameEnv>(m, "VectorGameEnv")
-        .def(py::init<int, int, const std::vector<int>&, uint32_t, const std::string&, MapType, int, int, bool, bool>(),
+        .def(py::init<int, int, const std::vector<int>&, uint32_t, const std::string&, MapType, int, int, bool, bool, int>(),
              py::arg("num_envs"),
              py::arg("map_size") = 11,
              py::arg("tribes") = std::vector<int>{3, 2},
@@ -3301,6 +3474,7 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("max_actions") = 512,
              py::arg("auto_reset") = true,
              py::arg("include_combat_preview") = false,
+             py::arg("visible_event_history") = 0,
              "Batched native training environment. All games are executed in C++.")
         .def("reset", &VectorGameEnv::reset,
              py::arg("seed") = std::nullopt,
@@ -3314,7 +3488,10 @@ PYBIND11_MODULE(_game_engine, m) {
         .def_property_readonly("max_actions", &VectorGameEnv::maxActions)
         .def_property_readonly("auto_reset", &VectorGameEnv::autoReset)
         .def_property_readonly("include_combat_preview", &VectorGameEnv::includeCombatPreview)
+        .def_property_readonly("visible_event_history", &VectorGameEnv::visibleEventHistory)
         .def_property_readonly("action_feature_names", &VectorGameEnv::actionFeatureNames)
         .def_property_readonly("state_feature_names", &VectorGameEnv::stateFeatureNames)
+        .def_property_readonly("visible_event_feature_names", &VectorGameEnv::visibleEventFeatureNames)
+        .def_property_readonly("visible_event_affected_feature_names", &VectorGameEnv::visibleEventAffectedFeatureNames)
         ;
 }

@@ -58,6 +58,10 @@ batch = env.step(action_ids)
 before selecting a row. See [native batched training](docs/vector_env.md) for
 the complete tensor layout and rollout pattern.
 
+Set `visible_event_history=K` when the policy needs the last `K` events that
+are visible under fog of war. The vector API returns these as fixed-size masked
+arrays; leaving the default `K=0` keeps that encoding disabled.
+
 `map_type` accepts `Lakes` / `"lakes"` or `Drylands` / `"drylands"`.
 
 ```python

@@ -33,6 +33,19 @@ after the action.
 that observer sees a unit; it is **not** the engine's `UnitId` and therefore
 does not reveal hidden spawn order.
 
+## VectorGameEnv window
+
+`VectorGameEnv(visible_event_history=K)` provides the same filtered data as a
+fixed GPU-friendly suffix in every batch. It returns dense
+`visible_event_features`, `visible_event_sequence`,
+`visible_event_action_sequence`, `visible_event_mask`,
+`visible_event_affected`, and `visible_event_affected_mask` arrays. Records
+are chronological and right-aligned; the newest valid event is at `K - 1`.
+See [VectorGameEnv](vector_env.md#visible-event-window) for tensor shapes and
+feature layouts. The default `K=0` leaves this encoding disabled, and vector
+environments retain only their configured suffix rather than an unbounded
+cursor history.
+
 ## Event identity
 
 Each event has these NumPy columns of length `E`:

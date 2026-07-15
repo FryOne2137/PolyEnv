@@ -109,6 +109,23 @@ public:
         return journal ? journal->nextSequence : 0;
     }
 
+    // VectorGameEnv exposes a bounded, fixed-shape event window. Keeping only
+    // the suffix needed by that API prevents a long-running vector rollout
+    // from retaining every past world event. Sequence values remain monotonic:
+    // they are intentionally not renumbered when old records are dropped.
+    void retainLast(size_t maxEventsPerPlayer) {
+        for (PlayerEventJournal& journal : journals_) {
+            if (maxEventsPerPlayer == 0) {
+                journal.events.clear();
+                continue;
+            }
+            if (journal.events.size() <= maxEventsPerPlayer) continue;
+            journal.events.erase(
+                journal.events.begin(),
+                journal.events.end() - static_cast<std::ptrdiff_t>(maxEventsPerPlayer));
+        }
+    }
+
 private:
     std::vector<PlayerEventJournal> journals_;
 };

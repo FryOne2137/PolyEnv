@@ -123,3 +123,9 @@ from the current observation plus a full predicted token map. See
 player. It uses compact NumPy arrays and a private cursor; no global event id,
 hidden source position, hidden unit type, or hidden owner is exported. See
 [Visible event history](visible_events_api.md) for the packet layout and event ids.
+
+For batched GPU training, use
+`VectorGameEnv(visible_event_history=K)` instead of collecting these variable
+length packets in Python. It returns a bounded, masked dense history window
+with the same visibility rules; see the
+[VectorGameEnv event window](vector_env.md#visible-event-window).
