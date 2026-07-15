@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from . import tribes
-from ._game_engine import GameEnv as _GameEnv, MapType
+from ._game_engine import GameEnv as _GameEnv, MapType, VectorGameEnv as _VectorGameEnv
 
 Lakes = MapType.Lakes
 Drylands = MapType.Drylands
@@ -190,8 +190,47 @@ class GameEnv(_GameEnv):
         return revealed, features
 
 
+class VectorGameEnv(_VectorGameEnv):
+    """High-throughput batched environment for GPU-backed RL training.
+
+    The simulation, observation encoding and legal-action enumeration run in
+    C++. ``step`` accepts a one-dimensional NumPy array of action ids, one for
+    each environment, and returns dense numeric arrays without JSON or Python
+    objects per game.
+    """
+
+    def __init__(
+        self,
+        num_envs: int,
+        seed: int = 0,
+        map_size: int = 11,
+        players: list[Any] | tuple[Any, ...] = (tribes.Bardur, tribes.Imperius),
+        units_json_path: str | None = None,
+        tribes: list[Any] | tuple[Any, ...] | None = None,
+        map_type: MapType | str = Lakes,
+        num_threads: int | None = None,
+        max_actions: int = 512,
+        auto_reset: bool = True,
+        include_combat_preview: bool = False,
+    ) -> None:
+        selected_players = tribes if tribes is not None else players
+        super().__init__(
+            num_envs,
+            map_size,
+            _normalize_players(selected_players),
+            seed,
+            units_json_path or _default_units_path(),
+            _normalize_map_type(map_type),
+            0 if num_threads is None else num_threads,
+            max_actions,
+            auto_reset,
+            include_combat_preview,
+        )
+
+
 __all__ = [
     "GameEnv",
+    "VectorGameEnv",
     "MapType",
     "Lakes",
     "Drylands",

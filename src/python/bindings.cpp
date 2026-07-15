@@ -1,11 +1,19 @@
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <pybind11/pybind11.h>
@@ -524,6 +532,10 @@ static constexpr int kCityUpgradeVocabSize = static_cast<int>(CityUpgradeChoice:
 static constexpr int kTileActionVocabSize = static_cast<int>(Action::TileActionKind::CaptureCity) + 1;
 static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgradeKind::Disband) + 1;
 static constexpr int kPopulationGainVocabSize = 256;
+static constexpr int kMapTokenFeatureCount = 23;
+static constexpr int kVectorStateFeatureCount = 11;
+static constexpr int kVectorActionFeatureCount = 17;
+static constexpr int kVectorActionArgMaskCount = 12;
 
 struct ActionModelFields {
     int typeId = -1;
@@ -782,6 +794,50 @@ static std::vector<uint8_t> actionArgMaskForType(const Action& a) {
     return mask;
 }
 
+static void writeActionArgMask(const Action& a, uint8_t* out) {
+    std::fill_n(out, 12, uint8_t{0});
+    switch (a.type) {
+        case Action::Type::Move:
+            out[0] = out[1] = out[8] = 1;
+            break;
+        case Action::Type::Attack:
+            out[0] = out[1] = out[8] = out[9] = out[10] = 1;
+            break;
+        case Action::Type::Heal:
+            out[0] = out[8] = 1;
+            break;
+        case Action::Type::BuyTech:
+            out[2] = 1;
+            break;
+        case Action::Type::UpgradeCity:
+            out[0] = out[5] = 1;
+            break;
+        case Action::Type::Build:
+            out[0] = out[1] = out[2] = out[3] = out[11] = 1;
+            break;
+        case Action::Type::SpawnUnit:
+            out[0] = out[1] = out[2] = out[4] = 1;
+            break;
+        case Action::Type::TileAction:
+            out[0] = out[1] = out[2] = out[6] = 1;
+            if (tileActionUsesUnit(a.tileAction)) out[8] = 1;
+            break;
+        case Action::Type::UnitUpgrade:
+            out[0] = out[2] = out[7] = out[8] = 1;
+            break;
+        case Action::Type::EndTurn:
+            break;
+    }
+}
+
+struct NativeStepResult {
+    bool ok = false;
+    bool done = false;
+    float reward = 0.0f;
+    int winner = -1;
+    int currentPlayer = -1;
+};
+
 class GameEnv {
 public:
     GameEnv(int mapSize,
@@ -794,7 +850,7 @@ public:
         , seed_(seed)
         , unitsJsonPath_(unitsJsonPath.empty() ? resolveDefaultUnitsJsonPath() : unitsJsonPath)
         , mapType_(mapType) {
-        reset(std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        resetCore(true);
     }
 
     GameEnv(const GameEnv& other)
@@ -842,23 +898,39 @@ public:
         if (unitsJsonPath) unitsJsonPath_ = *unitsJsonPath;
         if (mapType) mapType_ = *mapType;
 
-        if (unitsJsonPath_.empty()) unitsJsonPath_ = resolveDefaultUnitsJsonPath();
-        GameDataSystem::loadUnits(unitsJsonPath_);
-
-        Game game;
-        Game::NewGameConfig cfg;
-        cfg.mapSize = mapSize_;
-        cfg.seed = seed_;
-        cfg.mapType = mapType_;
-        cfg.tribes = parseTribes(tribesRaw_.empty() ? std::vector<int>{3, 2} : tribesRaw_);
-        game.newGame(cfg);
-
-        session_ = std::make_shared<GameSession>(std::move(game));
-        session_->replay.clear();
-        initializeObservationKnowledgeFromCurrentVisibility();
-        session_->events.reset(session_->state.getGame().getPlayers().size());
-        invalidateCaches();
+        resetCore(true);
         return observation(std::nullopt, true, -1);
+    }
+
+    // Used only by VectorGameEnv. Unit templates are loaded before its worker
+    // pool starts, so this path never mutates shared game data from a worker.
+    void resetNative(uint32_t seed) {
+        seed_ = seed;
+        resetCore(false);
+    }
+
+    NativeStepResult stepNative(size_t actionId, std::optional<int> rewardPlayer = std::nullopt) {
+        ensureState();
+        const PlayerId actor = session_->state.currentPlayer();
+        const auto decoded = session_->state.decodeActionId(actor, actionId);
+        if (!decoded) {
+            return {false, session_->state.isTerminal(), 0.0f, -1,
+                    static_cast<int>(session_->state.currentPlayer())};
+        }
+
+        session_->apply(*decoded, actionId);
+        revealObservedTilesForAllPlayers();
+        invalidateCaches();
+
+        const bool done = session_->state.isTerminal();
+        const Game& g = session_->state.getGame();
+        const int rewardPlayerId = rewardPlayer.value_or(static_cast<int>(actor));
+        float reward = 0.0f;
+        if (done && rewardPlayerId >= 0 && rewardPlayerId < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
+            reward = (g.getWinner() == static_cast<PlayerId>(rewardPlayerId)) ? 1.0f : -1.0f;
+        }
+        return {true, done, reward, g.isGameOver() ? static_cast<int>(g.getWinner()) : -1,
+                static_cast<int>(session_->state.currentPlayer())};
     }
 
     py::dict step(size_t actionId, std::optional<int> rewardPlayer) {
@@ -913,26 +985,8 @@ public:
     }
 
     py::tuple stepFast(size_t actionId, std::optional<int> rewardPlayer) {
-        ensureState();
-        const PlayerId actor = session_->state.currentPlayer();
-        const auto decoded = session_->state.decodeActionId(actor, actionId);
-        if (!decoded) {
-            return py::make_tuple(false, session_->state.isTerminal(), 0.0f, -1, static_cast<int>(session_->state.currentPlayer()));
-        }
-        const ActionModelFields actionFeatures = buildActionModelFields(session_->state.getGame(), *decoded);
-        session_->apply(*decoded, actionId);
-        revealObservedTilesForAllPlayers();
-        invalidateCaches();
-
-        const bool done = session_->state.isTerminal();
-        const Game& g = session_->state.getGame();
-        int rp = rewardPlayer.value_or(static_cast<int>(actor));
-        float reward = 0.0f;
-        if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
-            reward = (g.getWinner() == static_cast<PlayerId>(rp)) ? 1.0f : -1.0f;
-        }
-        const int winner = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
-        return py::make_tuple(true, done, reward, winner, static_cast<int>(session_->state.currentPlayer()));
+        const NativeStepResult result = stepNative(actionId, rewardPlayer);
+        return py::make_tuple(result.ok, result.done, result.reward, result.winner, result.currentPlayer);
     }
 
     py::tuple stepFastNoReveal(size_t actionId, std::optional<int> rewardPlayer) {
@@ -1462,6 +1516,65 @@ public:
     py::array_t<int32_t> playerMapNumpy(std::optional<int> playerId = std::nullopt,
                                         int hiddenValue = -1) const {
         return mapRowsToNumpy(playerMap(playerId, hiddenValue));
+    }
+
+    // Native training encoder. Unlike modelRequestNumpy(), this writes directly
+    // to caller-owned dense buffers: no JSON, Python dicts, strings or
+    // per-tile vectors are created on the hot path.
+    void writeTrainingPacket(
+        int32_t* mapTokensOut,
+        int32_t* stateOut,
+        int32_t* actionIdsOut,
+        int32_t* actionFeaturesOut,
+        uint8_t* actionArgMasksOut,
+        uint8_t* actionMaskOut,
+        int32_t* legalActionCountOut,
+        size_t maxActions,
+        bool includeCombatPreview) const
+    {
+        writePlayerMapTokens(mapTokensOut);
+        writeTrainingState(stateOut);
+
+        const Game& g = session_->state.getGame();
+        const PlayerId pid = session_->state.currentPlayer();
+        const auto& legalIds = session_->state.legalActionIdsRef(pid);
+        *legalActionCountOut = static_cast<int32_t>(legalIds.size());
+
+        const size_t count = std::min(maxActions, legalIds.size());
+        for (size_t row = 0; row < count; ++row) {
+            const size_t actionId = legalIds[row];
+            const auto action = session_->state.decodeActionId(pid, actionId);
+            if (!action) continue;
+
+            const ActionModelFields fields = buildActionModelFields(g, *action);
+            int damageDealt = -1;
+            int damageReceived = -1;
+            if (includeCombatPreview && action->type == Action::Type::Attack) {
+                std::tie(damageDealt, damageReceived) = predictAttackDamage(g, *action);
+            }
+
+            actionIdsOut[row] = static_cast<int32_t>(actionId);
+            actionMaskOut[row] = 1;
+            int32_t* dst = actionFeaturesOut + row * kVectorActionFeatureCount;
+            dst[0] = fields.typeId;
+            dst[1] = fields.sourceIndex;
+            dst[2] = fields.targetIndex;
+            dst[3] = fields.city;
+            dst[4] = fields.tech;
+            dst[5] = fields.building;
+            dst[6] = fields.spawnType;
+            dst[7] = fields.upgrade;
+            dst[8] = fields.tileAction;
+            dst[9] = fields.unitUpgrade;
+            dst[10] = fields.unitId;
+            dst[11] = fields.populationGain;
+            dst[12] = fields.costStars;
+            dst[13] = fields.starsBefore;
+            dst[14] = fields.affordable;
+            dst[15] = damageDealt;
+            dst[16] = damageReceived;
+            writeActionArgMask(*action, actionArgMasksOut + row * kVectorActionArgMaskCount);
+        }
     }
 
     std::vector<std::vector<int>> fullMap() const {
@@ -2338,6 +2451,225 @@ private:
         , unitsJsonPath_(std::move(unitsJsonPath))
         , mapType_(mapType) {}
 
+    void resetCore(bool loadUnits) {
+        if (unitsJsonPath_.empty()) unitsJsonPath_ = resolveDefaultUnitsJsonPath();
+        if (loadUnits) GameDataSystem::loadUnits(unitsJsonPath_);
+
+        Game game;
+        Game::NewGameConfig cfg;
+        cfg.mapSize = mapSize_;
+        cfg.seed = seed_;
+        cfg.mapType = mapType_;
+        cfg.tribes = parseTribes(tribesRaw_.empty() ? std::vector<int>{3, 2} : tribesRaw_);
+        game.newGame(cfg);
+
+        session_ = std::make_shared<GameSession>(std::move(game));
+        session_->replay.clear();
+        initializeObservationKnowledgeFromCurrentVisibility();
+        session_->events.reset(session_->state.getGame().getPlayers().size());
+        invalidateCaches();
+    }
+
+    void writeTrainingState(int32_t* out) const {
+        ensureState();
+        const Game& g = session_->state.getGame();
+        const PlayerId pid = session_->state.currentPlayer();
+        const Player& player = g.getPlayer(pid);
+
+        int nextTurnStarIncome = 0;
+        for (CityId cid : player.getCities()) {
+            if (!CitySystem::cityExists(g, cid)) continue;
+            if (CitySystem::isCityUnderSiege(g, cid)) continue;
+            if (CitySystem::getCityIsInfiltrated(g, cid)) continue;
+            nextTurnStarIncome += static_cast<int>(CitySystem::getCityStarsPerRound(g, cid));
+            nextTurnStarIncome += StarsSystem::marketIncomeForCity(g, pid, cid);
+        }
+
+        const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(pid);
+        out[0] = g.getTurnNumber();
+        out[1] = static_cast<int32_t>(pid);
+        out[2] = g.isGameOver() ? 1 : 0;
+        out[3] = g.isGameOver() ? static_cast<int32_t>(g.getWinner()) : -1;
+        out[4] = player.getStars();
+        out[5] = static_cast<int32_t>(player.getUnits().size());
+        out[6] = static_cast<int32_t>(player.getCities().size());
+        out[7] = std::max(0, nextTurnStarIncome);
+        out[8] = pending ? static_cast<int32_t>(pending->cityId) : -1;
+        out[9] = pending ? static_cast<int32_t>(pending->opts.a) : static_cast<int32_t>(CityUpgradeChoice::None);
+        out[10] = pending ? static_cast<int32_t>(pending->opts.b) : static_cast<int32_t>(CityUpgradeChoice::None);
+    }
+
+    void writePlayerMapTokens(int32_t* out) const {
+        ensureState();
+        ensureObservationKnowledgeLayout();
+        const Game& g = session_->state.getGame();
+        const Map& m = g.getMap();
+        const int w = m.getWidth();
+        const int h = m.getHeight();
+        const int perspective = static_cast<int>(g.getCurrentPlayerId());
+        const std::vector<uint8_t>* knownObs = nullptr;
+        if (perspective >= 0) {
+            const size_t perspectiveIdx = static_cast<size_t>(perspective);
+            if (perspectiveIdx < session_->observations.knownByPlayer.size()) {
+                knownObs = &session_->observations.knownByPlayer[perspectiveIdx];
+            }
+        }
+
+        bool hasClimbing = false;
+        bool hasOrganization = false;
+        bool hasSailing = false;
+        if (perspective >= 0 && perspective < static_cast<int>(g.getPlayers().size())) {
+            const Player& p = g.getPlayer(static_cast<PlayerId>(perspective));
+            hasClimbing = p.hasTech(TechId::Climbing);
+            hasOrganization = p.hasTech(TechId::Organization);
+            hasSailing = p.hasTech(TechId::Sailing);
+        }
+
+        const auto hasActivatedHide = [](const Unit* unit) {
+            if (!unit || !unit->hasSkill(UnitSkill::Hide)) return false;
+            const Pos direction = unit->getLastMoveDir();
+            return direction.x != 0 || direction.y != 0;
+        };
+        const auto isEnemyHiddenUnit = [&](const Unit* unit) {
+            return unit && perspective >= 0 && perspective < 16 &&
+                static_cast<int>(unit->getOwnerId()) != perspective && hasActivatedHide(unit);
+        };
+        const auto hasAdjacentEnemyHiddenUnit = [&](Pos center) {
+            if (perspective < 0 || perspective >= 16) return false;
+            static constexpr int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+            static constexpr int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+            for (int i = 0; i < 8; ++i) {
+                const Pos nearby{center.x + kDx[i], center.y + kDy[i]};
+                if (!m.inBounds(nearby)) continue;
+                const UnitId uid = m.unitOn(nearby);
+                if (uid != Map::kNoUnit && isEnemyHiddenUnit(g.getUnit(uid))) return true;
+            }
+            return false;
+        };
+        const auto canRevealUnitOriginCity = [&](const Unit* unit) {
+            if (!unit || unit->getOriginCityId() == kNoCity) return false;
+            if (perspective < 0 || perspective >= 16) return false;
+            if (static_cast<int>(unit->getOwnerId()) == perspective) return true;
+            const City* city = g.getCity(unit->getOriginCityId());
+            if (!city || !m.inBounds(city->getPos())) return false;
+            const Pos cityPos = city->getPos();
+            const uint16_t cityVisibility = static_cast<uint16_t>(m.at(cityPos).getVisibility());
+            if ((cityVisibility & (uint16_t(1) << perspective)) == 0) return false;
+            const int cityIndex = cityPos.y * w + cityPos.x;
+            return !knownObs || (cityIndex >= 0 && static_cast<size_t>(cityIndex) < knownObs->size() &&
+                (*knownObs)[static_cast<size_t>(cityIndex)] != 0);
+        };
+
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const Pos p{x, y};
+                const Tile& tile = m.at(p);
+                const int index = y * w + x;
+                int32_t* token = out + static_cast<size_t>(index) * kMapTokenFeatureCount;
+                const uint16_t visibilityMask = static_cast<uint16_t>(tile.getVisibility());
+                const int visibility = (perspective >= 0 && perspective < 16 &&
+                    (visibilityMask & (uint16_t(1) << perspective)) != 0) ? 1 : 0;
+                bool known = visibility == 1;
+                if (known && knownObs && static_cast<size_t>(index) < knownObs->size()) {
+                    known = (*knownObs)[static_cast<size_t>(index)] != 0;
+                }
+
+                int unitHp = -1;
+                int unitOwner = -1;
+                int unitType = -1;
+                int ownUnitKills = -1;
+                int unitMaxHp = -1;
+                int unitOriginCity = -1;
+                int isCloakAround = 0;
+                int capitalLayer = -1;
+                int cityLevel = -1;
+                int cityOwner = -1;
+                int cityUnitsOccupied = -1;
+                int cityHasWorkshop = -1;
+                int cityHasWall = -1;
+                int cityParkCount = -1;
+                int resource = static_cast<int>(tile.getResource());
+                int settlementType = static_cast<int>(tile.getSettlementType());
+                int settlementId = static_cast<int>(tile.getSettlementId()) == static_cast<int>(kNoSettlement)
+                    ? -1 : static_cast<int>(tile.getSettlementId());
+
+                if (!hasClimbing && resource == static_cast<int>(ResourcesEnum::Metal)) {
+                    resource = static_cast<int>(ResourcesEnum::None);
+                }
+                if (!hasOrganization && resource == static_cast<int>(ResourcesEnum::Crops)) {
+                    resource = static_cast<int>(ResourcesEnum::None);
+                }
+                if (!hasSailing && settlementType == static_cast<int>(SettlementTypeEnum::Starfish)) {
+                    settlementType = static_cast<int>(SettlementTypeEnum::None);
+                    settlementId = -1;
+                }
+                if (tile.getSettlementType() == SettlementTypeEnum::City) {
+                    capitalLayer = 0;
+                    const CityId cityId = static_cast<CityId>(tile.getSettlementId());
+                    if (cityId != kNoCity) {
+                        if (const City* city = g.getCity(cityId)) {
+                            cityLevel = static_cast<int>(city->getLevel());
+                            const PlayerId owner = city->getOwnerId();
+                            if (owner != kNoPlayer) cityOwner = static_cast<int>(owner);
+                            if (owner != kNoPlayer && static_cast<int>(owner) == perspective) {
+                                cityUnitsOccupied = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
+                            }
+                            if (city->isCapitalCity()) capitalLayer = 1;
+                            cityHasWorkshop = city->hasWorkshopEnabled() ? 1 : 0;
+                            cityHasWall = city->hasCityWallEnabled() ? 1 : 0;
+                            cityParkCount = static_cast<int>(city->getParkCount());
+                        }
+                    }
+                }
+
+                const UnitId uid = m.unitOn(p);
+                if (uid != Map::kNoUnit) {
+                    if (const Unit* unit = g.getUnit(uid)) {
+                        if (!isEnemyHiddenUnit(unit)) {
+                            unitHp = unit->getHealth();
+                            unitOwner = static_cast<int>(unit->getOwnerId());
+                            unitType = static_cast<int>(unit->getType());
+                            unitMaxHp = unit->getMaxHealth();
+                            if (canRevealUnitOriginCity(unit)) unitOriginCity = static_cast<int>(unit->getOriginCityId());
+                            if (static_cast<int>(unit->getOwnerId()) == perspective) ownUnitKills = unit->getKillCounter();
+                        }
+                        if (static_cast<int>(unit->getOwnerId()) == perspective && hasAdjacentEnemyHiddenUnit(p)) {
+                            isCloakAround = 1;
+                        }
+                    }
+                }
+
+                token[0] = visibility;
+                token[1] = isCloakAround;
+                token[2] = unitHp;
+                token[3] = unitOwner;
+                token[4] = unitType;
+                token[5] = ownUnitKills;
+                token[6] = static_cast<int>(tile.getTerritoryCityId()) == static_cast<int>(kNoCity)
+                    ? -1 : static_cast<int>(tile.getTerritoryCityId());
+                token[7] = static_cast<int>(tile.getRoadBridge());
+                token[8] = static_cast<int>(tile.getBuildingType());
+                token[9] = capitalLayer;
+                token[10] = cityHasWorkshop;
+                token[11] = cityHasWall;
+                token[12] = cityParkCount;
+                token[13] = cityLevel;
+                token[14] = settlementType;
+                token[15] = settlementId;
+                token[16] = cityOwner;
+                token[17] = cityUnitsOccupied;
+                token[18] = resource;
+                token[19] = static_cast<int>(tile.getBaseTerrain());
+                token[20] = static_cast<int>(tile.getTribe());
+                token[21] = unitMaxHp;
+                token[22] = unitOriginCity;
+                if (!known) {
+                    std::fill(token + 1, token + kMapTokenFeatureCount, int32_t{-1});
+                }
+            }
+        }
+    }
+
     void ensureState() const {
         if (!session_) throw std::runtime_error("GameEnv is not initialized.");
     }
@@ -2488,6 +2820,347 @@ private:
     mutable std::vector<uint8_t> legalMaskCache_;
 };
 
+// A small fixed worker pool dedicated to one VectorGameEnv. It deliberately
+// runs one batch job at a time; this avoids nested parallelism with PyTorch and
+// keeps GameSession ownership strictly one-env-per-worker-task.
+class BatchThreadPool {
+public:
+    explicit BatchThreadPool(size_t workerCount) {
+        if (workerCount <= 1) return;
+        workers_.reserve(workerCount);
+        for (size_t i = 0; i < workerCount; ++i) {
+            workers_.emplace_back([this] { workerLoop(); });
+        }
+    }
+
+    BatchThreadPool(const BatchThreadPool&) = delete;
+    BatchThreadPool& operator=(const BatchThreadPool&) = delete;
+
+    ~BatchThreadPool() {
+        {
+            std::lock_guard lock(mutex_);
+            stopping_ = true;
+        }
+        workReady_.notify_all();
+        for (std::thread& worker : workers_) {
+            if (worker.joinable()) worker.join();
+        }
+    }
+
+    size_t workerCount() const { return workers_.empty() ? 1 : workers_.size(); }
+
+    template <typename Fn>
+    void parallelFor(size_t count, Fn&& fn) {
+        if (count == 0) return;
+        if (workers_.empty() || count == 1) {
+            fn(0, count);
+            return;
+        }
+
+        {
+            std::lock_guard lock(mutex_);
+            task_ = std::forward<Fn>(fn);
+            taskCount_ = count;
+            nextIndex_.store(0, std::memory_order_relaxed);
+            completedWorkers_ = 0;
+            workerException_ = nullptr;
+            ++generation_;
+        }
+        workReady_.notify_all();
+
+        std::unique_lock lock(mutex_);
+        workDone_.wait(lock, [this] { return completedWorkers_ == workers_.size(); });
+        if (workerException_) std::rethrow_exception(workerException_);
+    }
+
+private:
+    void workerLoop() {
+        size_t seenGeneration = 0;
+        for (;;) {
+            {
+                std::unique_lock lock(mutex_);
+                workReady_.wait(lock, [this, &seenGeneration] {
+                    return stopping_ || generation_ != seenGeneration;
+                });
+                if (stopping_) return;
+                seenGeneration = generation_;
+            }
+
+            try {
+                for (;;) {
+                    const size_t begin = nextIndex_.fetch_add(1, std::memory_order_relaxed);
+                    if (begin >= taskCount_) break;
+                    task_(begin, begin + 1);
+                }
+            } catch (...) {
+                std::lock_guard lock(mutex_);
+                if (!workerException_) workerException_ = std::current_exception();
+            }
+
+            {
+                std::lock_guard lock(mutex_);
+                ++completedWorkers_;
+                if (completedWorkers_ == workers_.size()) workDone_.notify_one();
+            }
+        }
+    }
+
+    std::vector<std::thread> workers_;
+    std::mutex mutex_;
+    std::condition_variable workReady_;
+    std::condition_variable workDone_;
+    std::function<void(size_t, size_t)> task_;
+    std::atomic<size_t> nextIndex_{0};
+    size_t taskCount_ = 0;
+    size_t completedWorkers_ = 0;
+    size_t generation_ = 0;
+    bool stopping_ = false;
+    std::exception_ptr workerException_;
+};
+
+class VectorGameEnv {
+public:
+    VectorGameEnv(
+        int numEnvs,
+        int mapSize,
+        const std::vector<int>& tribes,
+        uint32_t seed,
+        const std::string& unitsJsonPath,
+        MapType mapType,
+        int numThreads,
+        int maxActions,
+        bool autoReset,
+        bool includeCombatPreview)
+        : numEnvs_(numEnvs)
+        , mapSize_(mapSize)
+        , tribes_(tribes.empty() ? std::vector<int>{3, 2} : tribes)
+        , baseSeed_(seed)
+        , unitsJsonPath_(unitsJsonPath.empty() ? resolveDefaultUnitsJsonPath() : unitsJsonPath)
+        , mapType_(mapType)
+        , maxActions_(maxActions)
+        , autoReset_(autoReset)
+        , includeCombatPreview_(includeCombatPreview)
+        , pool_(resolveThreadCount(numEnvs, numThreads))
+    {
+        if (numEnvs_ <= 0) throw std::invalid_argument("num_envs must be positive");
+        if (mapSize_ <= 0) throw std::invalid_argument("map_size must be positive");
+        if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
+
+        // Unit templates are process-global and immutable during vectorized
+        // execution. Load them before any environment worker can begin.
+        GameDataSystem::loadUnits(unitsJsonPath_);
+        envs_.reserve(static_cast<size_t>(numEnvs_));
+        resetCounts_.assign(static_cast<size_t>(numEnvs_), 0);
+        for (int i = 0; i < numEnvs_; ++i) {
+            envs_.emplace_back(mapSize_, tribes_, seedFor(static_cast<size_t>(i)), unitsJsonPath_, mapType_);
+        }
+        if (envs_.front().actionSpaceSize() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+            throw std::invalid_argument("map_size produces action ids too large for VectorGameEnv int32 batches");
+        }
+    }
+
+    VectorGameEnv(const VectorGameEnv&) = delete;
+    VectorGameEnv& operator=(const VectorGameEnv&) = delete;
+
+    py::dict reset(std::optional<uint32_t> seed = std::nullopt) {
+        BatchArrays out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (seed) {
+                baseSeed_ = *seed;
+                std::fill(resetCounts_.begin(), resetCounts_.end(), 0);
+            }
+            for (size_t i = 0; i < envs_.size(); ++i) resetOne(i);
+            fillBatch(out, nullptr, false);
+        }
+        return out.intoDict();
+    }
+
+    py::dict step(py::array actionIds) {
+        auto actions = py::array_t<int32_t, py::array::c_style | py::array::forcecast>::ensure(actionIds);
+        if (!actions || actions.ndim() != 1 || actions.shape(0) != numEnvs_) {
+            throw std::invalid_argument("action_ids must be a contiguous one-dimensional int32-compatible array with num_envs entries");
+        }
+
+        BatchArrays out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        const int32_t* actionData = actions.data();
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            fillBatch(out, actionData, true);
+        }
+        return out.intoDict();
+    }
+
+    int numEnvs() const { return numEnvs_; }
+    int numThreads() const { return static_cast<int>(pool_.workerCount()); }
+    int mapSize() const { return mapSize_; }
+    int maxActions() const { return maxActions_; }
+    bool autoReset() const { return autoReset_; }
+    bool includeCombatPreview() const { return includeCombatPreview_; }
+
+    std::vector<std::string> actionFeatureNames() const {
+        return {
+            "type_id", "source_index", "target_index", "city", "tech", "building",
+            "spawn_type", "upgrade", "tile_action", "unit_upgrade", "unit_id",
+            "population_gain", "cost_stars", "stars_before", "affordable",
+            "damage_dealt", "damage_received",
+        };
+    }
+
+    std::vector<std::string> stateFeatureNames() const {
+        return {
+            "turn", "current_player", "game_over", "winner", "player_stars",
+            "owns_units", "own_cities", "next_turn_star_income", "pending_city_id",
+            "pending_upgrade_a", "pending_upgrade_b",
+        };
+    }
+
+private:
+    struct BatchArrays {
+        BatchArrays(size_t numEnvs, size_t tiles, size_t maxActions)
+            : mapTokens({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(tiles),
+                         static_cast<py::ssize_t>(kMapTokenFeatureCount)})
+            , state({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
+            , actionIds({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)})
+            , actionFeatures({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions),
+                              static_cast<py::ssize_t>(kVectorActionFeatureCount)})
+            , actionArgMasks({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions),
+                              static_cast<py::ssize_t>(kVectorActionArgMaskCount)})
+            , actionMask({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)})
+            , legalActionCount(static_cast<py::ssize_t>(numEnvs))
+            , reward(static_cast<py::ssize_t>(numEnvs))
+            , terminated(static_cast<py::ssize_t>(numEnvs))
+            , actionValid(static_cast<py::ssize_t>(numEnvs))
+            , envId(static_cast<py::ssize_t>(numEnvs)) {}
+
+        py::dict intoDict() {
+            py::dict out;
+            out["map_tokens"] = std::move(mapTokens);
+            out["state"] = std::move(state);
+            out["action_id"] = std::move(actionIds);
+            out["action_features"] = std::move(actionFeatures);
+            out["action_arg_mask"] = std::move(actionArgMasks);
+            out["action_mask"] = std::move(actionMask);
+            out["legal_action_count"] = std::move(legalActionCount);
+            out["reward"] = std::move(reward);
+            out["terminated"] = std::move(terminated);
+            out["action_valid"] = std::move(actionValid);
+            out["env_id"] = std::move(envId);
+            return out;
+        }
+
+        py::array_t<int32_t> mapTokens;
+        py::array_t<int32_t> state;
+        py::array_t<int32_t> actionIds;
+        py::array_t<int32_t> actionFeatures;
+        py::array_t<uint8_t> actionArgMasks;
+        py::array_t<uint8_t> actionMask;
+        py::array_t<int32_t> legalActionCount;
+        py::array_t<float> reward;
+        py::array_t<uint8_t> terminated;
+        py::array_t<uint8_t> actionValid;
+        py::array_t<int32_t> envId;
+    };
+
+    static size_t resolveThreadCount(int numEnvs, int requested) {
+        const unsigned int hardware = std::max(1u, std::thread::hardware_concurrency());
+        const size_t wanted = requested > 0 ? static_cast<size_t>(requested) : static_cast<size_t>(hardware);
+        return std::max<size_t>(1, std::min(static_cast<size_t>(std::max(1, numEnvs)), wanted));
+    }
+
+    size_t tileCount() const {
+        return static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
+    }
+
+    uint32_t seedFor(size_t envIndex) const {
+        if (baseSeed_ == 0) return 0;
+        return baseSeed_ + static_cast<uint32_t>(envIndex) +
+            static_cast<uint32_t>(resetCounts_[envIndex] * static_cast<uint64_t>(numEnvs_));
+    }
+
+    void resetOne(size_t envIndex) {
+        envs_[envIndex].resetNative(seedFor(envIndex));
+        ++resetCounts_[envIndex];
+    }
+
+    void fillBatch(BatchArrays& out, const int32_t* actions, bool advance) {
+        const size_t numEnvs = envs_.size();
+        const size_t actionSlots = numEnvs * static_cast<size_t>(maxActions_);
+        std::fill_n(out.actionIds.mutable_data(), actionSlots, int32_t{-1});
+        std::fill_n(out.actionFeatures.mutable_data(), actionSlots * kVectorActionFeatureCount, int32_t{0});
+        std::fill_n(out.actionArgMasks.mutable_data(), actionSlots * kVectorActionArgMaskCount, uint8_t{0});
+        std::fill_n(out.actionMask.mutable_data(), actionSlots, uint8_t{0});
+        std::fill_n(out.reward.mutable_data(), numEnvs, 0.0f);
+        std::fill_n(out.terminated.mutable_data(), numEnvs, uint8_t{0});
+        std::fill_n(out.actionValid.mutable_data(), numEnvs, uint8_t{0});
+
+        int32_t* mapData = out.mapTokens.mutable_data();
+        int32_t* stateData = out.state.mutable_data();
+        int32_t* idsData = out.actionIds.mutable_data();
+        int32_t* featuresData = out.actionFeatures.mutable_data();
+        uint8_t* argMasksData = out.actionArgMasks.mutable_data();
+        uint8_t* maskData = out.actionMask.mutable_data();
+        int32_t* countData = out.legalActionCount.mutable_data();
+        float* rewardData = out.reward.mutable_data();
+        uint8_t* terminatedData = out.terminated.mutable_data();
+        uint8_t* validData = out.actionValid.mutable_data();
+        int32_t* envIdData = out.envId.mutable_data();
+        const size_t tiles = tileCount();
+
+        pool_.parallelFor(numEnvs, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                if (advance) {
+                    const int32_t actionId = actions[i];
+                    const NativeStepResult result = actionId >= 0
+                        ? envs_[i].stepNative(static_cast<size_t>(actionId))
+                        : NativeStepResult{};
+                    validData[i] = result.ok ? 1 : 0;
+                    rewardData[i] = result.reward;
+                    terminatedData[i] = result.done ? 1 : 0;
+                    if (result.ok && result.done && autoReset_) resetOne(i);
+                }
+
+                envs_[i].writeTrainingPacket(
+                    mapData + i * tiles * kMapTokenFeatureCount,
+                    stateData + i * kVectorStateFeatureCount,
+                    idsData + i * static_cast<size_t>(maxActions_),
+                    featuresData + i * static_cast<size_t>(maxActions_) * kVectorActionFeatureCount,
+                    argMasksData + i * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
+                    maskData + i * static_cast<size_t>(maxActions_),
+                    countData + i,
+                    static_cast<size_t>(maxActions_),
+                    includeCombatPreview_);
+                envIdData[i] = static_cast<int32_t>(i);
+            }
+        });
+
+        for (size_t i = 0; i < numEnvs; ++i) {
+            if (countData[i] > maxActions_) {
+                throw std::runtime_error(
+                    "VectorGameEnv max_actions=" + std::to_string(maxActions_) +
+                    " is too small for env " + std::to_string(i) +
+                    ": it has " + std::to_string(countData[i]) + " legal actions");
+            }
+        }
+    }
+
+    int numEnvs_ = 0;
+    int mapSize_ = 0;
+    std::vector<int> tribes_;
+    uint32_t baseSeed_ = 0;
+    std::string unitsJsonPath_;
+    MapType mapType_ = MapType::Lakes;
+    int maxActions_ = 0;
+    bool autoReset_ = true;
+    bool includeCombatPreview_ = false;
+    std::vector<GameEnv> envs_;
+    std::vector<uint64_t> resetCounts_;
+    BatchThreadPool pool_;
+    std::mutex apiMutex_;
+};
+
 } // namespace
 
 PYBIND11_MODULE(_game_engine, m) {
@@ -2614,5 +3287,34 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("predictions"),
              py::arg("perspective") = std::nullopt,
              "Applies sparse predicted tile features to hidden tiles only.")
+        ;
+
+    py::class_<VectorGameEnv>(m, "VectorGameEnv")
+        .def(py::init<int, int, const std::vector<int>&, uint32_t, const std::string&, MapType, int, int, bool, bool>(),
+             py::arg("num_envs"),
+             py::arg("map_size") = 11,
+             py::arg("tribes") = std::vector<int>{3, 2},
+             py::arg("seed") = 1u,
+             py::arg("units_json_path") = "",
+             py::arg("map_type") = MapType::Lakes,
+             py::arg("num_threads") = 0,
+             py::arg("max_actions") = 512,
+             py::arg("auto_reset") = true,
+             py::arg("include_combat_preview") = false,
+             "Batched native training environment. All games are executed in C++.")
+        .def("reset", &VectorGameEnv::reset,
+             py::arg("seed") = std::nullopt,
+             "Reset all environments and return one dense batch.")
+        .def("step", &VectorGameEnv::step,
+             py::arg("action_ids"),
+             "Step all environments with one action-space id per environment.")
+        .def_property_readonly("num_envs", &VectorGameEnv::numEnvs)
+        .def_property_readonly("num_threads", &VectorGameEnv::numThreads)
+        .def_property_readonly("map_size", &VectorGameEnv::mapSize)
+        .def_property_readonly("max_actions", &VectorGameEnv::maxActions)
+        .def_property_readonly("auto_reset", &VectorGameEnv::autoReset)
+        .def_property_readonly("include_combat_preview", &VectorGameEnv::includeCombatPreview)
+        .def_property_readonly("action_feature_names", &VectorGameEnv::actionFeatureNames)
+        .def_property_readonly("state_feature_names", &VectorGameEnv::stateFeatureNames)
         ;
 }

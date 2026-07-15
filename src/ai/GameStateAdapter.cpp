@@ -295,7 +295,12 @@ void GameStateAdapter::apply(const Action& a) {
 }
 
 std::vector<size_t> GameStateAdapter::legalActionIds(PlayerId pid) const {
-    if (pid != game_.getCurrentPlayerId()) return {};
+    return legalActionIdsRef(pid);
+}
+
+const std::vector<size_t>& GameStateAdapter::legalActionIdsRef(PlayerId pid) const {
+    static const std::vector<size_t> kNoActions;
+    if (pid != game_.getCurrentPlayerId()) return kNoActions;
     ensureLegalCache(pid);
     return legalIdsCache_;
 }

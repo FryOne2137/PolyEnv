@@ -8,6 +8,10 @@ It supports the 12 regular tribes. It is not affiliated with The Battle of
 Polytopia, does not implement special tribes, and does not include a trained
 bot or reward shaping.
 
+For high-throughput RL training, `VectorGameEnv` runs many independent games
+in a native C++ worker pool and returns dense batched NumPy arrays without a
+Python loop or JSON serialization per game.
+
 ## Install
 
 ```bash
@@ -39,6 +43,21 @@ ok, done, reward, winner, current_player = env.step_fast(action_id)
 state, and legal actions. Choose only an `action_id` from
 `packet["actions"]["action_id"]`.
 
+## Batched Training
+
+```python
+from PolyEnv import VectorGameEnv
+
+env = VectorGameEnv(num_envs=256, num_threads=8, max_actions=512)
+batch = env.reset()
+action_ids = batch["action_id"][:, 0]
+batch = env.step(action_ids)
+```
+
+`VectorGameEnv` uses fixed padded action rows; apply `batch["action_mask"]`
+before selecting a row. See [native batched training](docs/vector_env.md) for
+the complete tensor layout and rollout pattern.
+
 `map_type` accepts `Lakes` / `"lakes"` or `Drylands` / `"drylands"`.
 
 ```python
@@ -57,6 +76,7 @@ env.save("match.polygame")
 - [Documentation](https://polyenv.readthedocs.io/)
 - [Installation](docs/installation.md)
 - [Core Python API](docs/python_api.md)
+- [Native batched training](docs/vector_env.md)
 - [Model input and legal actions](docs/model_request_api.md)
 - [GUI build and replay viewer](docs/gui.md)
 

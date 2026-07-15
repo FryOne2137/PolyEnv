@@ -18,6 +18,9 @@ public:
     std::vector<Action> legalActions(PlayerId pid) const;
     void apply(const Action& a);
     std::vector<size_t> legalActionIds(PlayerId pid) const;
+    // Hot-path variant used by batched C++ callers. The reference stays valid
+    // until the next state mutation on this adapter.
+    const std::vector<size_t>& legalActionIdsRef(PlayerId pid) const;
     std::vector<uint8_t> legalActionMask(PlayerId pid) const;
     std::optional<Action> decodeActionId(PlayerId pid, size_t actionId) const;
     std::optional<size_t> encodeActionId(const Action& action) const;

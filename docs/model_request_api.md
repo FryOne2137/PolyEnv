@@ -1,8 +1,10 @@
 # Model Input And Actions
 
-Use `model_request_numpy()` as the normal interface between PolyEnv and model
-code. It contains the current player's visible state and every currently legal
-action.
+Use `model_request_numpy()` as the normal interface between one `GameEnv` and
+model code. It contains the current player's visible state and every currently
+legal action. For throughput-oriented training over many games, use
+[`VectorGameEnv`](vector_env.md) instead: it produces the same player-view
+concept as one dense batch without JSON or a Python loop per game.
 
 ```python
 packet = env.model_request_numpy()
