@@ -9,6 +9,7 @@ from ._game_engine import (
     GameEnv as _GameEnv,
     MapType,
     MctsPool as _MctsPool,
+    SelfPlayPool as _SelfPlayPool,
     VectorGameEnv as _VectorGameEnv,
 )
 
@@ -268,6 +269,44 @@ class MctsPool(_MctsPool):
         )
 
 
+class SelfPlayPool(_SelfPlayPool):
+    """High-throughput, model-agnostic belief-MCTS self-play scheduler.
+
+    The external repository owns the neural model and exchanges only dense
+    NumPy batches with this native scheduler. Call ``reset``/``step`` to get a
+    player-visible request, submit a completed belief map using its
+    ``state_id``, then run the MCTS leaf/backup loop.
+    """
+
+    def __init__(
+        self,
+        num_envs: int,
+        seed: int = 0,
+        map_size: int = 11,
+        players: list[Any] | tuple[Any, ...] = (tribes.Bardur, tribes.Imperius),
+        units_json_path: str | None = None,
+        tribes: list[Any] | tuple[Any, ...] | None = None,
+        map_type: MapType | str = Lakes,
+        num_threads: int | None = None,
+        max_actions: int = 512,
+        auto_reset: bool = True,
+        c_puct: float = 1.5,
+    ) -> None:
+        selected_players = tribes if tribes is not None else players
+        super().__init__(
+            num_envs,
+            map_size,
+            _normalize_players(selected_players),
+            seed,
+            units_json_path or _default_units_path(),
+            _normalize_map_type(map_type),
+            0 if num_threads is None else num_threads,
+            max_actions,
+            auto_reset,
+            c_puct,
+        )
+
+
 # Conventional spelling for callers accustomed to the MCTS acronym.
 MCTSPool = MctsPool
 
@@ -277,6 +316,7 @@ __all__ = [
     "VectorGameEnv",
     "MctsPool",
     "MCTSPool",
+    "SelfPlayPool",
     "MapType",
     "Lakes",
     "Drylands",

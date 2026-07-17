@@ -15,19 +15,24 @@ bool inRange(int value, int minimum, int maximum) {
     return value >= minimum && value <= maximum;
 }
 
-void validateTokens(const Game& source, PlayerId perspective,
-                    const std::vector<std::vector<int>>& tokens) {
+void validateFlatTokens(const Game& source,
+                        PlayerId perspective,
+                        const int32_t* tokens,
+                        size_t rowCount,
+                        size_t columnCount) {
     const Map& map = source.getMap();
     const size_t expected = static_cast<size_t>(map.getWidth()) * static_cast<size_t>(map.getHeight());
-    if (tokens.size() != expected) throw std::invalid_argument("completed_map_tokens has an invalid tile count");
+    if (rowCount != expected) throw std::invalid_argument("completed_map_tokens has an invalid tile count");
+    if (columnCount != kBeliefTokenWidth) {
+        throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+    }
+    if (!tokens && rowCount != 0) throw std::invalid_argument("completed_map_tokens data is null");
     if (perspective == kNoPlayer || static_cast<size_t>(perspective) >= source.getPlayers().size())
         throw std::invalid_argument("belief perspective is not a valid player");
 
     std::vector<int> cityCenters;
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        const auto& t = tokens[i];
-        if (t.size() != kBeliefTokenWidth)
-            throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+    for (size_t i = 0; i < rowCount; ++i) {
+        const int32_t* t = tokens + i * columnCount;
         if (!inRange(t[0], 0, 1) || !inRange(t[7], 0, 3) || !inRange(t[8], 0, 16) ||
             !inRange(t[11], -1, 1) || !inRange(t[14], 0, 4) || !inRange(t[18], 0, 6) ||
             !inRange(t[19], 0, 4) || !inRange(t[20], 0, 16))
@@ -57,7 +62,8 @@ void validateTokens(const Game& source, PlayerId perspective,
             throw std::invalid_argument("city fields must be -1 outside a city tile");
         }
     }
-    for (const auto& t : tokens) {
+    for (size_t i = 0; i < rowCount; ++i) {
+        const int32_t* t = tokens + i * columnCount;
         for (const int cityId : {t[6], t[22]}) {
             if (cityId >= 0 && (static_cast<size_t>(cityId) >= cityCenters.size() ||
                 cityCenters[static_cast<size_t>(cityId)] < 0)) {
@@ -71,7 +77,24 @@ void validateTokens(const Game& source, PlayerId perspective,
 
 Game BeliefWorldBuilder::build(const Game& observedSource, PlayerId perspective,
                                const std::vector<std::vector<int>>& tokens) {
-    validateTokens(observedSource, perspective, tokens);
+    const size_t rowCount = tokens.size();
+    std::vector<int32_t> flat;
+    flat.reserve(rowCount * kBeliefTokenWidth);
+    for (const std::vector<int>& row : tokens) {
+        if (row.size() != kBeliefTokenWidth) {
+            throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+        }
+        for (const int value : row) flat.push_back(static_cast<int32_t>(value));
+    }
+    return buildFlat(observedSource, perspective, flat.data(), rowCount, kBeliefTokenWidth);
+}
+
+Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
+                                   PlayerId perspective,
+                                   const int32_t* tokens,
+                                   size_t rowCount,
+                                   size_t columnCount) {
+    validateFlatTokens(observedSource, perspective, tokens, rowCount, columnCount);
     const Map& sourceMap = observedSource.map;
     const int width = sourceMap.getWidth();
     const int height = sourceMap.getHeight();
@@ -91,7 +114,7 @@ Game BeliefWorldBuilder::build(const Game& observedSource, PlayerId perspective,
     }
 
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
-        const auto& v = tokens[static_cast<size_t>(y * width + x)];
+        const int32_t* v = tokens + static_cast<size_t>(y * width + x) * columnCount;
         Tile& tile = belief.map.at(Pos{x, y});
         tile.setRoadBridge(static_cast<RoadBridgeEnum>(v[7]));
         tile.setBuildingType(static_cast<BuildingTypeEnum>(v[8]));
@@ -105,10 +128,15 @@ Game BeliefWorldBuilder::build(const Game& observedSource, PlayerId perspective,
     }
 
     int maxCityId = -1;
-    for (const auto& v : tokens) if (v[14] == static_cast<int>(SettlementTypeEnum::City)) maxCityId = std::max(maxCityId, v[15]);
+    for (size_t tile = 0; tile < rowCount; ++tile) {
+        const int32_t* v = tokens + tile * columnCount;
+        if (v[14] == static_cast<int>(SettlementTypeEnum::City)) {
+            maxCityId = std::max(maxCityId, static_cast<int>(v[15]));
+        }
+    }
     belief.cities.resize(static_cast<size_t>(maxCityId + 1));
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
-        const auto& v = tokens[static_cast<size_t>(y * width + x)];
+        const int32_t* v = tokens + static_cast<size_t>(y * width + x) * columnCount;
         if (v[14] != static_cast<int>(SettlementTypeEnum::City)) continue;
         const CityId cityId = static_cast<CityId>(v[15]);
         City& city = belief.cities[cityId];
@@ -129,7 +157,7 @@ Game BeliefWorldBuilder::build(const Game& observedSource, PlayerId perspective,
 
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
         const Pos pos{x, y};
-        const auto& v = tokens[static_cast<size_t>(y * width + x)];
+        const int32_t* v = tokens + static_cast<size_t>(y * width + x) * columnCount;
         if (v[4] == -1) continue;
         const UnitId unitId = static_cast<UnitId>(belief.units.size());
         Unit unit = UnitFactory::create(static_cast<UnitType>(v[4]), static_cast<PlayerId>(v[3]), pos);
@@ -157,7 +185,8 @@ Game BeliefWorldBuilder::build(const Game& observedSource, PlayerId perspective,
     belief.winner = observedSource.winner;
     belief.resetVisibilityCache(belief.players.size());
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
-        if (tokens[static_cast<size_t>(y * width + x)][0] == 1) belief.noteTileVisible(perspective, Pos{x, y});
+        const int32_t* v = tokens + static_cast<size_t>(y * width + x) * columnCount;
+        if (v[0] == 1) belief.noteTileVisible(perspective, Pos{x, y});
     }
     return belief;
 }

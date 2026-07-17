@@ -66,6 +66,12 @@ For batched neural MCTS, `MctsPool` keeps PUCT trees and game branches in C++
 and exchanges only one dense leaf batch per GPU inference round. See
 [native batched MCTS](docs/mcts_pool.md).
 
+For external AI projects that need many live games plus fog-of-war
+belief-rooted MCTS, `SelfPlayPool` keeps the entire simulation/search
+scheduler in C++ and exchanges only dense NumPy batches with the external
+model. It has no PyTorch or CUDA dependency; see
+[native belief-MCTS self-play](docs/self_play_pool.md).
+
 `map_type` accepts `Lakes` / `"lakes"` or `Drylands` / `"drylands"`.
 
 ```python
@@ -86,6 +92,7 @@ env.save("match.polygame")
 - [Core Python API](docs/python_api.md)
 - [Native batched training](docs/vector_env.md)
 - [Native batched MCTS](docs/mcts_pool.md)
+- [Native belief-MCTS self-play](docs/self_play_pool.md)
 - [Model input and legal actions](docs/model_request_api.md)
 - [GUI build and replay viewer](docs/gui.md)
 

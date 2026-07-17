@@ -56,6 +56,27 @@ root_policy = pool.root_policy()
 See [MctsPool: Native Batched PUCT](mcts_pool.md) for evaluator shapes,
 value-perspective rules, fog-of-war requirements, and search-loop details.
 
+## Native Belief-MCTS Self-Play
+
+Use `SelfPlayPool` when an external repository owns both a hidden-map belief
+model and a policy/value model, but needs PolyEnv to run many live games and
+MCTS searches without Python loops:
+
+```python
+from PolyEnv import SelfPlayPool
+
+pool = SelfPlayPool(num_envs=256, num_threads=8, max_actions=512)
+request = pool.reset()
+completed_map_tokens = external_belief_model(request)
+pool.submit_beliefs(request["state_id"], completed_map_tokens)
+leaves = pool.select_leaves()
+```
+
+The pool exposes only visible player data and takes a checked, detached belief
+completion as its MCTS root. It has no model-framework dependency. See
+[SelfPlayPool: Native Belief-MCTS Self-Play](self_play_pool.md) for the full
+lifecycle, batch contract, stale-id rules, and fog-of-war limitations.
+
 ## Map Type
 
 The supported map types are `Lakes` and `Drylands`. Pass either the exported

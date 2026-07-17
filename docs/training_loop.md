@@ -41,3 +41,11 @@ training path.
 
 See [VectorGameEnv: Native Batched Training](vector_env.md) for the batch
 layout, reset behavior, action-capacity rules, and GPU-transfer guidance.
+
+## Belief-MCTS Self-Play
+
+If the external training project uses both a hidden-map belief model and a
+policy/value model, use [`SelfPlayPool`](self_play_pool.md) instead of
+orchestrating `VectorGameEnv` and `MctsPool` in Python. It keeps live games,
+detached belief roots, and MCTS scheduling in C++, while the model and GPU
+remain entirely in the external repository.

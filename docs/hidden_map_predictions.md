@@ -35,6 +35,21 @@ pool = MctsPool(rollout_env, num_trees=128)
 See [MctsPool: Native Batched PUCT](mcts_pool.md) for the batched evaluator
 loop.
 
+For end-to-end batched self-play, use `SelfPlayPool` instead. Its
+`submit_beliefs(state_ids, completed_map_tokens)` API performs the same
+visible-row validation directly on a contiguous batch and creates detached
+MCTS roots without returning a live `GameEnv` or a full map:
+
+```python
+request = self_play_pool.reset()
+completed = external_belief_model(request)
+self_play_pool.submit_beliefs(request["state_id"], completed)
+```
+
+`full_map_numpy()` is suitable for offline labels or tests only; it must not
+be supplied as an input to fog-of-war self-play. See
+[SelfPlayPool: Native Belief-MCTS Self-Play](self_play_pool.md).
+
 ## Validation and isolation
 
 The input must have one 23-integer row per map tile. The engine rejects:

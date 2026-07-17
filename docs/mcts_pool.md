@@ -9,6 +9,10 @@ This is distinct from `VectorGameEnv`: a vector environment owns independent
 episodes, while an MCTS pool owns independent *search trees* rooted at game
 snapshots.
 
+When one external project needs both many live self-play games and belief-root
+MCTS, prefer [`SelfPlayPool`](self_play_pool.md). It keeps the hand-off between
+live positions, checked belief completions, and MCTS trees in C++.
+
 ## Create A Pool
 
 Pass a sequence of root positions, one per independent search, or one root

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "core/Ids.h"
@@ -14,4 +16,14 @@ public:
     static Game build(const Game& observedSource,
                       PlayerId perspective,
                       const std::vector<std::vector<int>>& completedTokens);
+
+    // Hot-path variant for batched callers. `tokens` is a row-major,
+    // contiguous [rowCount, columnCount] matrix. It performs the same
+    // validation and isolation as build(), without materialising a nested
+    // vector for every belief world.
+    static Game buildFlat(const Game& observedSource,
+                          PlayerId perspective,
+                          const int32_t* tokens,
+                          size_t rowCount,
+                          size_t columnCount);
 };

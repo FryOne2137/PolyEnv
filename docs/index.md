@@ -33,6 +33,7 @@ every step.
 | Fast action execution | `env.step_fast(action_id)` |
 | Batched high-throughput RL | `VectorGameEnv(num_envs=...).step(action_ids)` |
 | Batched neural MCTS | [`MctsPool`](mcts_pool.md) |
+| Belief-MCTS self-play with external AI | [`SelfPlayPool`](self_play_pool.md) |
 | Perfect-information/debug branch | `env.clone()` |
 | Fog-of-war MCTS rollout | [`env.make_belief_env(completed_map_tokens)`](hidden_map_predictions.md) |
 | Portable replay | `env.save(path)` / `env.load(path)` |
@@ -51,6 +52,7 @@ supervised hidden-map prediction.
 6. [Replays](replays.md) and [GUI](gui.md)
 7. [VectorGameEnv: Native Batched Training](vector_env.md)
 8. [MctsPool: Native Batched PUCT](mcts_pool.md)
+9. [SelfPlayPool: Native Belief-MCTS Self-Play](self_play_pool.md)
 
 ## Attribution
 

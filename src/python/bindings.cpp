@@ -2475,6 +2475,64 @@ public:
         return result;
     }
 
+    // Batched self-play uses this path after it has already validated a
+    // contiguous int32 NumPy tensor. The caller never receives a full source
+    // map: this compares the supplied hypothesis with the current player's
+    // observation in native memory, then asks BeliefWorldBuilder to construct
+    // an isolated world directly from the flat tensor.
+    GameEnv makeBeliefEnvFromCurrentPlayerFlatTokens(const int32_t* tokens,
+                                                     size_t rowCount,
+                                                     size_t columnCount,
+                                                     int32_t* observedScratch) const {
+        ensureState();
+        if (columnCount != kMapTokenFeatureCount) {
+            throw std::invalid_argument("completed_map_tokens must have exactly 23 columns");
+        }
+        const size_t expectedTiles = static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
+        if (rowCount != expectedTiles) {
+            throw std::invalid_argument("completed_map_tokens has an invalid tile count");
+        }
+        if (!tokens && rowCount != 0) {
+            throw std::invalid_argument("completed_map_tokens data is null");
+        }
+
+        if (!observedScratch) {
+            throw std::invalid_argument("belief observation scratch buffer is null");
+        }
+        writePlayerMapTokens(observedScratch);
+        for (size_t tile = 0; tile < expectedTiles; ++tile) {
+            const int32_t* candidate = tokens + tile * columnCount;
+            const int32_t* visible = observedScratch + tile * kMapTokenFeatureCount;
+            if (candidate[0] != visible[0]) {
+                throw std::invalid_argument("completed_map_tokens must preserve the source visibility mask");
+            }
+            if (visible[0] == 0) continue;
+            for (size_t column = 0; column < kMapTokenFeatureCount; ++column) {
+                if (candidate[column] != visible[column]) {
+                    throw std::invalid_argument(
+                        "revealed tiles differ: completed_map_tokens disagrees with the current observation at tile "
+                        + std::to_string(tile));
+                }
+            }
+        }
+
+        const Game& source = session_->state.getGame();
+        const PlayerId perspective = session_->state.currentPlayer();
+        auto beliefSession = std::make_shared<GameSession>(
+            BeliefWorldBuilder::buildFlat(source, perspective, tokens, rowCount, columnCount));
+        GameEnv result(std::move(beliefSession), source.getMap().getWidth(), tribesRaw_, seed_, unitsJsonPath_, mapType_);
+        result.initializeObservationKnowledgeFromCurrentVisibility();
+        return result;
+    }
+
+    bool hasSameCurrentLegalActions(const GameEnv& other) const {
+        ensureState();
+        other.ensureState();
+        if (session_->state.currentPlayer() != other.session_->state.currentPlayer()) return false;
+        return session_->state.legalActionIdsRef(session_->state.currentPlayer()) ==
+            other.session_->state.legalActionIdsRef(other.session_->state.currentPlayer());
+    }
+
     GameEnv saveState() const {
         ensureState();
         return *this;
@@ -3418,38 +3476,59 @@ private:
 class MctsPool {
 public:
     MctsPool(py::iterable roots, int numThreads, int maxActions, float cPuct)
+        : MctsPool(copyRootsFromPython(roots), numThreads, maxActions, cPuct) {}
+
+    // Native owners (SelfPlayPool) already hold detached belief worlds. Taking
+    // those roots by value avoids a Python round trip and an unnecessary
+    // second clone before the first MCTS expansion.
+    MctsPool(std::vector<GameEnv> roots, int numThreads, int maxActions, float cPuct)
         : maxActions_(maxActions)
         , cPuct_(cPuct)
     {
-        if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
-        if (numThreads < 0) throw std::invalid_argument("num_threads must be non-negative");
-        if (!std::isfinite(cPuct_) || cPuct_ <= 0.0f) {
-            throw std::invalid_argument("c_puct must be finite and positive");
-        }
+        validateSettings(numThreads);
+        initializeRoots(std::move(roots));
+        ownedPool_ = std::make_unique<BatchThreadPool>(resolveThreadCount(trees_.size(), numThreads));
+        pool_ = ownedPool_.get();
+    }
 
-        for (py::handle item : roots) {
-            const GameEnv& source = item.cast<const GameEnv&>();
-            if (source.playerCountNative() != 2) {
-                throw std::invalid_argument(
-                    "MctsPool currently supports exactly two players; multi-player values require a vector-valued evaluator");
-            }
-            if (trees_.empty()) {
-                mapSize_ = source.mapSizeNative();
-            } else if (source.mapSizeNative() != mapSize_) {
-                throw std::invalid_argument("all MctsPool roots must use the same map_size");
-            }
-            if (source.actionSpaceSize() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
-                throw std::invalid_argument("map_size produces action ids too large for MctsPool int32 batches");
-            }
-            trees_.emplace_back(source.cloneForMcts());
-        }
-        if (trees_.empty()) throw std::invalid_argument("MctsPool requires at least one GameEnv root");
-
-        pool_ = std::make_unique<BatchThreadPool>(resolveThreadCount(trees_.size(), numThreads));
+    // A SelfPlayPool never runs live simulation and MCTS work concurrently,
+    // so sharing one fixed worker pool avoids CPU oversubscription and worker
+    // creation/destruction after every real move.
+    MctsPool(std::vector<GameEnv> roots,
+             BatchThreadPool& sharedPool,
+             int maxActions,
+             float cPuct)
+        : maxActions_(maxActions)
+        , cPuct_(cPuct)
+        , pool_(&sharedPool)
+    {
+        validateSettings(0);
+        initializeRoots(std::move(roots));
     }
 
     MctsPool(const MctsPool&) = delete;
     MctsPool& operator=(const MctsPool&) = delete;
+
+    // Reuse the scheduler and its worker threads for a new generation of
+    // detached roots. Pending leaves are deliberately rejected: accepting a
+    // late model result for another position would corrupt a search tree.
+    void resetRoots(std::vector<GameEnv> roots) {
+        std::lock_guard lock(apiMutex_);
+        if (!pending_.empty()) {
+            throw std::logic_error("cannot replace MCTS roots while leaf evaluations are pending");
+        }
+        initializeRoots(std::move(roots));
+        nextTree_ = 0;
+    }
+
+    // Lifecycle owners use this only when a real position is reset or
+    // advanced. It deliberately invalidates late evaluator outputs; leaf ids
+    // remain monotonic, so an old id can never name a new node.
+    void replaceRoots(std::vector<GameEnv> roots) {
+        std::lock_guard lock(apiMutex_);
+        initializeRoots(std::move(roots));
+        nextTree_ = 0;
+    }
 
     py::dict selectLeaves(int maxLeaves = 0) {
         if (maxLeaves < 0) throw std::invalid_argument("max_leaves must be non-negative");
@@ -3558,6 +3637,23 @@ public:
     }
 
 private:
+    static std::vector<GameEnv> copyRootsFromPython(py::iterable roots) {
+        std::vector<GameEnv> copied;
+        for (py::handle item : roots) {
+            const GameEnv& source = item.cast<const GameEnv&>();
+            copied.emplace_back(source.cloneForMcts());
+        }
+        return copied;
+    }
+
+    void validateSettings(int numThreads) const {
+        if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
+        if (numThreads < 0) throw std::invalid_argument("num_threads must be non-negative");
+        if (!std::isfinite(cPuct_) || cPuct_ <= 0.0f) {
+            throw std::invalid_argument("c_puct must be finite and positive");
+        }
+    }
+
     struct Node;
 
     // Edges are expanded eagerly from policy priors, but their GameEnv child
@@ -3603,6 +3699,35 @@ private:
         std::vector<std::unique_ptr<Node>> nodes;
         uint64_t pendingLeafId = 0;
     };
+
+    // Build a replacement forest before publishing it. This makes a failed
+    // belief submission atomic from SelfPlayPool's point of view.
+    void initializeRoots(std::vector<GameEnv> roots) {
+        if (roots.empty()) throw std::invalid_argument("MctsPool requires at least one GameEnv root");
+
+        int nextMapSize = mapSize_;
+        for (const GameEnv& source : roots) {
+            if (source.playerCountNative() != 2) {
+                throw std::invalid_argument(
+                    "MctsPool currently supports exactly two players; multi-player values require a vector-valued evaluator");
+            }
+            if (nextMapSize == 0) {
+                nextMapSize = source.mapSizeNative();
+            } else if (source.mapSizeNative() != nextMapSize) {
+                throw std::invalid_argument("all MctsPool roots must use the same map_size");
+            }
+            if (source.actionSpaceSize() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+                throw std::invalid_argument("map_size produces action ids too large for MctsPool int32 batches");
+            }
+        }
+
+        std::vector<Tree> replacement;
+        replacement.reserve(roots.size());
+        for (GameEnv& root : roots) replacement.emplace_back(std::move(root));
+        trees_ = std::move(replacement);
+        mapSize_ = nextMapSize;
+        pending_.clear();
+    }
 
     struct PendingLeaf {
         uint64_t id = 0;
@@ -3759,33 +3884,53 @@ private:
         size_t examined = 0;
         try {
             while (examined < treeCount && selections.size() < limit) {
-                const size_t treeIndex = (nextTree_ + examined) % treeCount;
-                ++examined;
-                Tree& tree = trees_[treeIndex];
-                if (tree.pendingLeafId != 0) continue;
-
-                Node* node = selectNode(tree);
-                if (!node) continue;
-                const size_t legalCount = node->env.legalActionCountNative();
-                if (legalCount == 0) {
-                    node->terminal = true;
-                    backup(*node, node->env.terminalValueForCurrentPlayer());
-                    continue;
+                // Tree traversal can clone a selected child state, which is
+                // substantially more expensive than assigning a leaf id. The
+                // trees are independent under apiMutex_, so traverse one
+                // deterministic wave in parallel and publish its leaves in
+                // stable tree order afterwards.
+                std::vector<size_t> candidates;
+                candidates.reserve(limit - selections.size());
+                while (examined < treeCount && candidates.size() < limit - selections.size()) {
+                    const size_t treeIndex = (nextTree_ + examined) % treeCount;
+                    ++examined;
+                    if (trees_[treeIndex].pendingLeafId == 0) candidates.push_back(treeIndex);
                 }
-                if (legalCount > static_cast<size_t>(maxActions_)) {
-                    throw std::runtime_error(
-                        "MctsPool max_actions=" + std::to_string(maxActions_) +
-                        " is too small for tree " + std::to_string(treeIndex) +
-                        ": its selected leaf has " + std::to_string(legalCount) + " legal actions");
-                }
+                if (candidates.empty()) continue;
 
-                const uint64_t id = nextLeafId_++;
-                if (id == 0) throw std::overflow_error("MctsPool leaf id counter overflowed");
-                node->pending = true;
-                tree.pendingLeafId = id;
-                PendingLeaf pending{id, treeIndex, node};
-                pending_.emplace(id, pending);
-                selections.push_back({id, treeIndex, node});
+                std::vector<Node*> nodes(candidates.size(), nullptr);
+                pool_->parallelFor(candidates.size(), [&](size_t begin, size_t end) {
+                    for (size_t item = begin; item < end; ++item) {
+                        nodes[item] = selectNode(trees_[candidates[item]]);
+                    }
+                });
+
+                for (size_t item = 0; item < candidates.size(); ++item) {
+                    const size_t treeIndex = candidates[item];
+                    Tree& tree = trees_[treeIndex];
+                    Node* node = nodes[item];
+                    if (!node) continue;
+                    const size_t legalCount = node->env.legalActionCountNative();
+                    if (legalCount == 0) {
+                        node->terminal = true;
+                        backup(*node, node->env.terminalValueForCurrentPlayer());
+                        continue;
+                    }
+                    if (legalCount > static_cast<size_t>(maxActions_)) {
+                        throw std::runtime_error(
+                            "MctsPool max_actions=" + std::to_string(maxActions_) +
+                            " is too small for tree " + std::to_string(treeIndex) +
+                            ": its selected leaf has " + std::to_string(legalCount) + " legal actions");
+                    }
+
+                    const uint64_t id = nextLeafId_++;
+                    if (id == 0) throw std::overflow_error("MctsPool leaf id counter overflowed");
+                    node->pending = true;
+                    tree.pendingLeafId = id;
+                    PendingLeaf pending{id, treeIndex, node};
+                    pending_.emplace(id, pending);
+                    selections.push_back({id, treeIndex, node});
+                }
             }
         } catch (...) {
             cancelSelections(selections);
@@ -4002,7 +4147,523 @@ private:
     std::unordered_map<uint64_t, PendingLeaf> pending_;
     uint64_t nextLeafId_ = 1;
     size_t nextTree_ = 0;
-    std::unique_ptr<BatchThreadPool> pool_;
+    std::unique_ptr<BatchThreadPool> ownedPool_;
+    BatchThreadPool* pool_ = nullptr;
+    mutable std::mutex apiMutex_;
+};
+
+// A native self-play scheduler for an external policy/value implementation.
+// It owns authoritative live games and a separate forest of belief roots. The
+// two are intentionally never exposed as Python GameEnv objects: Python sees
+// only dense player-view packets and returns model predictions / hypotheses.
+class SelfPlayPool {
+public:
+    SelfPlayPool(int numEnvs,
+                 int mapSize,
+                 const std::vector<int>& tribes,
+                 uint32_t seed,
+                 const std::string& unitsJsonPath,
+                 MapType mapType,
+                 int numThreads,
+                 int maxActions,
+                 bool autoReset,
+                 float cPuct)
+        : numEnvs_(numEnvs)
+        , mapSize_(mapSize)
+        , tribes_(tribes.empty() ? std::vector<int>{3, 2} : tribes)
+        , baseSeed_(seed)
+        , unitsJsonPath_(unitsJsonPath.empty() ? resolveDefaultUnitsJsonPath() : unitsJsonPath)
+        , mapType_(mapType)
+        , maxActions_(maxActions)
+        , autoReset_(autoReset)
+        , cPuct_(cPuct)
+        , pool_(resolveThreadCount(numEnvs, numThreads))
+    {
+        if (numEnvs_ <= 0) throw std::invalid_argument("num_envs must be positive");
+        if (mapSize_ <= 0) throw std::invalid_argument("map_size must be positive");
+        if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
+        if (numThreads < 0) throw std::invalid_argument("num_threads must be non-negative");
+        if (tribes_.size() != 2) {
+            throw std::invalid_argument(
+                "SelfPlayPool currently supports exactly two players; its MCTS uses a scalar zero-sum value");
+        }
+        if (!std::isfinite(cPuct_) || cPuct_ <= 0.0f) {
+            throw std::invalid_argument("c_puct must be finite and positive");
+        }
+
+        // Unit definitions are immutable during native execution. Load them
+        // before this pool's workers can touch a live environment.
+        GameDataSystem::loadUnits(unitsJsonPath_);
+        envs_.reserve(static_cast<size_t>(numEnvs_));
+        resetCounts_.assign(static_cast<size_t>(numEnvs_), 0);
+        stateGenerations_.assign(static_cast<size_t>(numEnvs_), 0);
+        episodeGenerations_.assign(static_cast<size_t>(numEnvs_), 0);
+        stateIds_.assign(static_cast<size_t>(numEnvs_), 0);
+        episodeIds_.assign(static_cast<size_t>(numEnvs_), 0);
+        beliefValidationScratch_.resize(
+            static_cast<size_t>(numEnvs_) * tileCount() * kMapTokenFeatureCount);
+        for (int i = 0; i < numEnvs_; ++i) {
+            envs_.emplace_back(mapSize_, tribes_, seedFor(static_cast<size_t>(i)), unitsJsonPath_, mapType_);
+            beginEpisode(static_cast<size_t>(i));
+            advanceState(static_cast<size_t>(i));
+        }
+        if (envs_.front().actionSpaceSize() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+            throw std::invalid_argument("map_size produces action ids too large for SelfPlayPool int32 batches");
+        }
+
+        // These roots are inert until submit_beliefs(). They exist only so the
+        // shared native scheduler and its permanent data structures can be
+        // created once, instead of allocating worker threads on every move.
+        mcts_ = std::make_unique<MctsPool>(makeDormantRoots(), pool_, maxActions_, cPuct_);
+    }
+
+    SelfPlayPool(const SelfPlayPool&) = delete;
+    SelfPlayPool& operator=(const SelfPlayPool&) = delete;
+
+    // Reset all authoritative games and return only their current players'
+    // observations. state_id is an opaque, per-slot position token required
+    // by submit_beliefs(), preventing late model completions from being used.
+    py::dict reset(std::optional<uint32_t> seed = std::nullopt) {
+        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (seed) {
+                baseSeed_ = *seed;
+                std::fill(resetCounts_.begin(), resetCounts_.end(), 0);
+            }
+            // Invalidate Python-visible search handles before any live slot
+            // changes, including the unlikely case that reset encoding throws.
+            searchActive_ = false;
+            for (size_t i = 0; i < envs_.size(); ++i) {
+                resetOne(i);
+                beginEpisode(i);
+                advanceState(i);
+            }
+            // A reset invalidates outstanding leaf ids. replaceRoots keeps the
+            // worker pool alive while clearing its pending-id table.
+            mcts_->replaceRoots(makeDormantRoots());
+            writeBeliefRequests(out, nullptr, false);
+        }
+        return out.intoDict();
+    }
+
+    // Return a fresh, immutable NumPy batch of public observation data for
+    // the current positions. This is useful when an external belief model is
+    // scheduled separately from the game loop.
+    py::dict beliefRequests() {
+        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            writeBeliefRequests(out, nullptr, false);
+        }
+        return out.intoDict();
+    }
+
+    // Build one detached root belief per authoritative game. The tensor must
+    // already be contiguous int32 to keep the hot path allocation-free on the
+    // Python side. The C++ builder validates every revealed tile before it
+    // reads hidden hypotheses and never clones a live hidden world.
+    void submitBeliefs(py::array stateIds, py::array completedMapTokens) {
+        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
+        auto tokens = py::array_t<int32_t, py::array::c_style>::ensure(completedMapTokens);
+        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
+            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
+        }
+        if (!tokens || tokens.ndim() != 3 || tokens.shape(0) != numEnvs_ ||
+            tokens.shape(1) != static_cast<py::ssize_t>(tileCount()) ||
+            tokens.shape(2) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
+            throw std::invalid_argument(
+                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 23]");
+        }
+
+        const uint64_t* idData = ids.data();
+        const int32_t* tokenData = tokens.data();
+        const size_t tiles = tileCount();
+        const size_t tokenStride = tiles * kMapTokenFeatureCount;
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (searchActive_) {
+                throw std::logic_error("a belief forest is already active; step or reset before submitting new beliefs");
+            }
+            for (size_t i = 0; i < envs_.size(); ++i) {
+                if (idData[i] != stateIds_[i]) {
+                    throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
+                }
+            }
+
+            // Keep completed roots in per-slot optionals so workers never
+            // contend on a vector push_back. Nothing is committed to MCTS
+            // until every belief has built and passed its public-action check.
+            std::vector<std::optional<GameEnv>> built(envs_.size());
+            pool_.parallelFor(envs_.size(), [&](size_t begin, size_t end) {
+                for (size_t i = begin; i < end; ++i) {
+                    GameEnv belief = envs_[i].makeBeliefEnvFromCurrentPlayerFlatTokens(
+                        tokenData + i * tokenStride,
+                        tiles,
+                        kMapTokenFeatureCount,
+                        beliefValidationScratch_.data() + i * tokenStride);
+                    // A hallucinated hidden tile must never create a root move
+                    // unavailable in the real position. Reject it rather than
+                    // silently falling back to authoritative hidden state.
+                    if (!envs_[i].hasSameCurrentLegalActions(belief)) {
+                        throw std::invalid_argument(
+                            "completed_map_tokens changes the current player's legal action set");
+                    }
+                    built[i].emplace(std::move(belief));
+                }
+            });
+
+            std::vector<GameEnv> roots;
+            roots.reserve(built.size());
+            for (std::optional<GameEnv>& root : built) {
+                if (!root) throw std::logic_error("belief build completed without a root");
+                roots.emplace_back(std::move(*root));
+            }
+            mcts_->resetRoots(std::move(roots));
+            searchActive_ = true;
+        }
+    }
+
+    py::dict selectLeaves(int maxLeaves = 0) {
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        py::dict out = mcts_->selectLeaves(maxLeaves);
+        attachLeafPositionMetadata(out);
+        return out;
+    }
+
+    void expandAndBackup(py::array leafIds, py::array policyLogits, py::array values) {
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        mcts_->expandAndBackup(leafIds, policyLogits, values);
+    }
+
+    py::dict rootPolicy(float temperature = 1.0f) {
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        py::dict out = mcts_->rootPolicy(temperature);
+        attachRootPositionMetadata(out);
+        return out;
+    }
+
+    // Execute a selected action in every authoritative game. It is legal to
+    // inspect a partial root policy while leaves are pending, but not to
+    // advance: that would make a late GPU answer refer to the wrong tree.
+    py::dict step(py::array actionIds) {
+        auto actions = py::array_t<int32_t, py::array::c_style | py::array::forcecast>::ensure(actionIds);
+        if (!actions || actions.ndim() != 1 || actions.shape(0) != numEnvs_) {
+            throw std::invalid_argument("action_ids must be a contiguous one-dimensional int32-compatible array with num_envs entries");
+        }
+
+        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        const int32_t* actionData = actions.data();
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            requireActiveSearch();
+            if (mcts_->pendingCount() != 0) {
+                throw std::logic_error("cannot step SelfPlayPool while MCTS leaf evaluations are pending");
+            }
+            try {
+                writeBeliefRequests(out, actionData, true);
+            } catch (...) {
+                // A live step may already have succeeded before an output
+                // capacity/encoding error is reported. Never leave the old
+                // forest callable for that new live position.
+                searchActive_ = false;
+                throw;
+            }
+            // Old roots are deliberately not reused after a real move: a new
+            // external belief hypothesis may differ, especially under fog.
+            // Their ids are already fully resolved, so no extra cloning is
+            // required until the next submit_beliefs().
+            searchActive_ = false;
+        }
+        return out.intoDict();
+    }
+
+    int numEnvs() const { return numEnvs_; }
+    int numThreads() const { return static_cast<int>(pool_.workerCount()); }
+    int mapSize() const { return mapSize_; }
+    int maxActions() const { return maxActions_; }
+    bool autoReset() const { return autoReset_; }
+    float cPuct() const { return cPuct_; }
+    bool searchActive() const {
+        std::lock_guard lock(apiMutex_);
+        return searchActive_;
+    }
+    int pendingCount() const {
+        std::lock_guard lock(apiMutex_);
+        return mcts_->pendingCount();
+    }
+
+    std::vector<std::string> actionFeatureNames() const {
+        return {
+            "type_id", "source_index", "target_index", "city", "tech", "building",
+            "spawn_type", "upgrade", "tile_action", "unit_upgrade", "unit_id",
+            "population_gain", "cost_stars", "stars_before", "affordable",
+            "damage_dealt", "damage_received",
+        };
+    }
+
+    std::vector<std::string> stateFeatureNames() const {
+        return {
+            "turn", "current_player", "game_over", "winner", "player_stars",
+            "owns_units", "own_cities", "next_turn_star_income", "pending_city_id",
+            "pending_upgrade_a", "pending_upgrade_b",
+        };
+    }
+
+private:
+    struct BeliefRequestBatch {
+        BeliefRequestBatch(size_t rows, size_t tiles, size_t maxActions)
+            : mapTokens({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
+                         static_cast<py::ssize_t>(kMapTokenFeatureCount)})
+            , state({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
+            , actionIds({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
+            , actionFeatures({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                              static_cast<py::ssize_t>(kVectorActionFeatureCount)})
+            , actionArgMasks({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                              static_cast<py::ssize_t>(kVectorActionArgMaskCount)})
+            , actionMask({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
+            , legalActionCount(static_cast<py::ssize_t>(rows))
+            , reward(static_cast<py::ssize_t>(rows))
+            , terminated(static_cast<py::ssize_t>(rows))
+            , actionValid(static_cast<py::ssize_t>(rows))
+            , envId(static_cast<py::ssize_t>(rows))
+            , toPlay(static_cast<py::ssize_t>(rows))
+            , stateId(static_cast<py::ssize_t>(rows))
+            , episodeId(static_cast<py::ssize_t>(rows)) {}
+
+        py::dict intoDict() {
+            py::dict out;
+            out["map_tokens"] = std::move(mapTokens);
+            out["state"] = std::move(state);
+            out["action_id"] = std::move(actionIds);
+            out["action_features"] = std::move(actionFeatures);
+            out["action_arg_mask"] = std::move(actionArgMasks);
+            out["action_mask"] = std::move(actionMask);
+            out["legal_action_count"] = std::move(legalActionCount);
+            out["reward"] = std::move(reward);
+            out["terminated"] = std::move(terminated);
+            out["action_valid"] = std::move(actionValid);
+            out["env_id"] = std::move(envId);
+            out["to_play"] = std::move(toPlay);
+            out["state_id"] = std::move(stateId);
+            out["episode_id"] = std::move(episodeId);
+            return out;
+        }
+
+        py::array_t<int32_t> mapTokens;
+        py::array_t<int32_t> state;
+        py::array_t<int32_t> actionIds;
+        py::array_t<int32_t> actionFeatures;
+        py::array_t<uint8_t> actionArgMasks;
+        py::array_t<uint8_t> actionMask;
+        py::array_t<int32_t> legalActionCount;
+        py::array_t<float> reward;
+        py::array_t<uint8_t> terminated;
+        py::array_t<uint8_t> actionValid;
+        py::array_t<int32_t> envId;
+        py::array_t<int32_t> toPlay;
+        py::array_t<uint64_t> stateId;
+        py::array_t<uint64_t> episodeId;
+    };
+
+    static size_t resolveThreadCount(int numEnvs, int requested) {
+        const unsigned int hardware = std::max(1u, std::thread::hardware_concurrency());
+        const size_t wanted = requested > 0 ? static_cast<size_t>(requested) : static_cast<size_t>(hardware);
+        return std::max<size_t>(1, std::min(static_cast<size_t>(std::max(1, numEnvs)), wanted));
+    }
+
+    size_t tileCount() const {
+        return static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
+    }
+
+    uint32_t seedFor(size_t envIndex) const {
+        if (baseSeed_ == 0) return 0;
+        return baseSeed_ + static_cast<uint32_t>(envIndex) +
+            static_cast<uint32_t>(resetCounts_[envIndex] * static_cast<uint64_t>(numEnvs_));
+    }
+
+    static uint64_t composeSlotId(uint64_t generation, size_t envIndex, const char* kind) {
+        if (generation == 0 || generation > std::numeric_limits<uint32_t>::max() ||
+            envIndex >= static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+            throw std::overflow_error(std::string("SelfPlayPool ") + kind + " id counter overflowed");
+        }
+        return (generation << 32) | static_cast<uint64_t>(envIndex + 1);
+    }
+
+    void beginEpisode(size_t envIndex) {
+        ++episodeGenerations_[envIndex];
+        episodeIds_[envIndex] = composeSlotId(episodeGenerations_[envIndex], envIndex, "episode");
+    }
+
+    void advanceState(size_t envIndex) {
+        ++stateGenerations_[envIndex];
+        stateIds_[envIndex] = composeSlotId(stateGenerations_[envIndex], envIndex, "state");
+    }
+
+    void resetOne(size_t envIndex) {
+        envs_[envIndex].resetNative(seedFor(envIndex));
+        ++resetCounts_[envIndex];
+    }
+
+    std::vector<GameEnv> makeDormantRoots() const {
+        std::vector<GameEnv> roots;
+        roots.reserve(envs_.size());
+        for (const GameEnv& env : envs_) roots.emplace_back(env.cloneForMcts());
+        return roots;
+    }
+
+    void requireActiveSearch() const {
+        if (!searchActive_) {
+            throw std::logic_error("submit_beliefs() is required before using the MCTS search API");
+        }
+    }
+
+    void clearPacket(BeliefRequestBatch& out) const {
+        const size_t rows = envs_.size();
+        const size_t actionSlots = rows * static_cast<size_t>(maxActions_);
+        std::fill_n(out.actionIds.mutable_data(), actionSlots, int32_t{-1});
+        std::fill_n(out.actionFeatures.mutable_data(), actionSlots * kVectorActionFeatureCount, int32_t{0});
+        std::fill_n(out.actionArgMasks.mutable_data(), actionSlots * kVectorActionArgMaskCount, uint8_t{0});
+        std::fill_n(out.actionMask.mutable_data(), actionSlots, uint8_t{0});
+        std::fill_n(out.reward.mutable_data(), rows, 0.0f);
+        std::fill_n(out.terminated.mutable_data(), rows, uint8_t{0});
+        std::fill_n(out.actionValid.mutable_data(), rows, uint8_t{0});
+    }
+
+    void writeBeliefRequests(BeliefRequestBatch& out, const int32_t* actions, bool advance) {
+        clearPacket(out);
+        const size_t rows = envs_.size();
+        const size_t tiles = tileCount();
+        int32_t* mapData = out.mapTokens.mutable_data();
+        int32_t* stateData = out.state.mutable_data();
+        int32_t* actionIdData = out.actionIds.mutable_data();
+        int32_t* actionFeatureData = out.actionFeatures.mutable_data();
+        uint8_t* actionArgMaskData = out.actionArgMasks.mutable_data();
+        uint8_t* actionMaskData = out.actionMask.mutable_data();
+        int32_t* legalCountData = out.legalActionCount.mutable_data();
+        float* rewardData = out.reward.mutable_data();
+        uint8_t* terminatedData = out.terminated.mutable_data();
+        uint8_t* actionValidData = out.actionValid.mutable_data();
+        int32_t* envIdData = out.envId.mutable_data();
+        int32_t* toPlayData = out.toPlay.mutable_data();
+        uint64_t* stateIdData = out.stateId.mutable_data();
+        uint64_t* episodeIdData = out.episodeId.mutable_data();
+
+        pool_.parallelFor(rows, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                if (advance) {
+                    const int32_t actionId = actions[i];
+                    const NativeStepResult result = actionId >= 0
+                        ? envs_[i].stepNative(static_cast<size_t>(actionId))
+                        : NativeStepResult{};
+                    actionValidData[i] = result.ok ? 1 : 0;
+                    rewardData[i] = result.reward;
+                    terminatedData[i] = result.done ? 1 : 0;
+                    if (result.ok) {
+                        if (result.done && autoReset_) {
+                            resetOne(i);
+                            beginEpisode(i);
+                        }
+                        advanceState(i);
+                    }
+                }
+
+                envs_[i].writeTrainingPacket(
+                    mapData + i * tiles * kMapTokenFeatureCount,
+                    stateData + i * kVectorStateFeatureCount,
+                    actionIdData + i * static_cast<size_t>(maxActions_),
+                    actionFeatureData + i * static_cast<size_t>(maxActions_) * kVectorActionFeatureCount,
+                    actionArgMaskData + i * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
+                    actionMaskData + i * static_cast<size_t>(maxActions_),
+                    legalCountData + i,
+                    static_cast<size_t>(maxActions_),
+                    false);
+                envIdData[i] = static_cast<int32_t>(i);
+                toPlayData[i] = static_cast<int32_t>(envs_[i].currentPlayerNative());
+                stateIdData[i] = stateIds_[i];
+                episodeIdData[i] = episodeIds_[i];
+            }
+        });
+
+        for (size_t i = 0; i < rows; ++i) {
+            if (legalCountData[i] > maxActions_) {
+                throw std::runtime_error(
+                    "SelfPlayPool max_actions=" + std::to_string(maxActions_) +
+                    " is too small for env " + std::to_string(i) +
+                    ": it has " + std::to_string(legalCountData[i]) + " legal actions");
+            }
+        }
+    }
+
+    void attachLeafPositionMetadata(py::dict& out) const {
+        auto treeIds = py::array_t<int32_t, py::array::c_style>::ensure(out["tree_id"]);
+        if (!treeIds || treeIds.ndim() != 1) {
+            throw std::logic_error("MCTS returned an invalid tree_id batch");
+        }
+        const size_t rows = static_cast<size_t>(treeIds.shape(0));
+        py::array_t<int32_t> envIds(static_cast<py::ssize_t>(rows));
+        py::array_t<uint64_t> stateIds(static_cast<py::ssize_t>(rows));
+        py::array_t<uint64_t> episodeIds(static_cast<py::ssize_t>(rows));
+        const int32_t* treeData = treeIds.data();
+        int32_t* envData = envIds.mutable_data();
+        uint64_t* stateData = stateIds.mutable_data();
+        uint64_t* episodeData = episodeIds.mutable_data();
+        for (size_t row = 0; row < rows; ++row) {
+            const int32_t tree = treeData[row];
+            if (tree < 0 || tree >= numEnvs_) throw std::logic_error("MCTS returned an out-of-range tree id");
+            const size_t env = static_cast<size_t>(tree);
+            envData[row] = tree;
+            stateData[row] = stateIds_[env];
+            episodeData[row] = episodeIds_[env];
+        }
+        out["env_id"] = std::move(envIds);
+        out["state_id"] = std::move(stateIds);
+        out["episode_id"] = std::move(episodeIds);
+    }
+
+    void attachRootPositionMetadata(py::dict& out) const {
+        py::array_t<int32_t> envIds(static_cast<py::ssize_t>(envs_.size()));
+        py::array_t<uint64_t> stateIds(static_cast<py::ssize_t>(envs_.size()));
+        py::array_t<uint64_t> episodeIds(static_cast<py::ssize_t>(envs_.size()));
+        int32_t* envData = envIds.mutable_data();
+        uint64_t* stateData = stateIds.mutable_data();
+        uint64_t* episodeData = episodeIds.mutable_data();
+        for (size_t i = 0; i < envs_.size(); ++i) {
+            envData[i] = static_cast<int32_t>(i);
+            stateData[i] = stateIds_[i];
+            episodeData[i] = episodeIds_[i];
+        }
+        out["env_id"] = std::move(envIds);
+        out["state_id"] = std::move(stateIds);
+        out["episode_id"] = std::move(episodeIds);
+    }
+
+    int numEnvs_ = 0;
+    int mapSize_ = 0;
+    std::vector<int> tribes_;
+    uint32_t baseSeed_ = 0;
+    std::string unitsJsonPath_;
+    MapType mapType_ = MapType::Lakes;
+    int maxActions_ = 0;
+    bool autoReset_ = true;
+    float cPuct_ = 1.5f;
+    std::vector<GameEnv> envs_;
+    std::vector<uint64_t> resetCounts_;
+    std::vector<uint64_t> stateGenerations_;
+    std::vector<uint64_t> episodeGenerations_;
+    std::vector<uint64_t> stateIds_;
+    std::vector<uint64_t> episodeIds_;
+    std::vector<int32_t> beliefValidationScratch_;
+    BatchThreadPool pool_;
+    std::unique_ptr<MctsPool> mcts_;
+    bool searchActive_ = false;
     mutable std::mutex apiMutex_;
 };
 
@@ -4189,5 +4850,50 @@ PYBIND11_MODULE(_game_engine, m) {
         .def_property_readonly("map_size", &MctsPool::mapSize)
         .def_property_readonly("c_puct", &MctsPool::cPuct)
         .def_property_readonly("pending_count", &MctsPool::pendingCount)
+        ;
+
+    py::class_<SelfPlayPool>(m, "SelfPlayPool")
+        .def(py::init<int, int, const std::vector<int>&, uint32_t, const std::string&, MapType, int, int, bool, float>(),
+             py::arg("num_envs"),
+             py::arg("map_size") = 11,
+             py::arg("tribes") = std::vector<int>{3, 2},
+             py::arg("seed") = 1u,
+             py::arg("units_json_path") = "",
+             py::arg("map_type") = MapType::Lakes,
+             py::arg("num_threads") = 0,
+             py::arg("max_actions") = 512,
+             py::arg("auto_reset") = true,
+             py::arg("c_puct") = 1.5f,
+             "Native model-agnostic self-play scheduler with detached belief-root MCTS.")
+        .def("reset", &SelfPlayPool::reset,
+             py::arg("seed") = std::nullopt,
+             "Reset live games and return dense player-view belief requests.")
+        .def("belief_requests", &SelfPlayPool::beliefRequests,
+             "Return current dense player-view inputs for an external belief model.")
+        .def("submit_beliefs", &SelfPlayPool::submitBeliefs,
+             py::arg("state_ids"), py::arg("completed_map_tokens"),
+             "Validate detached belief worlds and make them the active MCTS roots.")
+        .def("select_leaves", &SelfPlayPool::selectLeaves,
+             py::arg("max_leaves") = 0,
+             "Return a dense MCTS leaf batch for an external policy/value model.")
+        .def("expand_and_backup", &SelfPlayPool::expandAndBackup,
+             py::arg("leaf_ids"), py::arg("policy_logits"), py::arg("values"),
+             "Expand pending leaves and back up external policy/value results.")
+        .def("root_policy", &SelfPlayPool::rootPolicy,
+             py::arg("temperature") = 1.0f,
+             "Return one root visit policy per live game.")
+        .def("step", &SelfPlayPool::step,
+             py::arg("action_ids"),
+             "Apply chosen action ids to live games and return their next belief requests.")
+        .def_property_readonly("num_envs", &SelfPlayPool::numEnvs)
+        .def_property_readonly("num_threads", &SelfPlayPool::numThreads)
+        .def_property_readonly("map_size", &SelfPlayPool::mapSize)
+        .def_property_readonly("max_actions", &SelfPlayPool::maxActions)
+        .def_property_readonly("auto_reset", &SelfPlayPool::autoReset)
+        .def_property_readonly("c_puct", &SelfPlayPool::cPuct)
+        .def_property_readonly("search_active", &SelfPlayPool::searchActive)
+        .def_property_readonly("pending_count", &SelfPlayPool::pendingCount)
+        .def_property_readonly("action_feature_names", &SelfPlayPool::actionFeatureNames)
+        .def_property_readonly("state_feature_names", &SelfPlayPool::stateFeatureNames)
         ;
 }
