@@ -5571,6 +5571,39 @@ public:
         }
     }
 
+    // Discard only belief-incompatible live slots without exposing their
+    // source maps. This is the recovery path for a training sampler that
+    // exhausted its public-action rejection budget for one environment.
+    void resetSlots(py::array envIds) {
+        auto ids = py::array_t<int32_t, py::array::c_style>::ensure(envIds);
+        if (!ids || ids.ndim() != 1) {
+            throw std::invalid_argument("env_ids must be a contiguous one-dimensional int32 array");
+        }
+        const int32_t* data = ids.data();
+        const size_t count = static_cast<size_t>(ids.shape(0));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (searchActive_) {
+                throw std::logic_error("cannot reset individual SelfPlayPool slots while MCTS is active");
+            }
+            std::vector<uint8_t> seen(envs_.size(), 0);
+            for (size_t row = 0; row < count; ++row) {
+                const int32_t id = data[row];
+                if (id < 0 || static_cast<size_t>(id) >= envs_.size()) {
+                    throw std::invalid_argument("env_ids contains an invalid SelfPlayPool slot");
+                }
+                const size_t index = static_cast<size_t>(id);
+                if (seen[index]) continue;
+                seen[index] = 1;
+                resetOne(index);
+                beginEpisode(index);
+                advanceState(index);
+            }
+            mcts_->replaceRoots(makeDormantRoots());
+        }
+    }
+
     // Return a fresh, immutable NumPy batch of public observation data for
     // the current positions. This is useful when an external belief model is
     // scheduled separately from the game loop.
@@ -6832,6 +6865,9 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("reset_into", &SelfPlayPool::resetInto,
              py::arg("buffers"), py::arg("seed") = std::nullopt,
              "Reset live games and fill validated caller-owned belief buffers in place.")
+        .def("reset_slots", &SelfPlayPool::resetSlots,
+             py::arg("env_ids"),
+             "Reset selected inactive live slots after belief rejection without exposing source maps.")
         .def("belief_requests", &SelfPlayPool::beliefRequests,
              "Return current dense player-view inputs for an external belief model.")
         .def("belief_requests_into", &SelfPlayPool::beliefRequestsInto,
