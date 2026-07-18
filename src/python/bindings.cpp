@@ -5594,6 +5594,86 @@ public:
         }
     }
 
+    // Training-only validator for external belief samplers.  It exposes no
+    // source-map tokens: each byte says only whether a submitted hypothesis
+    // preserves the already public legal root action set and is non-terminal.
+    // The caller can resample just rejected rows before one atomic submit.
+    py::array_t<uint8_t> beliefAcceptanceMask(py::array stateIds, py::array completedMapTokens) {
+        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
+        auto tokens = py::array_t<int32_t, py::array::c_style>::ensure(completedMapTokens);
+        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
+            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
+        }
+        if (!tokens || tokens.ndim() != 3 || tokens.shape(0) != numEnvs_ ||
+            tokens.shape(1) != static_cast<py::ssize_t>(tileCount()) ||
+            tokens.shape(2) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
+            throw std::invalid_argument(
+                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 23]");
+        }
+        py::array_t<uint8_t> accepted(static_cast<py::ssize_t>(numEnvs_));
+        const uint64_t* idData = ids.data();
+        const int32_t* tokenData = tokens.data();
+        uint8_t* acceptedData = accepted.mutable_data();
+        const size_t tiles = tileCount();
+        const size_t tokenStride = tiles * kMapTokenFeatureCount;
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (searchActive_) {
+                throw std::logic_error("a belief forest is already active; step or reset before validating beliefs");
+            }
+            for (size_t i = 0; i < envs_.size(); ++i) {
+                if (idData[i] != stateIds_[i]) {
+                    throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
+                }
+                try {
+                    GameEnv belief = envs_[i].makeBeliefEnvFromCurrentPlayerFlatTokens(
+                        tokenData + i * tokenStride, tiles, kMapTokenFeatureCount,
+                        beliefValidationScratch_.data() + i * tokenStride);
+                    acceptedData[i] = (
+                        envs_[i].hasSameCurrentLegalActions(belief) &&
+                        (envs_[i].isTerminalNative() || !belief.isTerminalNative())
+                    ) ? 1 : 0;
+                } catch (...) {
+                    acceptedData[i] = 0;
+                }
+            }
+        }
+        return accepted;
+    }
+
+    // Explicitly training-only full-map targets. They are paired with state
+    // ids so an external trainer cannot accidentally label a later position.
+    // SelfPlayPool never consumes this data in submitBeliefs or MCTS.
+    py::array_t<int32_t> beliefTargetsNumpy(py::array stateIds) const {
+        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
+        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
+            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
+        }
+        py::array_t<int32_t> out({static_cast<py::ssize_t>(numEnvs_),
+                                  static_cast<py::ssize_t>(tileCount()),
+                                  static_cast<py::ssize_t>(kMapTokenFeatureCount)});
+        const uint64_t* idData = ids.data();
+        int32_t* targetData = out.mutable_data();
+        const size_t rowWidth = tileCount() * kMapTokenFeatureCount;
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            for (size_t i = 0; i < envs_.size(); ++i) {
+                if (idData[i] != stateIds_[i]) {
+                    throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
+                }
+                const auto rows = envs_[i].fullMap();
+                int32_t* dst = targetData + i * rowWidth;
+                for (size_t tile = 0; tile < rows.size(); ++tile) {
+                    std::copy(rows[tile].begin(), rows[tile].end(),
+                              dst + tile * kMapTokenFeatureCount);
+                }
+            }
+        }
+        return out;
+    }
+
     // Build one detached root belief per authoritative game. The tensor must
     // already be contiguous int32 to keep the hot path allocation-free on the
     // Python side. The C++ builder validates every revealed tile before it
@@ -5641,7 +5721,8 @@ public:
                     // A hallucinated hidden tile must never create a root move
                     // unavailable in the real position. Reject it rather than
                     // silently falling back to authoritative hidden state.
-                    if (!envs_[i].hasSameCurrentLegalActions(belief)) {
+                    if (!envs_[i].hasSameCurrentLegalActions(belief) ||
+                        (!envs_[i].isTerminalNative() && belief.isTerminalNative())) {
                         throw std::invalid_argument(
                             "completed_map_tokens changes the current player's legal action set");
                     }
@@ -6756,6 +6837,12 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("belief_requests_into", &SelfPlayPool::beliefRequestsInto,
              py::arg("buffers"),
              "Fill validated caller-owned current belief buffers in place.")
+        .def("belief_acceptance_mask", &SelfPlayPool::beliefAcceptanceMask,
+             py::arg("state_ids"), py::arg("completed_map_tokens"),
+             "Training-only per-slot legality/terminal acceptance mask for belief hypotheses.")
+        .def("belief_targets_numpy", &SelfPlayPool::beliefTargetsNumpy,
+             py::arg("state_ids"),
+             "Training-only authoritative map-token labels; never consumed by native MCTS.")
         .def("submit_beliefs", &SelfPlayPool::submitBeliefs,
              py::arg("state_ids"), py::arg("completed_map_tokens"),
              "Validate detached belief worlds and make them the active MCTS roots.")
