@@ -41,6 +41,11 @@ def _assert_same_batch(expected: dict[str, np.ndarray], actual: dict[str, np.nda
         np.testing.assert_array_equal(actual[name], value, err_msg=name)
 
 
+def _batch_rows(batch: dict[str, np.ndarray], env_ids: np.ndarray) -> dict[str, np.ndarray]:
+    """Return one dense batch row subset, preserving the slot row order."""
+    return {name: value[env_ids] for name, value in batch.items()}
+
+
 def test_vector_reset_matches_single_environments() -> None:
     vector = VectorGameEnv(
         num_envs=4,
@@ -124,6 +129,123 @@ def test_vector_rejects_wrong_action_batch_shape() -> None:
     vector = VectorGameEnv(num_envs=2, seed=5, max_actions=128)
     with pytest.raises(ValueError, match="num_envs"):
         vector.step(np.array([0], dtype=np.int32))
+
+
+def test_vector_position_ids_track_state_and_episode_generations() -> None:
+    vector = VectorGameEnv(
+        num_envs=3,
+        seed=47,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+    )
+    initial = vector.reset(seed=47)
+
+    assert initial["state_id"].dtype == np.uint64
+    assert initial["episode_id"].dtype == np.uint64
+    assert len(np.unique(initial["state_id"])) == vector.num_envs
+    assert len(np.unique(initial["episode_id"])) == vector.num_envs
+    assert set(("state_id", "episode_id")) <= set(vector.batch_spec())
+
+    assert np.all(initial["legal_action_count"] > 0)
+    actions = initial["action_id"][:, 0].copy()
+    stepped = vector.step_checked(actions, initial["state_id"])
+
+    assert np.all(stepped["action_valid"] == 1)
+    assert np.all(stepped["terminated"] == 0)
+    assert np.all(stepped["state_id"] != initial["state_id"])
+    # A normal non-terminal transition changes the position, not the episode.
+    assert np.array_equal(stepped["episode_id"], initial["episode_id"])
+
+    reset = vector.reset(seed=47)
+    assert np.all(reset["state_id"] != stepped["state_id"])
+    assert np.all(reset["episode_id"] != stepped["episode_id"])
+
+
+def test_vector_step_checked_rejects_mixed_stale_ids_atomically() -> None:
+    vector = VectorGameEnv(
+        num_envs=3,
+        seed=53,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+    )
+    initial = vector.reset(seed=53)
+    first_actions = initial["action_id"][:, 0].copy()
+    current = vector.step_checked(first_actions, initial["state_id"])
+
+    # One old row is enough to reject the complete action vector.  Snapshot
+    # through observe_slots(), whose output itself does not advance a state.
+    env_ids = np.arange(vector.num_envs, dtype=np.int32)
+    before_rejection = vector.observe_slots(env_ids)
+    stale_ids = current["state_id"].copy()
+    stale_ids[-1] = initial["state_id"][-1]
+    actions = before_rejection["action_id"][:, 0].copy()
+
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        vector.step_checked(actions, stale_ids)
+
+    after_rejection = vector.observe_slots(env_ids)
+    _assert_same_batch(before_rejection, after_rejection)
+
+    # The still-current token is accepted, proving that the rejected call did
+    # not partially consume actions from any environment.
+    accepted = vector.step_checked(actions, before_rejection["state_id"])
+    assert np.all(accepted["action_valid"] == 1)
+    assert np.all(accepted["state_id"] != before_rejection["state_id"])
+
+
+def test_vector_slots_match_full_batch_and_reject_duplicate_or_stale_rows() -> None:
+    kwargs = dict(
+        num_envs=5,
+        seed=59,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+    )
+    slotted = VectorGameEnv(**kwargs)
+    reference = VectorGameEnv(**kwargs)
+    expected_initial = reference.reset(seed=59)
+    slotted.reset(seed=59)
+
+    slots = [np.asarray(slot, dtype=np.int32) for slot in slotted.slot_partitions(2)]
+    assert [slot.size for slot in slots] == [3, 2]
+    assert all(slot.dtype == np.int32 for slot in slots)
+    assert np.array_equal(np.sort(np.concatenate(slots)), np.arange(5, dtype=np.int32))
+
+    full_actions = expected_initial["action_id"][:, 0].copy()
+    expected_after_step = reference.step_checked(full_actions, expected_initial["state_id"])
+    for env_ids in slots:
+        observed = slotted.observe_slots(env_ids)
+        _assert_same_batch(_batch_rows(expected_initial, env_ids), observed)
+        slot_actions = observed["action_id"][:, 0].copy()
+        stepped = slotted.step_slots_checked(env_ids, slot_actions, observed["state_id"])
+        _assert_same_batch(_batch_rows(expected_after_step, env_ids), stepped)
+
+    env_ids = slots[0]
+    current = slotted.observe_slots(env_ids)
+    duplicate_ids = np.array([env_ids[0], env_ids[0]], dtype=np.int32)
+    duplicate_actions = np.array([current["action_id"][0, 0]] * 2, dtype=np.int32)
+    duplicate_states = np.array([current["state_id"][0]] * 2, dtype=np.uint64)
+    with pytest.raises(ValueError, match="duplicate"):
+        slotted.observe_slots(duplicate_ids)
+    with pytest.raises(ValueError, match="duplicate"):
+        slotted.step_slots_checked(duplicate_ids, duplicate_actions, duplicate_states)
+    _assert_same_batch(current, slotted.observe_slots(env_ids))
+
+    stale_ids = current["state_id"].copy()
+    stale_ids[-1] = expected_initial["state_id"][env_ids[-1]]
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        slotted.step_slots_checked(
+            env_ids, current["action_id"][:, 0].copy(), stale_ids
+        )
+    _assert_same_batch(current, slotted.observe_slots(env_ids))
 
 
 def test_vector_marks_invalid_actions_without_mutating_state() -> None:
@@ -276,6 +398,14 @@ def test_vector_into_matches_allocating_api_and_reuses_storage(visible_event_his
     selected_actions = buffers["action_id"][:, 0]
     expected = reference.step(selected_actions.copy())
     into.step_into(selected_actions, buffers)
+    _assert_same_batch(expected, buffers)
+    assert {name: array.ctypes.data for name, array in buffers.items()} == storage_addresses
+
+    # The checked pinned-buffer boundary copies both the strided action view
+    # and the state-id vector before overwriting this same slot.
+    selected_actions = buffers["action_id"][:, 0]
+    expected = reference.step_checked(selected_actions.copy(), expected["state_id"])
+    into.step_into_checked(selected_actions, buffers["state_id"], buffers)
     _assert_same_batch(expected, buffers)
     assert {name: array.ctypes.data for name, array in buffers.items()} == storage_addresses
 

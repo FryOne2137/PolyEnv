@@ -47,8 +47,6 @@ int ruinTargetForMapSize(int tileCount) {
 
 } // namespace
 
-std::vector<Pos> MapGenerator::s_lastCapitals{};
-
 int MapGenerator::randInt(std::mt19937& rng, int a, int b) {
     std::uniform_int_distribution<int> distribution(a, b);
     return distribution(rng);
@@ -126,12 +124,11 @@ MapGenerator::TribeProbs MapGenerator::probsForTribe(TribeType tribe) {
     return probabilities;
 }
 
-void MapGenerator::generate(Map& map, const Params& params) {
+std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
     const int size = params.mapSize;
     const int tileCount = size * size;
     const auto& tribes = map.getActiveTribes();
-    s_lastCapitals.clear();
-    if (size < 3 || tribes.size() < 2 || tribes.size() > 16) return;
+    if (size < 3 || tribes.size() < 2 || tribes.size() > 16) return {};
     if (map.getWidth() != size || map.getHeight() != size) map.init(size, size);
 
     std::mt19937 rng(params.seed == 0 ? std::random_device{}() : params.seed);
@@ -589,10 +586,8 @@ void MapGenerator::generate(Map& map, const Params& params) {
         tile.setRoadBridge(RoadBridgeEnum::None);
     }
 
-    s_lastCapitals.reserve(static_cast<size_t>(players));
-    for (int cell : capitals) s_lastCapitals.push_back(Pos{cell % size, cell / size});
-}
-
-const std::vector<Pos>& MapGenerator::getLastCapitals() {
-    return s_lastCapitals;
+    std::vector<Pos> capitalPositions;
+    capitalPositions.reserve(static_cast<size_t>(players));
+    for (int cell : capitals) capitalPositions.push_back(Pos{cell % size, cell / size});
+    return capitalPositions;
 }

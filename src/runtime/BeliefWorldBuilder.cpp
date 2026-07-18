@@ -1,6 +1,7 @@
 #include "runtime/BeliefWorldBuilder.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 
@@ -10,6 +11,83 @@
 namespace {
 constexpr size_t kBeliefTokenWidth = 23;
 constexpr int kUnitTypeMax = static_cast<int>(UnitType::GiantSuper);
+
+// `Game::worldSeed` drives deterministic random outcomes such as ruins.  A
+// detached belief world must never inherit that value: it could otherwise
+// reveal facts that are not represented in the player's observation.  Keep a
+// stable, explicitly byte-oriented hash here instead of std::hash so that a
+// saved belief hypothesis produces the same rollout seed on every supported
+// platform.
+constexpr uint64_t kBeliefSeedHashOffset = 14695981039346656037ull;
+constexpr uint64_t kBeliefSeedHashPrime = 1099511628211ull;
+constexpr uint64_t kBeliefSeedDomain = 0x504F4C5942454C31ull; // "POLYBEL1"
+
+void hashByte(uint64_t& hash, uint8_t value) {
+    hash ^= value;
+    hash *= kBeliefSeedHashPrime;
+}
+
+void hashU32(uint64_t& hash, uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        hashByte(hash, static_cast<uint8_t>(value >> shift));
+    }
+}
+
+void hashU64(uint64_t& hash, uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+        hashByte(hash, static_cast<uint8_t>(value >> shift));
+    }
+}
+
+uint64_t avalanche64(uint64_t value) {
+    value ^= value >> 30;
+    value *= 0xBF58476D1CE4E5B9ull;
+    value ^= value >> 27;
+    value *= 0x94D049BB133111EBull;
+    value ^= value >> 31;
+    return value;
+}
+
+uint32_t deriveBeliefWorldSeed(const Game& source,
+                                PlayerId perspective,
+                                const int32_t* tokens,
+                                size_t rowCount,
+                                size_t columnCount) {
+    uint64_t hash = kBeliefSeedHashOffset;
+    hashU64(hash, kBeliefSeedDomain);
+    hashU32(hash, 1u); // derivation format version
+
+    // This metadata is part of the public game position.  In particular, do
+    // not read source.getWorldSeed() or source-map contents here.
+    const Map& map = source.getMap();
+    hashU32(hash, static_cast<uint32_t>(map.getWidth()));
+    hashU32(hash, static_cast<uint32_t>(map.getHeight()));
+    hashU32(hash, static_cast<uint32_t>(perspective));
+    hashU32(hash, static_cast<uint32_t>(source.getCurrentPlayerId()));
+    hashU32(hash, source.getTurnNumber());
+    hashU32(hash, static_cast<uint32_t>(source.getWinner()));
+
+    const std::vector<Player>& players = source.getPlayers();
+    hashU64(hash, static_cast<uint64_t>(players.size()));
+    for (const Player& player : players) {
+        hashU32(hash, static_cast<uint32_t>(player.getTribeType()));
+    }
+
+    // The completed token matrix is the explicit belief hypothesis.  Hash
+    // signed values through their uint32_t representation and feed bytes in a
+    // fixed order, rather than hashing native memory with host endianness.
+    hashU64(hash, static_cast<uint64_t>(rowCount));
+    hashU64(hash, static_cast<uint64_t>(columnCount));
+    const size_t valueCount = rowCount * columnCount;
+    for (size_t index = 0; index < valueCount; ++index) {
+        hashU32(hash, static_cast<uint32_t>(tokens[index]));
+    }
+
+    const uint64_t mixed = avalanche64(hash);
+    uint32_t seed = static_cast<uint32_t>(mixed) ^ static_cast<uint32_t>(mixed >> 32);
+    // Preserve Game's non-zero effective-seed invariant.
+    return seed == 0 ? 1u : seed;
+}
 
 bool inRange(int value, int minimum, int maximum) {
     return value >= minimum && value <= maximum;
@@ -99,7 +177,8 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
     const int width = sourceMap.getWidth();
     const int height = sourceMap.getHeight();
     Game belief;
-    belief.worldSeed = observedSource.worldSeed;
+    belief.worldSeed = deriveBeliefWorldSeed(
+        observedSource, perspective, tokens, rowCount, columnCount);
     belief.map.init(width, height);
     belief.map.setActiveTribes(sourceMap.getActiveTribes());
 

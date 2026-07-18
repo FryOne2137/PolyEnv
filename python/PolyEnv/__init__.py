@@ -259,6 +259,10 @@ class MctsPool(_MctsPool):
         num_threads: int | None = None,
         max_actions: int = 512,
         c_puct: float = 1.5,
+        max_pending_leaves_per_tree: int = 1,
+        virtual_loss: float = 1.0,
+        max_nodes_per_tree: int = 0,
+        max_tree_bytes: int = 0,
     ) -> None:
         if isinstance(roots, GameEnv):
             copies = 1 if num_trees is None else num_trees
@@ -274,6 +278,12 @@ class MctsPool(_MctsPool):
             0 if num_threads is None else num_threads,
             max_actions,
             c_puct,
+        )
+        self.configure_search(
+            max_pending_leaves_per_tree,
+            virtual_loss,
+            max_nodes_per_tree,
+            max_tree_bytes,
         )
 
 
@@ -302,6 +312,10 @@ class SelfPlayPool(_SelfPlayPool):
         max_actions: int = 512,
         auto_reset: bool = True,
         c_puct: float = 1.5,
+        max_pending_leaves_per_tree: int = 1,
+        virtual_loss: float = 1.0,
+        max_nodes_per_tree: int = 0,
+        max_tree_bytes: int = 0,
     ) -> None:
         selected_players = tribes if tribes is not None else players
         super().__init__(
@@ -315,6 +329,12 @@ class SelfPlayPool(_SelfPlayPool):
             max_actions,
             auto_reset,
             c_puct,
+        )
+        self.configure_search(
+            max_pending_leaves_per_tree,
+            virtual_loss,
+            max_nodes_per_tree,
+            max_tree_bytes,
         )
 
 

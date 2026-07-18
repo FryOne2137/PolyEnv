@@ -64,3 +64,29 @@ def test_make_belief_env_ignores_changed_hidden_source_tile() -> None:
 
     assert np.array_equal(belief_a.full_map_numpy(), belief_b.full_map_numpy())
     assert belief_a.legal_action_ids_fast() == belief_b.legal_action_ids_fast()
+    assert belief_a.world_seed() == belief_b.world_seed()
+
+
+def test_make_belief_env_uses_a_reproducible_synthetic_seed() -> None:
+    env = _env()
+    completed = _completed_tokens(env)
+
+    first = env.make_belief_env(completed)
+    second = env.make_belief_env(completed.copy())
+
+    # This is a fixed, non-random source seed. Equality would mean the belief
+    # world copied the authoritative seed rather than deriving its own one.
+    assert first.world_seed() != env.world_seed()
+    assert first.world_seed() == second.world_seed()
+
+    # The Python wrapper must retain the synthetic seed too; otherwise a
+    # later reset() would become a side channel for the source map seed.
+    first.reset()
+    assert first.world_seed() == second.world_seed()
+
+    hidden_index = int(np.flatnonzero(completed[:, 0] == 0)[0])
+    changed = completed.copy()
+    changed[hidden_index, 19] = (int(changed[hidden_index, 19]) + 1) % 5
+    different_hypothesis = env.make_belief_env(changed)
+
+    assert different_hypothesis.world_seed() != first.world_seed()

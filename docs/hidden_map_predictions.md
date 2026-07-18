@@ -64,6 +64,15 @@ cities, and units from `completed_map_tokens`. It shares no hidden units,
 cities, caches, replay records, or visible-event journal with the source
 environment.
 
+Its `world_seed()` is a synthetic deterministic rollout seed, derived from
+public position metadata and the submitted completed-token hypothesis. It is
+deliberately **not** the source map seed: hidden RNG-dependent outcomes (for
+example ruin rewards) must not be correlated with the authoritative world.
+The same public position and identical hypothesis always produce the same
+synthetic seed, while changing the hypothesis produces a different rollout
+world. Do not use a detached belief world's seed to recreate a source map or
+replay.
+
 `env.clone()` is for perfect-information/debug branches. It retains the real
 hidden state and must not be used for fog-of-war MCTS.
 

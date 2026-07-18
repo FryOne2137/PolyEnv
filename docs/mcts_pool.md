@@ -28,6 +28,12 @@ pool = MctsPool(
     num_threads=8,
     max_actions=512,
     c_puct=1.5,
+    # Start at 1 for legacy behavior. 2--8 permits larger GPU batches.
+    max_pending_leaves_per_tree=4,
+    virtual_loss=1.0,
+    # 0 disables a limit. Use at least one of these for long searches.
+    max_nodes_per_tree=20_000,
+    max_tree_bytes=512 * 1024 * 1024,
 )
 ```
 
@@ -57,7 +63,7 @@ First expand the roots, then repeat one model batch and one native backup.
 import numpy as np
 import torch
 
-leaves = pool.select_leaves()       # at most one leaf per tree
+leaves = pool.select_leaves()       # up to max_pending_leaves_per_tree per tree
 
 for _ in range(128):
     if len(leaves["leaf_id"]) == 0:
@@ -91,10 +97,17 @@ root = pool.root_policy(temperature=1.0)
 | `total_legal_action_count` | `int32` | `[L]` | Leaf legal-action count before truncation |
 | `action_truncated` | `uint8` | `[L]` | `1` when the leaf action set exceeded `max_actions` |
 
-`L <= num_trees`: a tree has at most one outstanding neural evaluation.
-Calling `select_leaves()` again before backing up a leaf returns no duplicate
-for that tree. This makes every GPU batch race-free without Python-side
-virtual-loss bookkeeping.
+`L <= num_trees * max_pending_leaves_per_tree`. The default is one outstanding
+neural evaluation per tree, preserving the former race-free behavior. With a
+setting of `2` through `8`, the pool applies native virtual loss along each
+reserved path and can return several different leaves from one tree. Pending
+work is never counted in `root_policy()`; its visits and values include only
+completed backups. The virtual loss is removed exactly once before backup or
+when a leaf is cancelled.
+
+The first selection of an unexpanded root still supplies one leaf: the policy
+is needed before the scheduler can fan out over that root's actions. Later
+calls can fill the wider per-tree capacity.
 
 The supplied logits correspond to padded action **rows**, not global action
 ids. They must have exact shape `[L, max_actions]`; only valid rows are read
@@ -156,10 +169,11 @@ if leaf_count:
 pool.root_policy_into(root_buffers, temperature=1.0)
 ```
 
-`leaf_batch_spec()` exposes a capacity of `num_trees`; calling it with
-`max_leaves=C` exposes capacity `min(C, num_trees)`. The same `max_leaves`
+`leaf_batch_spec()` exposes a capacity of
+`num_trees * max_pending_leaves_per_tree`; calling it with `max_leaves=C`
+exposes capacity `min(C, num_trees * max_pending_leaves_per_tree)`. The same `max_leaves`
 must be used by `select_leaves_into()`. Its integer result is the only valid
-row count: terminal or already-pending trees can make it smaller than the
+row count: terminal, budget-limited or already-pending trees can make it smaller than the
 capacity, including zero. `root_policy_into()` is fixed at `num_trees` rows.
 
 All `*_into()` arrays need the exact dtype and shape from their spec, must be
@@ -176,6 +190,40 @@ protocol are shown in [VectorGameEnv's pinned-buffer guide](vector_env.md#reusab
 Before `expand_and_backup()`, wait for any asynchronous GPU-to-CPU copy and
 pass C-contiguous `uint64` leaf ids plus `float32` logits/values to avoid an
 implicit conversion.
+
+## Cancellation, Budgets And Observability
+
+An evaluator error or a discarded asynchronous batch must not leave a tree
+permanently pending. Use `cancel_leaves()` for a known batch, or
+`abort_search()` to invalidate every outstanding leaf while retaining all
+completed branches and backups:
+
+```python
+try:
+    pool.expand_and_backup(leaves["leaf_id"], logits, values)
+except Exception:
+    pool.cancel_leaves(leaves["leaf_id"])  # idempotent for already-finished ids
+    raise
+
+# At a shutdown boundary or after abandoning all in-flight GPU requests:
+pool.abort_search()
+```
+
+`configure_search(max_pending_leaves_per_tree, virtual_loss,
+max_nodes_per_tree, max_tree_bytes)` changes the scheduler only when no leaves
+are pending. `max_pending_leaves_per_tree` is deliberately capped at `8`;
+the useful range is usually `2--8`. `max_nodes_per_tree=0` and
+`max_tree_bytes=0` disable their respective limits.
+
+The node limit is exact. The byte limit is a hard **admission budget** for
+native MCTS allocations: it accounts for node/edge storage exactly and
+reserves a conservative map/player-dependent amount before cloning a game
+branch. It is intentionally not advertised as an exact process-RSS meter,
+because `GameEnv` and the standard library own allocator-dependent internal
+storage. A leaf whose edge vector would not fit is never sent to the model;
+an unmaterialized child that would not fit is skipped. Inspect
+`pool.search_stats()` for `tree_node_count`, `tree_accounted_bytes`, pending
+counts and budget-exhaustion flags.
 
 ## Performance Design
 

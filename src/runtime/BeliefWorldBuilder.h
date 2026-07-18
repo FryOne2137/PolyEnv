@@ -9,8 +9,13 @@
 class Game;
 
 // Builds isolated rollout worlds from a player's observation plus a completed
-// token-map hypothesis.  This is intentionally outside Game: Game itself
+// token-map hypothesis. This is intentionally outside Game: Game itself
 // remains the authoritative rules/state container and has no prediction API.
+//
+// The rollout receives a deterministic synthetic world seed derived from
+// public position metadata and the supplied hypothesis. It never inherits the
+// authoritative world's seed, because that seed controls hidden random
+// outcomes in the live game.
 class BeliefWorldBuilder final {
 public:
     static Game build(const Game& observedSource,

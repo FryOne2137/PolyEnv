@@ -56,12 +56,20 @@ single-environment random-seed behavior.
 | `terminated` | `uint8` | `[B]` | Terminal flag from the preceding action |
 | `action_valid` | `uint8` | `[B]` | Whether the supplied action id was legal |
 | `env_id` | `int32` | `[B]` | Stable row-to-environment index |
+| `state_id` | `uint64` | `[B]` | Opaque id for this exact live position |
+| `episode_id` | `uint64` | `[B]` | Opaque id for the current episode in that environment |
 
 `B` is `num_envs`, `tiles` is `map_size * map_size`, and `Amax` is
 `max_actions`. `K` is `visible_event_history`. Padding action rows have
 `action_id == -1` and `action_mask == 0`.
 On `reset()`, `action_valid`, `reward`, and `terminated` are all zero because
 no action has yet been supplied.
+
+`state_id` changes after every accepted action and every reset. `episode_id`
+changes only when a new episode begins, including an automatic reset after a
+terminal action. They are identifiers, not model features: preserve them with
+the batch and submit them unchanged to a checked step when inference can be
+asynchronous.
 
 The `state` fields are, in order:
 
@@ -263,3 +271,55 @@ CPU cores busy while the GPU is at 50%, expect a modest gain from pinned memory
 alone. Larger gains require independent work to overlap as well: for example,
 two or more rollout slots, concurrent training on older rollout data, a larger
 batch where memory permits, or batched MCTS with multiple pending leaves.
+
+## Checked Actions And Independent Pipeline Slots
+
+`step_checked(action_ids, state_ids)` and
+`step_into_checked(action_ids, state_ids, buffers)` validate **all** state ids
+under one native lock before advancing any game. If even one response is late,
+the method raises and no row is changed. This prevents a delayed GPU result
+from being applied to a newer position that happens to have a still-legal
+action id.
+
+For real CPU/GPU overlap, split one vector into 2--4 disjoint slots rather
+than trying to advance the same games twice. `slot_partitions(n)` returns a
+balanced partition of `env_id`s. Each slot has its own host/GPU buffers sized
+by `slot_batch_spec(rows)`. While the GPU evaluates slot `N`, native code can
+apply a completed action batch and encode the next observation for slot `N+1`.
+
+```python
+# `allocate()` creates exact NumPy arrays from a batch spec, as above.
+slot_ids = env.slot_partitions(4)
+slots = [
+    {"env_ids": ids, "buffers": allocate(env.slot_batch_spec(len(ids)))}
+    for ids in slot_ids
+]
+
+# Initial observations of all independent groups.
+for slot in slots:
+    env.observe_slots_into(slot["env_ids"], slot["buffers"])
+    submit_to_gpu(slot)  # external code owns streams and CUDA events
+
+# When one GPU result returns, use the ids from the position that produced it.
+slot = next_slot_with_actions()
+env.step_slots_into_checked(
+    slot["env_ids"],
+    slot["action_ids"],
+    slot["buffers"]["state_id"],
+    slot["buffers"],
+)
+submit_to_gpu(slot)
+```
+
+`observe_slots()` / `observe_slots_into()` do not advance games.
+`step_slots_checked()` / `step_slots_into_checked()` reject duplicate or
+out-of-range environment ids and atomically reject the entire slot on a stale
+state id. `env_id` in the returned packet always identifies the authoritative
+environment, even when its row position is local to a slot.
+
+The engine deliberately does not own a CUDA stream, event, background Python
+thread, or model callback. The external trainer must wait for the last GPU use
+of a pinned host slot before handing that slot back to C++, and must wait for
+the D2H action copy before calling a checked step. This keeps PolyEnv separate
+from the model repository while making a safe producer/consumer schedule
+possible.

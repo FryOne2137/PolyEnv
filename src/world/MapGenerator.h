@@ -26,14 +26,17 @@ public:
         uint32_t seed = 0;         // 0 -> random_device
     };
 
-    // Generates a Polytopia-like map into `map`.
+    // Generates a Polytopia-like map into `map` and returns the starting
+    // capitals in player/active-tribe order.
     // - `map` will be re-initialized to params.mapSize x params.mapSize if needed.
     // - `map.getActiveTribes()` must contain 2..16 tribes.
-    static void generate(Map& map, const Params& params);
-    static const std::vector<Pos>& getLastCapitals();
+    //
+    // The capital positions are intentionally returned by value instead of
+    // being kept in generator-global state: multiple games may generate maps
+    // concurrently (for example from VectorGameEnv worker threads).
+    [[nodiscard]] static std::vector<Pos> generate(Map& map, const Params& params);
 
 private:
-    static std::vector<Pos> s_lastCapitals;
     // Grid helpers (square grid, Chebyshev distance like in the python generator)
     static int chebyshevDistance(int a, int b, int size);
     static std::vector<int> circle(int center, int radius, int size);

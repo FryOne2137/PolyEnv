@@ -62,7 +62,10 @@ For an allocation-free GPU rollout path, the same API can fill caller-owned
 NumPy buffers in place through `batch_spec()`, `reset_into()` and `step_into()`.
 Those buffers may be views of pinned PyTorch CPU tensors; CUDA streams and
 events remain owned by the external training repository. The vector guide
-shows the safe double-buffering protocol.
+shows the safe double-buffering protocol. For asynchronous actions, preserve
+the returned `state_id` and use `step_checked()` / `step_into_checked()`;
+`slot_partitions(2..4)` plus the slot APIs provide disjoint live-game groups
+for a safe CPU/GPU pipeline.
 
 Set `visible_event_history=K` when the policy needs the last `K` events that
 are visible under fog of war. The vector API returns these as fixed-size masked
@@ -70,7 +73,9 @@ arrays; leaving the default `K=0` keeps that encoding disabled.
 
 For batched neural MCTS, `MctsPool` keeps PUCT trees and game branches in C++
 and exchanges only one dense leaf batch per GPU inference round. See
-[native batched MCTS](docs/mcts_pool.md).
+[native batched MCTS](docs/mcts_pool.md). It supports `1..8` pending leaves
+per tree with native virtual loss, cancellation of abandoned batches, and hard
+per-tree node/byte admission budgets.
 
 `MctsPool` and `SelfPlayPool` also provide fixed-capacity reusable leaf/root
 buffers (`*_batch_spec()` and `*_into()`); this is the pinned-memory path for

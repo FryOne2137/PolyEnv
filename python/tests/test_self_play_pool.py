@@ -159,6 +159,114 @@ def test_self_play_pool_runs_detached_belief_mcts_and_steps_live_games() -> None
         assert np.array_equal(next_request["map_tokens"][index], env.player_map_numpy())
 
 
+def test_self_play_pool_multileaf_config_cancellation_and_budgets() -> None:
+    """A two-leaf pipeline must stay reusable after evaluator cancellation."""
+    seed = 563
+    max_nodes = 8
+    max_tree_bytes = 2 * 1024 * 1024
+    pool = SelfPlayPool(
+        num_envs=2,
+        seed=seed,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+        max_pending_leaves_per_tree=2,
+        virtual_loss=0.5,
+        max_nodes_per_tree=max_nodes,
+        max_tree_bytes=max_tree_bytes,
+    )
+
+    assert pool.max_pending_leaves_per_tree == 2
+    assert pool.virtual_loss == pytest.approx(0.5)
+    assert pool.max_nodes_per_tree == max_nodes
+    assert pool.max_tree_bytes == max_tree_bytes
+    leaf_spec = pool.leaf_batch_spec()
+    assert tuple(leaf_spec["leaf_id"]["shape"]) == (4,)
+    assert tuple(leaf_spec["state_id"]["shape"]) == (4,)
+
+    request = pool.reset(seed=seed)
+    pool.submit_beliefs(request["state_id"], _completed_beliefs(seed, request))
+    initial_stats = pool.search_stats()
+    assert initial_stats["max_pending_leaves_per_tree"] == 2
+    assert initial_stats["max_nodes_per_tree"] == max_nodes
+    assert initial_stats["max_tree_bytes"] == max_tree_bytes
+    assert np.all(initial_stats["tree_node_count"] == 1)
+    assert np.all(initial_stats["tree_accounted_bytes"] > 0)
+    assert np.all(initial_stats["tree_accounted_bytes"] <= max_tree_bytes)
+
+    # Roots can initially provide one leaf each.  Once those roots are
+    # expanded, each tree may keep two independent evaluator requests alive.
+    root_leaves = pool.select_leaves()
+    assert root_leaves["leaf_id"].shape == (2,)
+    assert pool.pending_count == 2
+    pool.expand_and_backup(
+        root_leaves["leaf_id"],
+        np.zeros((2, 128), dtype=np.float32),
+        np.zeros(2, dtype=np.float32),
+    )
+    assert pool.pending_count == 0
+
+    leaves = pool.select_leaves()
+    assert leaves["leaf_id"].shape == (4,)
+    assert pool.pending_count == 4
+    pending_stats = pool.search_stats()
+    assert pending_stats["pending_count"] == 4
+    assert np.array_equal(
+        pending_stats["tree_pending_count"], np.array([2, 2], dtype=np.int32)
+    )
+    assert np.all(pending_stats["tree_node_count"] <= max_nodes)
+    assert np.all(pending_stats["tree_accounted_bytes"] <= max_tree_bytes)
+
+    # Cancellation is idempotent, rolls back virtual loss, and makes the
+    # remaining leaves safe to abort as one group.
+    cancelled_ids = leaves["leaf_id"][:2]
+    assert pool.cancel_leaves(cancelled_ids) == 2
+    assert pool.cancel_leaves(cancelled_ids) == 0
+    assert pool.pending_count == 2
+    assert pool.abort_search() == 2
+    assert pool.abort_search() == 0
+    assert pool.pending_count == 0
+    assert np.all(pool.search_stats()["tree_pending_count"] == 0)
+
+    with pytest.raises(ValueError, match="unknown, stale or already-expanded"):
+        pool.expand_and_backup(
+            leaves["leaf_id"],
+            np.zeros((4, 128), dtype=np.float32),
+            np.zeros(4, dtype=np.float32),
+        )
+
+    # The same active forest can immediately schedule another full B * 2
+    # batch: cancelled leaf ids do not leak pending state into later work.
+    retried = pool.select_leaves()
+    assert retried["leaf_id"].shape == (4,)
+    assert pool.abort_search() == 4
+    assert pool.pending_count == 0
+
+
+def test_self_play_step_checked_rejects_stale_ids_without_advancing_games() -> None:
+    seed = 587
+    pool = _pool(seed)
+    request = pool.reset(seed=seed)
+    pool.submit_beliefs(request["state_id"], _completed_beliefs(seed, request))
+    before_rejection = pool.belief_requests()
+    actions = request["action_id"][:, 0].copy()
+    stale_ids = request["state_id"].copy()
+    stale_ids[0] -= np.uint64(1)
+
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        pool.step_checked(actions, stale_ids)
+
+    # The active MCTS forest and every live position remain usable after the
+    # rejected late policy result.
+    _assert_same_packet(before_rejection, pool.belief_requests())
+    next_request = pool.step_checked(actions, request["state_id"])
+    assert np.all(next_request["action_valid"] == 1)
+    assert np.all(next_request["state_id"] != request["state_id"])
+    assert pool.search_active is False
+
+
 def test_self_play_pool_rejects_stale_or_invalid_beliefs_atomically() -> None:
     seed = 613
     pool = _pool(seed)

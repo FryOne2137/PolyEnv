@@ -298,3 +298,102 @@ def test_mcts_pool_external_leaf_buffers_are_checked_before_pending_selection() 
     one_leaf_buffers = _allocate_buffers(pool.leaf_batch_spec(max_leaves=1))
     assert pool.select_leaves_into(one_leaf_buffers, max_leaves=1) == 1
     assert pool.pending_count == 1
+
+
+def test_mcts_pool_multiple_pending_leaves_use_reversible_virtual_loss() -> None:
+    pool = MctsPool(
+        _roots(),
+        num_threads=2,
+        max_actions=128,
+        max_pending_leaves_per_tree=2,
+        virtual_loss=1.0,
+    )
+
+    # Roots need one policy/value result before PUCT can fan out into multiple
+    # independently evaluated children of the same tree.
+    roots = pool.select_leaves()
+    pool.expand_and_backup(
+        roots["leaf_id"],
+        np.zeros((2, 128), dtype=np.float32),
+        np.zeros(2, dtype=np.float32),
+    )
+
+    leaves = pool.select_leaves()
+    assert len(leaves["leaf_id"]) == 4
+    assert np.unique(leaves["leaf_id"]).size == 4
+    assert np.array_equal(np.bincount(leaves["tree_id"], minlength=2), np.array([2, 2]))
+    assert pool.pending_count == 4
+
+    # Virtual visits steer selection only. A user-visible root policy must
+    # still expose exactly the one completed root evaluation per tree.
+    pending_policy = pool.root_policy()
+    assert np.array_equal(pending_policy["root_visit_count"], np.array([1, 1], dtype=np.int32))
+    assert np.array_equal(pending_policy["visit_count"].sum(axis=1), np.array([0, 0]))
+
+    assert pool.cancel_leaves(leaves["leaf_id"]) == 4
+    assert pool.cancel_leaves(leaves["leaf_id"]) == 0
+    assert pool.pending_count == 0
+    cancelled_policy = pool.root_policy()
+    assert np.array_equal(cancelled_policy["root_visit_count"], np.array([1, 1], dtype=np.int32))
+    assert np.array_equal(cancelled_policy["visit_count"].sum(axis=1), np.array([0, 0]))
+
+    stats = pool.search_stats()
+    assert np.array_equal(stats["tree_pending_count"], np.array([0, 0], dtype=np.int32))
+    assert stats["max_pending_leaves_per_tree"] == 2
+
+
+def test_mcts_pool_abort_and_limits_leave_no_stuck_pending_leaves() -> None:
+    pool = MctsPool(_roots(), num_threads=2, max_actions=128, max_pending_leaves_per_tree=2)
+    initial = pool.select_leaves()
+    assert pool.pending_count == 2
+    assert pool.abort_search() == 2
+    assert pool.pending_count == 0
+    assert pool.abort_search() == 0
+    with pytest.raises(ValueError, match="stale"):
+        pool.expand_and_backup(
+            initial["leaf_id"],
+            np.zeros((2, 128), dtype=np.float32),
+            np.zeros(2, dtype=np.float32),
+        )
+
+    node_limited = MctsPool(
+        GameEnv(seed=1311, players=(Bardur, Imperius)),
+        num_trees=1,
+        max_actions=128,
+        max_nodes_per_tree=1,
+    )
+    root = node_limited.select_leaves()
+    node_limited.expand_and_backup(
+        root["leaf_id"],
+        np.zeros((1, 128), dtype=np.float32),
+        np.zeros(1, dtype=np.float32),
+    )
+    assert len(node_limited.select_leaves()["leaf_id"]) == 0
+    assert int(node_limited.search_stats()["tree_node_budget_exhausted"][0]) == 1
+
+    probe = MctsPool(
+        GameEnv(seed=1312, players=(Bardur, Imperius)), num_trees=1, max_actions=128
+    )
+    root_bytes = int(probe.search_stats()["estimated_node_bytes"])
+    byte_limited = MctsPool(
+        GameEnv(seed=1312, players=(Bardur, Imperius)),
+        num_trees=1,
+        max_actions=128,
+        max_tree_bytes=root_bytes,
+    )
+    assert len(byte_limited.select_leaves()["leaf_id"]) == 0
+    assert int(byte_limited.search_stats()["tree_byte_budget_exhausted"][0]) == 1
+
+
+def test_mcts_pool_reconfiguration_requires_a_clean_evaluator_boundary() -> None:
+    pool = MctsPool(_roots(), num_threads=2, max_actions=128)
+    leaves = pool.select_leaves()
+    with pytest.raises(RuntimeError, match="pending"):
+        pool.configure_search(2, 1.0, 0, 0)
+    pool.cancel_leaves(leaves["leaf_id"])
+    pool.configure_search(2, 0.5, 10, 0)
+    assert pool.max_pending_leaves_per_tree == 2
+    assert pool.virtual_loss == pytest.approx(0.5)
+    assert pool.max_nodes_per_tree == 10
+    with pytest.raises(ValueError, match="between 1 and 8"):
+        pool.configure_search(9, 1.0, 0, 0)

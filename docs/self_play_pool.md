@@ -31,6 +31,10 @@ pool = SelfPlayPool(
     max_actions=512,
     auto_reset=True,
     c_puct=1.5,
+    max_pending_leaves_per_tree=4,  # 1--8; 1 preserves legacy behavior
+    virtual_loss=1.0,
+    max_nodes_per_tree=20_000,      # 0 disables this hard admission limit
+    max_tree_bytes=512 * 1024 * 1024,
 )
 ```
 
@@ -74,7 +78,7 @@ while training:
     root = pool.root_policy(temperature=1.0)
     rows = sample_rows(root["policy"], root["action_mask"])
     actions = root["action_id"][np.arange(pool.num_envs), rows]
-    request = pool.step(actions)
+    request = pool.step_checked(actions, root["state_id"])
 ```
 
 `state_id` and `leaf_id` have different roles:
@@ -85,8 +89,11 @@ while training:
 | `leaf_id` | `uint64` | Matching policy/value output to an MCTS leaf | A backup, `step()`, or `reset()` |
 
 Never reuse either id from an older batch. `submit_beliefs()` rejects stale
-state ids. `step()` rejects an active pending leaf evaluation, rather than
-letting a late GPU result modify a new position.
+state ids. For an asynchronous policy result, use
+`step_checked(actions, root["state_id"])` or `step_into_checked(...)`: it
+validates every live slot before advancing any of them. The legacy `step()`
+still rejects an active pending leaf evaluation, but cannot distinguish a late
+action that remains legal in a newer position.
 
 ## Public Observation And Belief Input
 
@@ -142,9 +149,12 @@ fields plus:
 | `action_truncated` | `uint8` | `[L]` | `1` when the leaf action set exceeded `max_actions` |
 | `state_id` / `episode_id` | `uint64` | `[L]` | Live root lifecycle metadata |
 
-There is at most one pending leaf per tree. With `B` environments, a single
-leaf batch has at most `B` rows; choose `num_envs` large enough to keep the
-external GPU model efficiently batched.
+The default has one pending leaf per tree. Set
+`max_pending_leaves_per_tree` to `2--8` to obtain up to `B * pending` rows per
+batch after roots have expanded. Native virtual loss reserves each in-flight
+path, avoids duplicate work, and is rolled back before backup or cancellation.
+The first unexpanded root still produces one leaf because its policy must be
+known before the tree can fan out.
 
 `values` supplied to `expand_and_backup()` must be finite `float32` values in
 `[-1, 1]`. For `pool.player_count == 2`, pass scalar shape `[L]` from the
@@ -180,7 +190,7 @@ describes the fixed `[B, ...]` request packet accepted by all of:
 ```python
 pool.reset_into(belief_buffers, seed=1234)
 pool.belief_requests_into(belief_buffers)
-pool.step_into(action_ids, belief_buffers)
+pool.step_into_checked(action_ids, belief_buffers["state_id"], belief_buffers)
 ```
 
 The leaf batch is dynamic, so it uses a fixed-capacity buffer and returns its
@@ -206,16 +216,26 @@ Here `allocate(spec)` creates one exact NumPy array for every entry in a spec;
 the generic implementation is shown in
 [MctsPool's reusable-buffer section](mcts_pool.md#reusable-pinned-leaf-buffers).
 `leaf_batch_spec(max_leaves=C)` and `select_leaves_into(..., max_leaves=C)`
-must use the same capacity. Only rows `[0:leaf_count]` are valid; the tail is
-not cleared. This includes `env_id`, `state_id`, and `episode_id`, so a model
-or scheduler must slice all leaf fields consistently.
+must use the same capacity. Without `max_leaves`, capacity is
+`B * max_pending_leaves_per_tree`; only rows `[0:leaf_count]` are valid and
+the tail is not cleared. This includes `env_id`, `state_id`, and `episode_id`,
+so a model or scheduler must slice all leaf fields consistently.
 
 Every output array is validated before live state or MCTS pending state
 changes: it must have the exact dtype and shape from its spec, be writable,
-aligned and C-contiguous, and not overlap any other batch field. `step_into()`
-accepts a one-dimensional `int32` action array and copies that small vector
-before overwriting the output slot, so `belief_buffers["action_id"][:, 0]` is
-safe to use as input.
+aligned and C-contiguous, and not overlap any other batch field.
+`step_into_checked()` accepts one-dimensional `int32` actions plus matching
+`uint64` state ids and copies both small vectors before overwriting the output
+slot, so `belief_buffers["action_id"][:, 0]` and
+`belief_buffers["state_id"]` are safe inputs. `step_into()` remains available
+for synchronous legacy loops.
+
+If an evaluator times out or a slot is discarded, call `cancel_leaves(ids)`;
+at shutdown or when dropping a whole batch call `abort_search()`. Both retain
+completed tree work and make late leaf ids stale. `search_stats()` exposes
+per-tree node count, accounted byte budget, pending count and budget-exhausted
+flags. See [MctsPool](mcts_pool.md#cancellation-budgets-and-observability) for
+the exact admission-budget semantics.
 
 PolyEnv stays framework-agnostic. An external PyTorch trainer can make the
 large model-input fields NumPy views of `torch.empty(..., pin_memory=True)`,
@@ -236,6 +256,11 @@ submitted tensor. It verifies visible rows before constructing hidden cities,
 units, and terrain from the hypothesis. The model leaf packet is then encoded
 through the current player view; the completed hidden rows do not appear in
 `leaves["map_tokens"]`.
+
+The detached world uses a deterministic synthetic RNG seed derived only from
+public position metadata and that submitted hypothesis. The authoritative
+world seed is never copied into a belief root, so seed-based hidden outcomes
+cannot leak through MCTS rollouts.
 
 This is **root-perspective determinized MCTS**, not full ISMCTS. In particular,
 the current belief format contains a map completion, while an exact opponent
