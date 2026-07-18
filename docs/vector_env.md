@@ -49,7 +49,9 @@ single-environment random-seed behavior.
 | `visible_event_mask` | `uint8` | `[B, K]` | `1` for an event row, `0` for history padding |
 | `visible_event_affected` | `int32` | `[B, K, 9, 8]` | Affected-unit details for every event row |
 | `visible_event_affected_mask` | `uint8` | `[B, K, 9]` | Valid affected-unit rows |
-| `legal_action_count` | `int32` | `[B]` | Number of legal, unpadded rows |
+| `legal_action_count` | `int32` | `[B]` | Number of represented, unpadded action rows (`<= Amax`) |
+| `total_legal_action_count` | `int32` | `[B]` | Legal actions before the fixed-capacity truncation |
+| `action_truncated` | `uint8` | `[B]` | `1` when not every legal action fit in the batch |
 | `reward` | `float32` | `[B]` | Terminal reward from the preceding action |
 | `terminated` | `uint8` | `[B]` | Terminal flag from the preceding action |
 | `action_valid` | `uint8` | `[B]` | Whether the supplied action id was legal |
@@ -158,12 +160,14 @@ store the transition first, then use the returned row for the next action.
 
 ## Capacity And Throughput
 
-`max_actions` is a fixed batch capacity, not a truncation setting. If an
-environment has more legal actions than the configured capacity,
-`VectorGameEnv` raises an error instead of silently dropping legal moves.
-Start with `512`, collect the maximum observed `legal_action_count` across
-your training seeds, then set a small safety margin. Every environment in one
-vector must use the same map size and action capacity.
+`max_actions` is a fixed batch capacity. When a position has more legal
+actions, PolyEnv exposes a deterministic subset instead of stopping training:
+it keeps the canonical prefix and, if necessary, reserves the final row for
+`EndTurn`. Thus every truncated row still has a progress action. Inspect
+`action_truncated` and `total_legal_action_count`: truncation changes the
+policy target and can reduce playing strength, so set `max_actions` high enough
+that it is rare in normal training. Every environment in one vector must use
+the same map size and action capacity.
 
 Set `num_threads` to the number of CPU cores reserved for simulation. Avoid
 wrapping `VectorGameEnv.step()` in a Python thread pool: the environment
@@ -173,3 +177,89 @@ The arrays returned by `reset()` and `step()` are independent NumPy arrays, so
 they are safe to retain in a replay or rollout buffer. For GPU transfer,
 collate only these dense batches; a `non_blocking=True` transfer needs pinned
 host memory to overlap with GPU work.
+
+## Reusable Pinned Buffers And Asynchronous Transfer
+
+`reset()` and `step()` allocate a fresh NumPy batch. For a long-running
+GPU-backed trainer, use `batch_spec()`, `reset_into()` and `step_into()` to
+reuse caller-owned arrays instead. The native engine writes them
+synchronously without an output copy or dtype conversion, and retains no
+pointer after the method returns. This keeps PolyEnv independent of PyTorch,
+CUDA and the model repository while allowing its output to be backed by pinned
+host memory.
+
+Every field in the batch needs an array with the exact dtype and shape in
+`batch_spec()`. Output arrays must be writable, aligned, C-contiguous, and
+must not overlap. `step_into()` requires an `int32[B]` action array; it copies
+that small vector before writing the next batch, so a strided selection such
+as `buffers["action_id"][:, 0]` is safe.
+
+```python
+import numpy as np
+import torch
+
+# Pin only data that the model actually reads. Metadata can remain ordinary
+# NumPy memory, which avoids needlessly pinning large amounts of system RAM.
+model_fields = {
+    "map_tokens", "state", "action_features", "action_arg_mask", "action_mask",
+    "visible_event_features", "visible_event_mask", "visible_event_affected",
+    "visible_event_affected_mask",
+}
+torch_dtypes = {
+    np.dtype(np.int32): torch.int32,
+    np.dtype(np.uint8): torch.uint8,
+}
+
+host_tensors = {}       # Keep these owners alive for as long as buffers are used.
+buffers = {}
+for name, field in env.batch_spec().items():
+    shape, dtype = tuple(field["shape"]), np.dtype(field["dtype"])
+    if name in model_fields:
+        host_tensors[name] = torch.empty(
+            shape, dtype=torch_dtypes[dtype], device="cpu", pin_memory=True,
+        )
+        buffers[name] = host_tensors[name].numpy()  # zero-copy CPU view
+    else:
+        buffers[name] = np.empty(shape, dtype=dtype)
+
+env.reset_into(buffers, seed=1234)
+
+# Reuse the same storage every rollout step.
+action_ids = buffers["action_id"][:, 0]
+env.step_into(action_ids, buffers)
+```
+
+`torch.from_numpy()` is also a zero-copy CPU view when an external trainer
+already owns NumPy buffers. DLPack is unnecessary for this path and does not
+remove the physical host-to-device transfer.
+
+For real overlap, allocate at least two complete buffer slots. Start each H2D
+copy on a dedicated CUDA copy stream with `non_blocking=True`, record an event,
+and give the CPU a different slot while the first transfer runs. Do not call
+`reset_into()` or `step_into()` on a slot until the event covering the last GPU
+read of its pinned host tensors has completed. Likewise, wait for an
+asynchronous GPU-to-CPU action copy before passing its action array to
+`step_into()`.
+
+```python
+# Sketch: `slot` owns `buffers`, `host_tensors`, a copy stream and copy_done.
+# Pick only a slot whose previous copy_done event has completed.
+env.step_into(action_ids, slot.buffers)
+with torch.cuda.stream(slot.copy_stream):
+    slot.maps_gpu.copy_(slot.host_tensors["map_tokens"], non_blocking=True)
+    slot.action_features_gpu.copy_(slot.host_tensors["action_features"], non_blocking=True)
+    slot.valid_gpu.copy_(slot.host_tensors["action_mask"], non_blocking=True)
+    slot.copy_done.record(slot.copy_stream)
+
+torch.cuda.current_stream().wait_event(slot.copy_done)
+# The policy can now consume the GPU tensors. Reuse `slot` only after the
+# transfer event is complete (or after a later event that also covers its use).
+```
+
+This API removes per-step output allocation and enables asynchronous H2D, but
+it cannot by itself break the causal dependency `GPU chooses action -> CPU
+simulates -> GPU evaluates next observation`. If simulation already keeps all
+CPU cores busy while the GPU is at 50%, expect a modest gain from pinned memory
+alone. Larger gains require independent work to overlap as well: for example,
+two or more rollout slots, concurrent training on older rollout data, a larger
+batch where memory permits, or batched MCTS with multiple pending leaves.

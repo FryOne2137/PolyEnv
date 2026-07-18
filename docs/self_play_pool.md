@@ -34,8 +34,11 @@ pool = SelfPlayPool(
 )
 ```
 
-The current implementation supports exactly two players. Its MCTS backup uses
-a scalar zero-sum value, just like `MctsPool`.
+`SelfPlayPool` supports **2--16 players**. Two-player games retain the compact,
+optimized scalar zero-sum MCTS path. With more players it uses Maxⁿ MCTS: the
+policy at each node maximizes the payoff component of that node's current
+actor. All environments in one pool therefore have the same fixed player
+count, exposed as `pool.player_count` (alias: `pool.num_players`).
 
 ## Complete Lifecycle
 
@@ -63,7 +66,8 @@ while training:
         pool.expand_and_backup(
             leaves["leaf_id"],       # uint64, pass through unchanged
             policy_logits,            # float32 [L, max_actions]
-            values,                   # float32 [L], from leaves["to_play"]
+            values,                   # 2P: float32 [L], from leaves["to_play"]
+                                     # P>2: float32 [L, P], global PlayerId order
         )
         leaves = pool.select_leaves()
 
@@ -97,14 +101,20 @@ core model fields:
 | `action_features` | `int32` | `[B, Amax, 17]` | Action features |
 | `action_arg_mask` | `uint8` | `[B, Amax, 12]` | Action argument validity |
 | `action_mask` | `uint8` | `[B, Amax]` | Valid padded action rows |
-| `legal_action_count` | `int32` | `[B]` | Number of legal actions |
+| `legal_action_count` | `int32` | `[B]` | Number of represented action rows (`<= Amax`) |
+| `total_legal_action_count` | `int32` | `[B]` | Legal actions before fixed-capacity truncation |
+| `action_truncated` | `uint8` | `[B]` | `1` when not every legal action fit in the batch |
 | `env_id` / `to_play` | `int32` | `[B]` | Live slot and current player |
 | `state_id` / `episode_id` | `uint64` | `[B]` | Opaque lifecycle ids |
-| `reward`, `terminated`, `action_valid` | `float32`, `uint8`, `uint8` | `[B]` | Result of the preceding `step()` |
+| `reward`, `terminated`, `action_valid` | `float32`, `uint8`, `uint8` | `[B]` | Result for the actor of the preceding `step()` |
+| `winner` | `int32` | `[B]` | Terminal winner of the preceding step, or `-1` for no winner/no terminal transition |
+| `terminal_values` | `float32` | `[B, P]` | Terminal payoff vector for the preceding step; zero otherwise |
 
-At reset, the final three fields are zero. If `auto_reset=True`, a terminal
-game is immediately replaced by its next episode after the terminal result is
-recorded in those fields.
+At reset, `reward`, `terminated`, `action_valid`, and `terminal_values` are
+zero and `winner` is `-1`. If `auto_reset=True`, a terminal game is immediately
+replaced by its next episode after the terminal result is recorded in those
+fields. Preserve that transition result before consuming the returned next
+observation.
 
 `completed_map_tokens` submitted to `submit_beliefs()` has exact shape
 `[B, tiles, 23]`, dtype `np.int32`, and C-contiguous layout. It must preserve:
@@ -126,7 +136,10 @@ fields plus:
 | --- | --- | --- | --- |
 | `leaf_id` | `uint64` | `[L]` | Handle passed to `expand_and_backup()` |
 | `tree_id` / `env_id` | `int32` | `[L]` | MCTS tree and live game slot |
-| `to_play` | `int32` | `[L]` | Perspective required for the value head |
+| `to_play` | `int32` | `[L]` | Actor at the selected MCTS leaf |
+| `player_count` | `int32` | `[L]` | Fixed `P`; determines the MCTS value tensor shape |
+| `total_legal_action_count` | `int32` | `[L]` | Leaf legal-action count before truncation |
+| `action_truncated` | `uint8` | `[L]` | `1` when the leaf action set exceeded `max_actions` |
 | `state_id` / `episode_id` | `uint64` | `[L]` | Live root lifecycle metadata |
 
 There is at most one pending leaf per tree. With `B` environments, a single
@@ -134,13 +147,83 @@ leaf batch has at most `B` rows; choose `num_envs` large enough to keep the
 external GPU model efficiently batched.
 
 `values` supplied to `expand_and_backup()` must be finite `float32` values in
-`[-1, 1]`, from the perspective of `leaves["to_play"]`. `policy_logits` has
-shape `[L, max_actions]` and is indexed by padded **action row**, not global
-action id. Apply `action_mask` in the external model.
+`[-1, 1]`. For `pool.player_count == 2`, pass scalar shape `[L]` from the
+perspective of `leaves["to_play"]`. For `P > 2`, pass exact shape `[L, P]`:
+column `p` is the payoff for global `PlayerId == p`, not a value rotated to the
+leaf actor. `policy_logits` has shape `[L, max_actions]` and is indexed by
+padded **action row**, not global action id. Apply `action_mask` in the
+external model.
+
+When a legal set exceeds `max_actions`, PolyEnv deterministically truncates it
+to the canonical prefix and reserves the final row for `EndTurn` when needed.
+It does not abort the self-play loop. Watch `action_truncated` and
+`total_legal_action_count`: a truncated MCTS tree cannot evaluate omitted
+moves, so choose a capacity that makes this exceptional rather than routine.
 
 `root_policy()` returns `action_id`, `action_mask`, `visit_count`, `policy`,
-`root_value`, `root_visit_count`, and `root_player`, one row per live game. It
-also adds `env_id`, `state_id`, and `episode_id`.
+`root_value`, `root_visit_count`, `root_player`, and `player_count`, one row
+per live game. `root_value` is always the component for `root_player`, keeping
+the old scalar output shape `[B]`. It also adds `env_id`, `state_id`, and
+`episode_id`.
+
+For a resolved terminal transition, `terminal_values` gives the complete
+training target: winner `+1`, each loser `-1 / (P - 1)`, and all zero for a
+terminal state with no winner. This is exactly the historical `+1/-1` result
+for two players.
+
+## Reusable Pinned Batches
+
+The ordinary methods return fresh NumPy arrays for convenience. For the hot
+self-play path, use caller-owned arrays instead. `belief_batch_spec()`
+describes the fixed `[B, ...]` request packet accepted by all of:
+
+```python
+pool.reset_into(belief_buffers, seed=1234)
+pool.belief_requests_into(belief_buffers)
+pool.step_into(action_ids, belief_buffers)
+```
+
+The leaf batch is dynamic, so it uses a fixed-capacity buffer and returns its
+valid prefix length:
+
+```python
+leaf_buffers = allocate(pool.leaf_batch_spec(max_leaves=128))
+root_buffers = allocate(pool.root_policy_spec())
+
+leaf_count = pool.select_leaves_into(leaf_buffers, max_leaves=128)
+if leaf_count:
+    policy_logits, values = policy_value_model_prefix(leaf_buffers, leaf_count)
+    pool.expand_and_backup(
+        leaf_buffers["leaf_id"][:leaf_count],
+        policy_logits,
+        values,
+    )
+
+pool.root_policy_into(root_buffers, temperature=1.0)
+```
+
+Here `allocate(spec)` creates one exact NumPy array for every entry in a spec;
+the generic implementation is shown in
+[MctsPool's reusable-buffer section](mcts_pool.md#reusable-pinned-leaf-buffers).
+`leaf_batch_spec(max_leaves=C)` and `select_leaves_into(..., max_leaves=C)`
+must use the same capacity. Only rows `[0:leaf_count]` are valid; the tail is
+not cleared. This includes `env_id`, `state_id`, and `episode_id`, so a model
+or scheduler must slice all leaf fields consistently.
+
+Every output array is validated before live state or MCTS pending state
+changes: it must have the exact dtype and shape from its spec, be writable,
+aligned and C-contiguous, and not overlap any other batch field. `step_into()`
+accepts a one-dimensional `int32` action array and copies that small vector
+before overwriting the output slot, so `belief_buffers["action_id"][:, 0]` is
+safe to use as input.
+
+PolyEnv stays framework-agnostic. An external PyTorch trainer can make the
+large model-input fields NumPy views of `torch.empty(..., pin_memory=True)`,
+then enqueue H2D copies with `non_blocking=True`. It must retain the tensor
+owners and not overwrite a slot until the CUDA event covering its last GPU read
+has completed. Conversely, wait for asynchronous GPU-to-CPU logits, values,
+beliefs, or actions before PolyEnv reads them. See the full double-buffering
+example in [VectorGameEnv](vector_env.md#reusable-pinned-buffers-and-asynchronous-transfer).
 
 ## Fog Of War And Information Safety
 
@@ -159,9 +242,30 @@ the current belief format contains a map completion, while an exact opponent
 information state would also require predicted stars, technologies, city/unit
 runtime state, per-player visibility, and redeterminization when the actor
 changes. PolyEnv intentionally does not copy those hidden opponent facts from
-the live game. That preserves the no-leak boundary, but means opponent nodes
-are an approximation until a future explicit multi-player belief-state format
-is added.
+the live game. That preserves the no-leak boundary, but makes opponent nodes
+an approximation; the impact becomes greater with more players.
+
+### Current belief-state limits
+
+The multi-player search API is functional, but the current fog-of-war belief
+format is not yet a faithful multi-player information-state model:
+
+- `completed_map_tokens` represents one root player's map. The belief builder
+  installs that player's visibility only. After a turn change, a non-root
+  actor can have an under-complete legal-action set (in an extreme case, only
+  `EndTurn`). Supplying the real opponent visibility would fix mechanics but
+  would leak hidden knowledge, so the correct future solution is explicit
+  per-player belief state plus redeterminization.
+- The tensor does not carry pending city-upgrade choices or all player runtime
+  state. A root position with such a pending choice can fail the root legal
+  action equivalence check until the belief-state contract is extended.
+- `submit_beliefs()` validates visible rows and the current root's legal
+  actions; it cannot prove that the hypothesis creates realistic future
+  opponent economies or action sets.
+
+These are search-quality limitations, not a path for reading the live hidden
+world. They should be addressed before treating multi-player fog self-play as
+a fully faithful ISMCTS implementation.
 
 Use `GameEnv.full_map_numpy()` only for offline labels, tests, or debugging;
 do not feed it to `SelfPlayPool` during fog-of-war self-play.
@@ -176,9 +280,13 @@ do not feed it to `SelfPlayPool` during fog-of-war self-play.
   converted into Python objects or a nested vector for every game.
 - `MctsPool` branch creation stays lazy: only PUCT-selected children clone a
   game state, so memory grows with visited nodes rather than all legal moves.
-- Returned arrays are fresh NumPy arrays. PolyEnv makes no claim of CPU-to-GPU
-  zero copy: an external PyTorch/JAX/etc. repository should choose pinned host
-  memory and asynchronous transfers if those are beneficial on its hardware.
+- The two-player search retains its scalar/sign-flip backup. Multi-player
+  Maxⁿ consumes value vectors but keeps only the actor's scalar statistic at
+  each node and edge, avoiding per-edge `P`-vector allocations.
+- The ordinary methods return fresh NumPy arrays. The `*_into()` methods avoid
+  those allocations and can write into framework-owned pinned host memory, but
+  GPU streams, events, and the physical H2D/D2H transfer remain the external
+  repository's responsibility.
 
 Larger `num_envs` usually improves GPU throughput but increases live-state,
 belief-root, and MCTS-tree memory. More CPU threads improve independent game

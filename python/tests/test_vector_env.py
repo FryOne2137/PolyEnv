@@ -27,6 +27,20 @@ def _single(seed: int) -> GameEnv:
     return GameEnv(seed=seed, map_size=11, players=(Bardur, Imperius))
 
 
+def _allocate_batch_buffers(vector: VectorGameEnv) -> dict[str, np.ndarray]:
+    """Allocate the exact external-buffer schema exposed by VectorGameEnv."""
+    return {
+        name: np.empty(tuple(field["shape"]), dtype=field["dtype"])
+        for name, field in vector.batch_spec().items()
+    }
+
+
+def _assert_same_batch(expected: dict[str, np.ndarray], actual: dict[str, np.ndarray]) -> None:
+    assert actual.keys() == expected.keys()
+    for name, value in expected.items():
+        np.testing.assert_array_equal(actual[name], value, err_msg=name)
+
+
 def test_vector_reset_matches_single_environments() -> None:
     vector = VectorGameEnv(
         num_envs=4,
@@ -123,10 +137,27 @@ def test_vector_marks_invalid_actions_without_mutating_state() -> None:
     assert np.array_equal(after["map_tokens"], before["map_tokens"])
 
 
-def test_vector_reports_action_capacity_overflow() -> None:
+def test_vector_truncates_action_rows_without_failing_the_rollout() -> None:
     vector = VectorGameEnv(num_envs=1, seed=11, max_actions=1)
-    with pytest.raises(RuntimeError, match="max_actions=1"):
-        vector.reset(seed=11)
+    batch = vector.reset(seed=11)
+
+    assert np.array_equal(batch["legal_action_count"], np.array([1], dtype=np.int32))
+    assert int(batch["total_legal_action_count"][0]) > 1
+    assert np.array_equal(batch["action_truncated"], np.array([1], dtype=np.uint8))
+    assert np.array_equal(batch["action_mask"], np.array([[1]], dtype=np.uint8))
+
+    # EndTurn is retained when the canonical prefix overflows, so the reduced
+    # action set always has a progress action rather than stalling an episode.
+    single = _single(11)
+    end_turn = next(
+        action["action_id"]
+        for action in single.legal_param_actions()
+        if action["type_fullname"] == "end_turn"
+    )
+    assert int(batch["action_id"][0, 0]) == end_turn
+
+    stepped = vector.step(batch["action_id"][:, 0])
+    assert np.array_equal(stepped["action_valid"], np.array([1], dtype=np.uint8))
 
 
 def test_vector_visible_event_history_matches_single_game_env() -> None:
@@ -216,3 +247,99 @@ def test_vector_visible_event_history_matches_single_game_env() -> None:
 def test_vector_rejects_negative_visible_event_history() -> None:
     with pytest.raises(ValueError, match="visible_event_history"):
         VectorGameEnv(num_envs=1, visible_event_history=-1)
+
+
+@pytest.mark.parametrize("visible_event_history", [0, 2])
+def test_vector_into_matches_allocating_api_and_reuses_storage(visible_event_history: int) -> None:
+    kwargs = dict(
+        num_envs=3,
+        seed=77,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+        visible_event_history=visible_event_history,
+    )
+    into = VectorGameEnv(**kwargs)
+    reference = VectorGameEnv(**kwargs)
+    buffers = _allocate_batch_buffers(into)
+    storage_addresses = {name: array.ctypes.data for name, array in buffers.items()}
+
+    into.reset_into(buffers, seed=77)
+    expected = reference.reset(seed=77)
+    _assert_same_batch(expected, buffers)
+    assert {name: array.ctypes.data for name, array in buffers.items()} == storage_addresses
+
+    # This is intentionally a strided view into an output buffer. step_into()
+    # copies the tiny action vector before it starts overwriting output storage.
+    selected_actions = buffers["action_id"][:, 0]
+    expected = reference.step(selected_actions.copy())
+    into.step_into(selected_actions, buffers)
+    _assert_same_batch(expected, buffers)
+    assert {name: array.ctypes.data for name, array in buffers.items()} == storage_addresses
+
+
+def test_vector_batch_spec_describes_every_external_buffer() -> None:
+    vector = VectorGameEnv(num_envs=2, seed=7, max_actions=32, visible_event_history=1)
+    spec = vector.batch_spec()
+    batch = vector.reset(seed=7)
+
+    assert set(spec) == set(batch)
+    for name, field in spec.items():
+        assert np.dtype(field["dtype"]) == batch[name].dtype
+        assert tuple(field["shape"]) == batch[name].shape
+
+
+def test_vector_into_rejects_bad_output_buffers_before_advancing_state() -> None:
+    kwargs = dict(num_envs=2, seed=99, max_actions=64, auto_reset=False)
+    vector = VectorGameEnv(**kwargs)
+    reference = VectorGameEnv(**kwargs)
+    start = vector.reset(seed=99)
+    reference.reset(seed=99)
+    buffers = _allocate_batch_buffers(vector)
+    actions = start["action_id"][:, 0]
+
+    wrong_dtype = dict(buffers)
+    wrong_dtype["state"] = np.empty((2, 11), dtype=np.int64)
+    with pytest.raises(ValueError, match="incorrect dtype"):
+        vector.step_into(actions, wrong_dtype)
+
+    # The rejected call has not consumed actions or advanced either game.
+    _assert_same_batch(reference.step(actions.copy()), vector.step(actions.copy()))
+
+
+def test_vector_into_validates_buffer_contract_and_does_not_forcecast_actions() -> None:
+    vector = VectorGameEnv(num_envs=2, seed=17, max_actions=64)
+    buffers = _allocate_batch_buffers(vector)
+
+    missing = dict(buffers)
+    del missing["state"]
+    with pytest.raises(ValueError, match="missing required"):
+        vector.reset_into(missing)
+
+    non_contiguous = dict(buffers)
+    non_contiguous["state"] = np.empty((2, 22), dtype=np.int32)[:, ::2]
+    with pytest.raises(ValueError, match="C-contiguous"):
+        vector.reset_into(non_contiguous)
+
+    read_only = dict(buffers)
+    frozen = buffers["state"].copy()
+    frozen.setflags(write=False)
+    read_only["state"] = frozen
+    with pytest.raises(ValueError, match="writable"):
+        vector.reset_into(read_only)
+
+    unaligned = dict(buffers)
+    unaligned_storage = np.empty(2 * 11 * np.dtype(np.int32).itemsize + 1, dtype=np.uint8)
+    unaligned["state"] = unaligned_storage[1:].view(np.int32).reshape(2, 11)
+    with pytest.raises(ValueError, match="aligned"):
+        vector.reset_into(unaligned)
+
+    overlapping = dict(buffers)
+    overlapping["total_legal_action_count"] = overlapping["legal_action_count"]
+    with pytest.raises(ValueError, match="overlaps"):
+        vector.reset_into(overlapping)
+
+    with pytest.raises(ValueError, match="int32"):
+        vector.step_into(np.zeros(2, dtype=np.int64), buffers)

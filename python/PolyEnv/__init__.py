@@ -85,6 +85,8 @@ def _normalize_players(players: list[Any] | tuple[Any, ...]) -> list[int]:
             out.append(p)
             continue
         raise TypeError(f"Unsupported player entry type: {type(p).__name__}")
+    if not 2 <= len(out) <= 16:
+        raise ValueError("players must contain between 2 and 16 entries")
     return out
 
 
@@ -202,7 +204,9 @@ class VectorGameEnv(_VectorGameEnv):
     The simulation, observation encoding and legal-action enumeration run in
     C++. ``step`` accepts a one-dimensional NumPy array of action ids, one for
     each environment, and returns dense numeric arrays without JSON or Python
-    objects per game.
+    objects per game. ``batch_spec()``, ``reset_into()`` and ``step_into()``
+    additionally support reusable caller-owned NumPy buffers, including views
+    of pinned host tensors managed by an external training framework.
     """
 
     def __init__(
@@ -239,9 +243,13 @@ class VectorGameEnv(_VectorGameEnv):
 class MctsPool(_MctsPool):
     """Native multi-root PUCT scheduler for batched GPU leaf evaluation.
 
-    Pass either a sequence of independent two-player ``GameEnv`` roots, or a
-    single root plus ``num_trees`` to create independent search copies. The
-    original environments are never mutated by the search.
+    Pass either a sequence of independent ``GameEnv`` roots with the same
+    player count, or a single root plus ``num_trees`` to create independent
+    search copies. Two-player pools retain the scalar zero-sum value API;
+    pools with more players use a value vector in global player-id order. The
+    original environments are never mutated by the search. Reusable external
+    leaf/root buffers are described by ``leaf_batch_spec()`` and
+    ``root_policy_spec()`` and filled by their ``*_into`` counterparts.
     """
 
     def __init__(
@@ -275,7 +283,10 @@ class SelfPlayPool(_SelfPlayPool):
     The external repository owns the neural model and exchanges only dense
     NumPy batches with this native scheduler. Call ``reset``/``step`` to get a
     player-visible request, submit a completed belief map using its
-    ``state_id``, then run the MCTS leaf/backup loop.
+    ``state_id``, then run the MCTS leaf/backup loop. It supports 2--16
+    players; the two-player value path is specially optimized. Its
+    ``belief_batch_spec()``, ``leaf_batch_spec()`` and ``root_policy_spec()``
+    support reusable external buffers for the complete high-throughput loop.
     """
 
     def __init__(

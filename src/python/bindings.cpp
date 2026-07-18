@@ -1,10 +1,12 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -79,6 +81,78 @@ static py::array_t<T> makeArray2D(size_t rows, size_t cols) {
         static_cast<py::ssize_t>(rows),
         static_cast<py::ssize_t>(cols),
     });
+}
+
+// Bind caller-owned output arrays without coercion or copying. This is the
+// boundary used by reset_into()/step_into(): an external training repository
+// can supply NumPy views of framework-pinned host tensors while PolyEnv stays
+// independent from PyTorch, CUDA, and any GPU lifetime rules.
+template <typename T>
+static py::array_t<T> requireWritableBatchArray(
+    const py::dict& buffers,
+    const char* name,
+    std::initializer_list<py::ssize_t> expectedShape)
+{
+    const py::str key(name);
+    if (!buffers.contains(key)) {
+        throw std::invalid_argument(std::string("buffers is missing required array '") + name + "'");
+    }
+    py::handle item = buffers[key];
+    if (!py::isinstance<py::array>(item)) {
+        throw std::invalid_argument(std::string("buffers['") + name + "'] must be a NumPy array");
+    }
+    const py::array array = py::reinterpret_borrow<py::array>(item);
+    if (!array.dtype().is(py::dtype::of<T>())) {
+        throw std::invalid_argument(std::string("buffers['") + name + "'] has an incorrect dtype");
+    }
+    if (array.ndim() != static_cast<py::ssize_t>(expectedShape.size())) {
+        throw std::invalid_argument(std::string("buffers['") + name + "'] has an incorrect rank");
+    }
+    size_t axis = 0;
+    for (const py::ssize_t expected : expectedShape) {
+        if (array.shape(static_cast<py::ssize_t>(axis)) != expected) {
+            throw std::invalid_argument(std::string("buffers['") + name + "'] has an incorrect shape");
+        }
+        ++axis;
+    }
+    if ((array.flags() & py::array::c_style) != py::array::c_style) {
+        throw std::invalid_argument(std::string("buffers['") + name + "'] must be C-contiguous");
+    }
+    if (!py::cast<bool>(array.attr("flags").attr("writeable"))) {
+        throw std::invalid_argument(std::string("buffers['") + name + "'] must be writable");
+    }
+    if (!py::cast<bool>(array.attr("flags").attr("aligned"))) {
+        throw std::invalid_argument(std::string("buffers['") + name + "'] must be aligned");
+    }
+    return py::reinterpret_borrow<py::array_t<T>>(array);
+}
+
+// A single output batch must never contain overlapping writable storage. The
+// encoder writes many fields concurrently; accepting aliases would otherwise
+// make the result non-deterministic and can corrupt a caller's pinned slot.
+template <size_t N>
+static void validateNonOverlappingBatchStorage(
+    const std::array<std::pair<const char*, const py::array*>, N>& arrays)
+{
+    for (size_t left = 0; left < arrays.size(); ++left) {
+        const size_t leftBytes = arrays[left].second->nbytes();
+        if (leftBytes == 0) continue;
+        const uintptr_t leftBegin = reinterpret_cast<uintptr_t>(arrays[left].second->data());
+        const uintptr_t leftEnd = leftBegin + leftBytes;
+        if (leftEnd < leftBegin) throw std::overflow_error("batch buffer address range overflow");
+        for (size_t right = left + 1; right < arrays.size(); ++right) {
+            const size_t rightBytes = arrays[right].second->nbytes();
+            if (rightBytes == 0) continue;
+            const uintptr_t rightBegin = reinterpret_cast<uintptr_t>(arrays[right].second->data());
+            const uintptr_t rightEnd = rightBegin + rightBytes;
+            if (rightEnd < rightBegin) throw std::overflow_error("batch buffer address range overflow");
+            if (leftBegin < rightEnd && rightBegin < leftEnd) {
+                throw std::invalid_argument(
+                    std::string("buffers['") + arrays[left].first + "'] overlaps buffers['" +
+                    arrays[right].first + "']");
+            }
+        }
+    }
 }
 
 static py::array_t<int32_t> mapTokensToNumpy(const json& mapTokens) {
@@ -222,6 +296,12 @@ static std::string resolveDefaultUnitsJsonPath() {
 }
 
 static std::vector<TribeType> parseTribes(const std::vector<int>& tribes) {
+    // Player visibility is represented by a 16-bit mask throughout the
+    // engine. Reject unsupported counts at the public boundary instead of
+    // constructing a game in which a later player cannot observe tiles.
+    if (tribes.size() < 2 || tribes.size() > 16) {
+        throw std::invalid_argument("tribes must contain between 2 and 16 players");
+    }
     std::vector<TribeType> out;
     out.reserve(tribes.size());
     for (int v : tribes) {
@@ -848,6 +928,26 @@ struct NativeStepResult {
 
 class GameEnv {
 public:
+    // A fixed-size model batch may represent only a prefix of a wide legal
+    // action set. Keep the selection allocation-free and deterministic: retain
+    // the canonical first rows, but reserve the final row for EndTurn when it
+    // would otherwise be dropped. This guarantees that truncation never leaves
+    // a learner without a progress action.
+    struct ModelActionWindow {
+        const std::vector<size_t>& legalIds;
+        size_t totalCount = 0;
+        size_t count = 0;
+        size_t retainedEndTurnActionId = 0;
+        bool replacesFinalRow = false;
+
+        size_t actionId(size_t row) const {
+            if (row >= count) throw std::out_of_range("model action row is out of range");
+            return replacesFinalRow && row + 1 == count ? retainedEndTurnActionId : legalIds[row];
+        }
+
+        bool truncated() const { return count < totalCount; }
+    };
+
     GameEnv(int mapSize,
             const std::vector<int>& tribes,
             uint32_t seed,
@@ -934,10 +1034,11 @@ public:
         const Game& g = session_->state.getGame();
         const int rewardPlayerId = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
-        if (done && rewardPlayerId >= 0 && rewardPlayerId < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
-            reward = (g.getWinner() == static_cast<PlayerId>(rewardPlayerId)) ? 1.0f : -1.0f;
+        const PlayerId terminalWinner = done ? terminalWinnerNative() : kNoPlayer;
+        if (done && rewardPlayerId >= 0 && rewardPlayerId < static_cast<int>(g.getPlayers().size())) {
+            reward = terminalValueForPlayer(static_cast<PlayerId>(rewardPlayerId));
         }
-        return {true, done, reward, g.isGameOver() ? static_cast<int>(g.getWinner()) : -1,
+        return {true, done, reward, terminalWinner == kNoPlayer ? -1 : static_cast<int>(terminalWinner),
                 static_cast<int>(session_->state.currentPlayer())};
     }
 
@@ -971,6 +1072,30 @@ public:
         return session_->state.legalActionIdsRef(pid);
     }
 
+    ModelActionWindow modelActionWindow(size_t maxActions) const {
+        ensureState();
+        if (maxActions == 0) throw std::invalid_argument("max_actions must be positive");
+
+        const PlayerId pid = session_->state.currentPlayer();
+        const auto& legalIds = session_->state.legalActionIdsRef(pid);
+        const size_t count = std::min(maxActions, legalIds.size());
+        ModelActionWindow out{legalIds, legalIds.size(), count, 0, false};
+        if (legalIds.size() <= maxActions) return out;
+
+        // The first `maxActions - 1` canonical rows are retained. Look only
+        // beyond that prefix for EndTurn; if it is already in the prefix, the
+        // natural ordering is unchanged.
+        for (size_t index = maxActions; index < legalIds.size(); ++index) {
+            const auto action = session_->state.decodeActionId(pid, legalIds[index]);
+            if (action && action->type == Action::Type::EndTurn) {
+                out.retainedEndTurnActionId = legalIds[index];
+                out.replacesFinalRow = true;
+                break;
+            }
+        }
+        return out;
+    }
+
     bool isTerminalNative() const {
         ensureState();
         return session_->state.isTerminal();
@@ -988,13 +1113,14 @@ public:
 
     int mapSizeNative() const { return mapSize_; }
 
-    // MctsPool currently implements two-player, zero-sum PUCT. The returned
-    // value is from the current player's point of view and is valid only for
-    // terminal states.
-    float terminalValueForCurrentPlayer() const {
+    // Resolve the terminal winner once so MctsPool can back up a terminal
+    // result from every player's perspective without consulting hidden state.
+    // A game can also be terminal before Game::winner has been set; preserve
+    // the existing sole-survivor fallback for that case.
+    PlayerId terminalWinnerNative() const {
         ensureState();
         if (!session_->state.isTerminal()) {
-            throw std::logic_error("terminal value requested for a non-terminal MCTS node");
+            throw std::logic_error("terminal winner requested for a non-terminal MCTS node");
         }
 
         const Game& game = session_->state.getGame();
@@ -1013,8 +1139,23 @@ public:
             if (alive != 1) winner = kNoPlayer;
         }
 
+        return winner;
+    }
+
+    // Terminal rewards are zero-sum across the player vector: the winner gets
+    // +1 and each loser shares -1. For two players this preserves +1/-1.
+    float terminalValueForPlayer(PlayerId player) const {
+        const PlayerId winner = terminalWinnerNative();
         if (winner == kNoPlayer) return 0.0f;
-        return winner == session_->state.currentPlayer() ? 1.0f : -1.0f;
+        if (winner == player) return 1.0f;
+        const int players = playerCountNative();
+        return -1.0f / static_cast<float>(players - 1);
+    }
+
+    // This scalar helper is the hot terminal path for two-player, zero-sum
+    // MCTS. Multi-player MCTS resolves terminal utilities once in MctsPool.
+    float terminalValueForCurrentPlayer() const {
+        return terminalValueForPlayer(session_->state.currentPlayer());
     }
 
     py::dict step(size_t actionId, std::optional<int> rewardPlayer) {
@@ -1047,15 +1188,16 @@ public:
         const int starsAfter = g.getPlayer(actor).getStars();
         int rp = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
-        if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
-            reward = (g.getWinner() == static_cast<PlayerId>(rp)) ? 1.0f : -1.0f;
+        const PlayerId terminalWinner = done ? terminalWinnerNative() : kNoPlayer;
+        if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size())) {
+            reward = terminalValueForPlayer(static_cast<PlayerId>(rp));
         }
 
         py::dict out;
         out["ok"] = true;
         out["done"] = done;
         out["reward"] = reward;
-        out["winner"] = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
+        out["winner"] = terminalWinner == kNoPlayer ? -1 : static_cast<int>(terminalWinner);
         out["current_player"] = static_cast<int>(session_->state.currentPlayer());
         out["selected_action_id"] = static_cast<int>(actionId);
         out["stars_before"] = starsBefore;
@@ -1091,10 +1233,11 @@ public:
         const Game& g = session_->state.getGame();
         int rp = rewardPlayer.value_or(static_cast<int>(actor));
         float reward = 0.0f;
-        if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size()) && g.isGameOver()) {
-            reward = (g.getWinner() == static_cast<PlayerId>(rp)) ? 1.0f : -1.0f;
+        const PlayerId terminalWinner = done ? terminalWinnerNative() : kNoPlayer;
+        if (done && rp >= 0 && rp < static_cast<int>(g.getPlayers().size())) {
+            reward = terminalValueForPlayer(static_cast<PlayerId>(rp));
         }
-        const int winner = g.isGameOver() ? static_cast<int>(g.getWinner()) : -1;
+        const int winner = terminalWinner == kNoPlayer ? -1 : static_cast<int>(terminalWinner);
         return py::make_tuple(true, done, reward, winner, static_cast<int>(session_->state.currentPlayer()));
     }
 
@@ -1613,6 +1756,8 @@ public:
         uint8_t* actionArgMasksOut,
         uint8_t* actionMaskOut,
         int32_t* legalActionCountOut,
+        int32_t* totalLegalActionCountOut,
+        uint8_t* actionTruncatedOut,
         size_t maxActions,
         bool includeCombatPreview) const
     {
@@ -1621,12 +1766,14 @@ public:
 
         const Game& g = session_->state.getGame();
         const PlayerId pid = session_->state.currentPlayer();
-        const auto& legalIds = session_->state.legalActionIdsRef(pid);
-        *legalActionCountOut = static_cast<int32_t>(legalIds.size());
+        const ModelActionWindow actions = modelActionWindow(maxActions);
+        *legalActionCountOut = static_cast<int32_t>(actions.count);
+        *totalLegalActionCountOut = static_cast<int32_t>(actions.totalCount);
+        *actionTruncatedOut = actions.truncated() ? 1 : 0;
 
-        const size_t count = std::min(maxActions, legalIds.size());
+        const size_t count = actions.count;
         for (size_t row = 0; row < count; ++row) {
-            const size_t actionId = legalIds[row];
+            const size_t actionId = actions.actionId(row);
             const auto action = session_->state.decodeActionId(pid, actionId);
             if (!action) continue;
 
@@ -3227,6 +3374,88 @@ public:
         return out.intoDict();
     }
 
+    // Fill caller-owned arrays in place. This is intentionally CPU/framework
+    // agnostic: callers may use ordinary NumPy storage or NumPy views backed
+    // by pinned tensors from their own PyTorch/JAX runtime.
+    void resetInto(const py::dict& buffers, std::optional<uint32_t> seed = std::nullopt) {
+        BatchArrays out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
+                        static_cast<size_t>(maxActions_), static_cast<size_t>(visibleEventHistory_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (seed) {
+                baseSeed_ = *seed;
+                std::fill(resetCounts_.begin(), resetCounts_.end(), 0);
+            }
+            for (size_t i = 0; i < envs_.size(); ++i) resetOne(i);
+            fillBatch(out, nullptr, false);
+        }
+    }
+
+    void stepInto(py::array actionIds, const py::dict& buffers) {
+        // Unlike step(), this boundary never force-casts: a conversion here
+        // could silently create a pageable temporary and defeat the caller's
+        // pinned-memory transfer plan. Strided inputs are fine because the
+        // tiny action vector is copied before C++ releases the GIL.
+        if (!actionIds.dtype().is(py::dtype::of<int32_t>()) ||
+            actionIds.ndim() != 1 || actionIds.shape(0) != numEnvs_) {
+            throw std::invalid_argument(
+                "action_ids for step_into must be a one-dimensional int32 array with num_envs entries");
+        }
+        const auto actions = py::reinterpret_borrow<py::array_t<int32_t>>(actionIds);
+        // Validate every output before advancing any game. Copy the small
+        // action vector so callers may safely select actions from the same
+        // output buffer that will be overwritten by this call.
+        BatchArrays out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
+                        static_cast<size_t>(maxActions_), static_cast<size_t>(visibleEventHistory_));
+        std::vector<int32_t> copiedActions(static_cast<size_t>(numEnvs_));
+        const auto actionView = actions.unchecked<1>();
+        for (py::ssize_t i = 0; i < actionView.shape(0); ++i) {
+            copiedActions[static_cast<size_t>(i)] = actionView(i);
+        }
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            fillBatch(out, copiedActions.data(), true);
+        }
+    }
+
+    py::dict batchSpec() const {
+        const py::ssize_t batch = static_cast<py::ssize_t>(numEnvs_);
+        const py::ssize_t tiles = static_cast<py::ssize_t>(tileCount());
+        const py::ssize_t actions = static_cast<py::ssize_t>(maxActions_);
+        const py::ssize_t history = static_cast<py::ssize_t>(visibleEventHistory_);
+        py::dict out;
+        const auto add = [&](const char* name, const py::dtype& dtype, py::tuple shape) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = std::move(shape);
+            out[name] = std::move(field);
+        };
+        add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(batch, tiles, kMapTokenFeatureCount));
+        add("state", py::dtype::of<int32_t>(), py::make_tuple(batch, kVectorStateFeatureCount));
+        add("action_id", py::dtype::of<int32_t>(), py::make_tuple(batch, actions));
+        add("action_features", py::dtype::of<int32_t>(), py::make_tuple(batch, actions, kVectorActionFeatureCount));
+        add("action_arg_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, actions, kVectorActionArgMaskCount));
+        add("action_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, actions));
+        add("visible_event_features", py::dtype::of<int32_t>(), py::make_tuple(batch, history, kVisibleEventFeatureCount));
+        add("visible_event_sequence", py::dtype::of<uint64_t>(), py::make_tuple(batch, history));
+        add("visible_event_action_sequence", py::dtype::of<uint64_t>(), py::make_tuple(batch, history));
+        add("visible_event_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, history));
+        add("visible_event_affected", py::dtype::of<int32_t>(),
+            py::make_tuple(batch, history, kVisibleEventAffectedUnitCount, kVisibleEventAffectedFeatureCount));
+        add("visible_event_affected_mask", py::dtype::of<uint8_t>(),
+            py::make_tuple(batch, history, kVisibleEventAffectedUnitCount));
+        add("legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("total_legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("action_truncated", py::dtype::of<uint8_t>(), py::make_tuple(batch));
+        add("reward", py::dtype::of<float>(), py::make_tuple(batch));
+        add("terminated", py::dtype::of<uint8_t>(), py::make_tuple(batch));
+        add("action_valid", py::dtype::of<uint8_t>(), py::make_tuple(batch));
+        add("env_id", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        return out;
+    }
+
     int numEnvs() const { return numEnvs_; }
     int numThreads() const { return static_cast<int>(pool_.workerCount()); }
     int mapSize() const { return mapSize_; }
@@ -3294,10 +3523,73 @@ private:
             , visibleEventAffectedMask({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(visibleEventHistory),
                                         static_cast<py::ssize_t>(kVisibleEventAffectedUnitCount)})
             , legalActionCount(static_cast<py::ssize_t>(numEnvs))
+            , totalLegalActionCount(static_cast<py::ssize_t>(numEnvs))
+            , actionTruncated(static_cast<py::ssize_t>(numEnvs))
             , reward(static_cast<py::ssize_t>(numEnvs))
             , terminated(static_cast<py::ssize_t>(numEnvs))
             , actionValid(static_cast<py::ssize_t>(numEnvs))
             , envId(static_cast<py::ssize_t>(numEnvs)) {}
+
+        // This constructor intentionally only borrows existing arrays. It
+        // performs no dtype coercion, contiguity repair, or allocation, so a
+        // pinned external buffer remains the exact storage written by C++.
+        BatchArrays(const py::dict& buffers, size_t numEnvs, size_t tiles,
+                    size_t maxActions, size_t visibleEventHistory)
+            : mapTokens(requireWritableBatchArray<int32_t>(
+                buffers, "map_tokens", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(tiles),
+                                         static_cast<py::ssize_t>(kMapTokenFeatureCount)}))
+            , state(requireWritableBatchArray<int32_t>(
+                buffers, "state", {static_cast<py::ssize_t>(numEnvs),
+                                    static_cast<py::ssize_t>(kVectorStateFeatureCount)}))
+            , actionIds(requireWritableBatchArray<int32_t>(
+                buffers, "action_id", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)}))
+            , actionFeatures(requireWritableBatchArray<int32_t>(
+                buffers, "action_features", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions),
+                                              static_cast<py::ssize_t>(kVectorActionFeatureCount)}))
+            , actionArgMasks(requireWritableBatchArray<uint8_t>(
+                buffers, "action_arg_mask", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions),
+                                              static_cast<py::ssize_t>(kVectorActionArgMaskCount)}))
+            , actionMask(requireWritableBatchArray<uint8_t>(
+                buffers, "action_mask", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)}))
+            , visibleEventFeatures(requireWritableBatchArray<int32_t>(
+                buffers, "visible_event_features", {static_cast<py::ssize_t>(numEnvs),
+                                                     static_cast<py::ssize_t>(visibleEventHistory),
+                                                     static_cast<py::ssize_t>(kVisibleEventFeatureCount)}))
+            , visibleEventSequence(requireWritableBatchArray<uint64_t>(
+                buffers, "visible_event_sequence", {static_cast<py::ssize_t>(numEnvs),
+                                                     static_cast<py::ssize_t>(visibleEventHistory)}))
+            , visibleEventActionSequence(requireWritableBatchArray<uint64_t>(
+                buffers, "visible_event_action_sequence", {static_cast<py::ssize_t>(numEnvs),
+                                                            static_cast<py::ssize_t>(visibleEventHistory)}))
+            , visibleEventMask(requireWritableBatchArray<uint8_t>(
+                buffers, "visible_event_mask", {static_cast<py::ssize_t>(numEnvs),
+                                                 static_cast<py::ssize_t>(visibleEventHistory)}))
+            , visibleEventAffected(requireWritableBatchArray<int32_t>(
+                buffers, "visible_event_affected", {static_cast<py::ssize_t>(numEnvs),
+                                                     static_cast<py::ssize_t>(visibleEventHistory),
+                                                     static_cast<py::ssize_t>(kVisibleEventAffectedUnitCount),
+                                                     static_cast<py::ssize_t>(kVisibleEventAffectedFeatureCount)}))
+            , visibleEventAffectedMask(requireWritableBatchArray<uint8_t>(
+                buffers, "visible_event_affected_mask", {static_cast<py::ssize_t>(numEnvs),
+                                                          static_cast<py::ssize_t>(visibleEventHistory),
+                                                          static_cast<py::ssize_t>(kVisibleEventAffectedUnitCount)}))
+            , legalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "legal_action_count", {static_cast<py::ssize_t>(numEnvs)}))
+            , totalLegalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "total_legal_action_count", {static_cast<py::ssize_t>(numEnvs)}))
+            , actionTruncated(requireWritableBatchArray<uint8_t>(
+                buffers, "action_truncated", {static_cast<py::ssize_t>(numEnvs)}))
+            , reward(requireWritableBatchArray<float>(
+                buffers, "reward", {static_cast<py::ssize_t>(numEnvs)}))
+            , terminated(requireWritableBatchArray<uint8_t>(
+                buffers, "terminated", {static_cast<py::ssize_t>(numEnvs)}))
+            , actionValid(requireWritableBatchArray<uint8_t>(
+                buffers, "action_valid", {static_cast<py::ssize_t>(numEnvs)}))
+            , envId(requireWritableBatchArray<int32_t>(
+                buffers, "env_id", {static_cast<py::ssize_t>(numEnvs)}))
+        {
+            validateNonOverlappingStorage();
+        }
 
         py::dict intoDict() {
             py::dict out;
@@ -3314,6 +3606,8 @@ private:
             out["visible_event_affected"] = std::move(visibleEventAffected);
             out["visible_event_affected_mask"] = std::move(visibleEventAffectedMask);
             out["legal_action_count"] = std::move(legalActionCount);
+            out["total_legal_action_count"] = std::move(totalLegalActionCount);
+            out["action_truncated"] = std::move(actionTruncated);
             out["reward"] = std::move(reward);
             out["terminated"] = std::move(terminated);
             out["action_valid"] = std::move(actionValid);
@@ -3334,10 +3628,40 @@ private:
         py::array_t<int32_t> visibleEventAffected;
         py::array_t<uint8_t> visibleEventAffectedMask;
         py::array_t<int32_t> legalActionCount;
+        py::array_t<int32_t> totalLegalActionCount;
+        py::array_t<uint8_t> actionTruncated;
         py::array_t<float> reward;
         py::array_t<uint8_t> terminated;
         py::array_t<uint8_t> actionValid;
         py::array_t<int32_t> envId;
+
+    private:
+        void validateNonOverlappingStorage() const {
+            // Keep this fixed-size metadata on the stack. Buffer validation
+            // happens once per API call, before the hot native step begins.
+            const std::array<std::pair<const char*, const py::array*>, 19> arrays{{
+                {"map_tokens", &mapTokens},
+                {"state", &state},
+                {"action_id", &actionIds},
+                {"action_features", &actionFeatures},
+                {"action_arg_mask", &actionArgMasks},
+                {"action_mask", &actionMask},
+                {"visible_event_features", &visibleEventFeatures},
+                {"visible_event_sequence", &visibleEventSequence},
+                {"visible_event_action_sequence", &visibleEventActionSequence},
+                {"visible_event_mask", &visibleEventMask},
+                {"visible_event_affected", &visibleEventAffected},
+                {"visible_event_affected_mask", &visibleEventAffectedMask},
+                {"legal_action_count", &legalActionCount},
+                {"total_legal_action_count", &totalLegalActionCount},
+                {"action_truncated", &actionTruncated},
+                {"reward", &reward},
+                {"terminated", &terminated},
+                {"action_valid", &actionValid},
+                {"env_id", &envId},
+            }};
+            validateNonOverlappingBatchStorage(arrays);
+        }
     };
 
     static size_t resolveThreadCount(int numEnvs, int requested) {
@@ -3395,6 +3719,8 @@ private:
         int32_t* visibleEventAffectedData = out.visibleEventAffected.mutable_data();
         uint8_t* visibleEventAffectedMaskData = out.visibleEventAffectedMask.mutable_data();
         int32_t* countData = out.legalActionCount.mutable_data();
+        int32_t* totalCountData = out.totalLegalActionCount.mutable_data();
+        uint8_t* truncatedData = out.actionTruncated.mutable_data();
         float* rewardData = out.reward.mutable_data();
         uint8_t* terminatedData = out.terminated.mutable_data();
         uint8_t* validData = out.actionValid.mutable_data();
@@ -3422,6 +3748,8 @@ private:
                     argMasksData + i * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
                     maskData + i * static_cast<size_t>(maxActions_),
                     countData + i,
+                    totalCountData + i,
+                    truncatedData + i,
                     static_cast<size_t>(maxActions_),
                     includeCombatPreview_);
                 if (historyLength > 0) {
@@ -3444,14 +3772,6 @@ private:
             }
         });
 
-        for (size_t i = 0; i < numEnvs; ++i) {
-            if (countData[i] > maxActions_) {
-                throw std::runtime_error(
-                    "VectorGameEnv max_actions=" + std::to_string(maxActions_) +
-                    " is too small for env " + std::to_string(i) +
-                    ": it has " + std::to_string(countData[i]) + " legal actions");
-            }
-        }
     }
 
     int numEnvs_ = 0;
@@ -3475,6 +3795,8 @@ private:
 // backup never cross the Python boundary.
 class MctsPool {
 public:
+    friend class SelfPlayPool;
+
     MctsPool(py::iterable roots, int numThreads, int maxActions, float cPuct)
         : MctsPool(copyRootsFromPython(roots), numThreads, maxActions, cPuct) {}
 
@@ -3531,29 +3853,55 @@ public:
     }
 
     py::dict selectLeaves(int maxLeaves = 0) {
-        if (maxLeaves < 0) throw std::invalid_argument("max_leaves must be non-negative");
-
+        const size_t limit = leafCapacity(maxLeaves);
         std::unique_lock lock(apiMutex_, std::defer_lock);
         std::vector<Selection> selections;
-        {
-            py::gil_scoped_release release;
-            lock.lock();
-            const size_t limit = maxLeaves == 0
-                ? trees_.size()
-                : std::min(trees_.size(), static_cast<size_t>(maxLeaves));
-            selections = selectPendingLeaves(limit);
-        }
-
-        LeafBatch out(selections.size(), tileCount(), static_cast<size_t>(maxActions_));
         try {
-            py::gil_scoped_release release;
-            writeLeafBatch(out, selections);
+            {
+                py::gil_scoped_release release;
+                lock.lock();
+                selections = selectPendingLeaves(limit);
+            }
+
+            LeafBatch out(selections.size(), tileCount(), static_cast<size_t>(maxActions_));
+            {
+                py::gil_scoped_release release;
+                writeLeafBatch(out, selections);
+            }
+            py::dict result = out.intoDict();
+            lock.unlock();
+            return result;
         } catch (...) {
-            cancelSelections(selections);
+            if (lock.owns_lock()) cancelSelections(selections);
             throw;
         }
-        lock.unlock();
-        return out.intoDict();
+    }
+
+    // Caller-owned leaf batch. Its capacity is fixed before selection so it
+    // can be pinned and reused by a framework-owned double buffer. The number
+    // of selectable leaves is dynamic; only rows [0:returned_leaf_count] are
+    // valid on return.
+    int selectLeavesInto(const py::dict& buffers, int maxLeaves = 0) {
+        const size_t capacity = leafCapacity(maxLeaves);
+        LeafBatch out(buffers, capacity, tileCount(), static_cast<size_t>(maxActions_));
+        std::unique_lock lock(apiMutex_, std::defer_lock);
+        std::vector<Selection> selections;
+        try {
+            {
+                py::gil_scoped_release release;
+                lock.lock();
+                selections = selectPendingLeaves(capacity);
+            }
+            {
+                py::gil_scoped_release release;
+                writeLeafBatch(out, selections);
+            }
+            lock.unlock();
+            return static_cast<int>(selections.size());
+        } catch (...) {
+            if (lock.owns_lock()) cancelSelections(selections);
+            throw;
+        }
     }
 
     void expandAndBackup(py::array leafIds, py::array policyLogits, py::array values) {
@@ -3566,8 +3914,16 @@ public:
         if (!logits || logits.ndim() != 2 || logits.shape(0) != ids.shape(0) || logits.shape(1) != maxActions_) {
             throw std::invalid_argument("policy_logits must have shape [leaf_count, max_actions]");
         }
-        if (!valueArray || valueArray.ndim() != 1 || valueArray.shape(0) != ids.shape(0)) {
-            throw std::invalid_argument("values must have shape [leaf_count]");
+        const bool twoPlayer = twoPlayerZeroSum_;
+        const size_t valuesPerLeaf = twoPlayer ? 1 : static_cast<size_t>(playerCount_);
+        if (!valueArray ||
+            (twoPlayer && (valueArray.ndim() != 1 || valueArray.shape(0) != ids.shape(0))) ||
+            (!twoPlayer && (valueArray.ndim() != 2 || valueArray.shape(0) != ids.shape(0) ||
+                            valueArray.shape(1) != playerCount_))) {
+            throw std::invalid_argument(
+                twoPlayer
+                    ? "values must have shape [leaf_count] for a two-player MctsPool"
+                    : "values must have shape [leaf_count, player_count] for a multi-player MctsPool");
         }
 
         const size_t count = static_cast<size_t>(ids.shape(0));
@@ -3575,8 +3931,11 @@ public:
         const float* logitsData = logits.data();
         const float* valueData = valueArray.data();
         for (size_t row = 0; row < count; ++row) {
-            if (!std::isfinite(valueData[row]) || valueData[row] < -1.0f || valueData[row] > 1.0f) {
-                throw std::invalid_argument("every MCTS value must be finite and in [-1, 1]");
+            for (size_t player = 0; player < valuesPerLeaf; ++player) {
+                const float value = valueData[row * valuesPerLeaf + player];
+                if (!std::isfinite(value) || value < -1.0f || value > 1.0f) {
+                    throw std::invalid_argument("every MCTS value must be finite and in [-1, 1]");
+                }
             }
             for (int col = 0; col < maxActions_; ++col) {
                 const float logit = logitsData[row * static_cast<size_t>(maxActions_) + static_cast<size_t>(col)];
@@ -3597,7 +3956,7 @@ public:
                     for (size_t row = begin; row < end; ++row) {
                         expandOne(pending[row],
                                   logitsData + row * static_cast<size_t>(maxActions_),
-                                  valueData[row]);
+                                  valueData + row * valuesPerLeaf);
                     }
                 });
             } catch (...) {
@@ -3626,10 +3985,77 @@ public:
         return out.intoDict();
     }
 
+    void rootPolicyInto(const py::dict& buffers, float temperature = 1.0f) {
+        if (!std::isfinite(temperature) || temperature < 0.0f) {
+            throw std::invalid_argument("temperature must be finite and non-negative");
+        }
+        RootBatch out(buffers, trees_.size(), static_cast<size_t>(maxActions_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            pool_->parallelFor(trees_.size(), [&](size_t begin, size_t end) {
+                for (size_t tree = begin; tree < end; ++tree) {
+                    writeRootPolicy(out, tree, temperature);
+                }
+            });
+        }
+    }
+
+    py::dict leafBatchSpec(int maxLeaves = 0) const {
+        const py::ssize_t rows = static_cast<py::ssize_t>(leafCapacity(maxLeaves));
+        const py::ssize_t tiles = static_cast<py::ssize_t>(tileCount());
+        const py::ssize_t actions = static_cast<py::ssize_t>(maxActions_);
+        py::dict out;
+        const auto add = [&](const char* name, const py::dtype& dtype, py::tuple shape) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = std::move(shape);
+            out[name] = std::move(field);
+        };
+        add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(rows, tiles, kMapTokenFeatureCount));
+        add("state", py::dtype::of<int32_t>(), py::make_tuple(rows, kVectorStateFeatureCount));
+        add("action_id", py::dtype::of<int32_t>(), py::make_tuple(rows, actions));
+        add("action_features", py::dtype::of<int32_t>(), py::make_tuple(rows, actions, kVectorActionFeatureCount));
+        add("action_arg_mask", py::dtype::of<uint8_t>(), py::make_tuple(rows, actions, kVectorActionArgMaskCount));
+        add("action_mask", py::dtype::of<uint8_t>(), py::make_tuple(rows, actions));
+        add("legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("total_legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("action_truncated", py::dtype::of<uint8_t>(), py::make_tuple(rows));
+        add("leaf_id", py::dtype::of<uint64_t>(), py::make_tuple(rows));
+        add("tree_id", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("to_play", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("player_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        return out;
+    }
+
+    py::dict rootPolicySpec() const {
+        const py::ssize_t rows = static_cast<py::ssize_t>(trees_.size());
+        const py::ssize_t actions = static_cast<py::ssize_t>(maxActions_);
+        py::dict out;
+        const auto add = [&](const char* name, const py::dtype& dtype, py::tuple shape) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = std::move(shape);
+            out[name] = std::move(field);
+        };
+        add("action_id", py::dtype::of<int32_t>(), py::make_tuple(rows, actions));
+        add("action_mask", py::dtype::of<uint8_t>(), py::make_tuple(rows, actions));
+        add("visit_count", py::dtype::of<int32_t>(), py::make_tuple(rows, actions));
+        add("policy", py::dtype::of<float>(), py::make_tuple(rows, actions));
+        add("root_value", py::dtype::of<float>(), py::make_tuple(rows));
+        add("root_visit_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("root_player", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("player_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("total_legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("action_truncated", py::dtype::of<uint8_t>(), py::make_tuple(rows));
+        return out;
+    }
+
     int numTrees() const { return static_cast<int>(trees_.size()); }
     int numThreads() const { return static_cast<int>(pool_->workerCount()); }
     int maxActions() const { return maxActions_; }
     int mapSize() const { return mapSize_; }
+    int playerCount() const { return playerCount_; }
     float cPuct() const { return cPuct_; }
     int pendingCount() const {
         std::lock_guard lock(apiMutex_);
@@ -3705,11 +4131,17 @@ private:
     void initializeRoots(std::vector<GameEnv> roots) {
         if (roots.empty()) throw std::invalid_argument("MctsPool requires at least one GameEnv root");
 
-        int nextMapSize = mapSize_;
+        int nextMapSize = 0;
+        int nextPlayerCount = 0;
         for (const GameEnv& source : roots) {
-            if (source.playerCountNative() != 2) {
-                throw std::invalid_argument(
-                    "MctsPool currently supports exactly two players; multi-player values require a vector-valued evaluator");
+            const int sourcePlayerCount = source.playerCountNative();
+            if (sourcePlayerCount < 2 || sourcePlayerCount > 16) {
+                throw std::invalid_argument("MctsPool roots must have between 2 and 16 players");
+            }
+            if (nextPlayerCount == 0) {
+                nextPlayerCount = sourcePlayerCount;
+            } else if (sourcePlayerCount != nextPlayerCount) {
+                throw std::invalid_argument("all MctsPool roots must have the same player_count");
             }
             if (nextMapSize == 0) {
                 nextMapSize = source.mapSizeNative();
@@ -3726,6 +4158,8 @@ private:
         for (GameEnv& root : roots) replacement.emplace_back(std::move(root));
         trees_ = std::move(replacement);
         mapSize_ = nextMapSize;
+        playerCount_ = nextPlayerCount;
+        twoPlayerZeroSum_ = playerCount_ == 2;
         pending_.clear();
     }
 
@@ -3753,9 +4187,62 @@ private:
                               static_cast<py::ssize_t>(kVectorActionArgMaskCount)})
             , actionMask({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
             , legalActionCount(static_cast<py::ssize_t>(rows))
+            , totalLegalActionCount(static_cast<py::ssize_t>(rows))
+            , actionTruncated(static_cast<py::ssize_t>(rows))
             , leafId(static_cast<py::ssize_t>(rows))
             , treeId(static_cast<py::ssize_t>(rows))
-            , toPlay(static_cast<py::ssize_t>(rows)) {}
+            , toPlay(static_cast<py::ssize_t>(rows))
+            , playerCount(static_cast<py::ssize_t>(rows)) {}
+
+        LeafBatch(const py::dict& buffers, size_t rows, size_t tiles, size_t maxActions)
+            : mapTokens(requireWritableBatchArray<int32_t>(
+                buffers, "map_tokens", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
+                                         static_cast<py::ssize_t>(kMapTokenFeatureCount)}))
+            , state(requireWritableBatchArray<int32_t>(
+                buffers, "state", {static_cast<py::ssize_t>(rows),
+                                    static_cast<py::ssize_t>(kVectorStateFeatureCount)}))
+            , actionIds(requireWritableBatchArray<int32_t>(
+                buffers, "action_id", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)}))
+            , actionFeatures(requireWritableBatchArray<int32_t>(
+                buffers, "action_features", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                                              static_cast<py::ssize_t>(kVectorActionFeatureCount)}))
+            , actionArgMasks(requireWritableBatchArray<uint8_t>(
+                buffers, "action_arg_mask", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                                              static_cast<py::ssize_t>(kVectorActionArgMaskCount)}))
+            , actionMask(requireWritableBatchArray<uint8_t>(
+                buffers, "action_mask", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)}))
+            , legalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "legal_action_count", {static_cast<py::ssize_t>(rows)}))
+            , totalLegalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "total_legal_action_count", {static_cast<py::ssize_t>(rows)}))
+            , actionTruncated(requireWritableBatchArray<uint8_t>(
+                buffers, "action_truncated", {static_cast<py::ssize_t>(rows)}))
+            , leafId(requireWritableBatchArray<uint64_t>(
+                buffers, "leaf_id", {static_cast<py::ssize_t>(rows)}))
+            , treeId(requireWritableBatchArray<int32_t>(
+                buffers, "tree_id", {static_cast<py::ssize_t>(rows)}))
+            , toPlay(requireWritableBatchArray<int32_t>(
+                buffers, "to_play", {static_cast<py::ssize_t>(rows)}))
+            , playerCount(requireWritableBatchArray<int32_t>(
+                buffers, "player_count", {static_cast<py::ssize_t>(rows)}))
+        {
+            const std::array<std::pair<const char*, const py::array*>, 13> arrays{{
+                {"map_tokens", &mapTokens},
+                {"state", &state},
+                {"action_id", &actionIds},
+                {"action_features", &actionFeatures},
+                {"action_arg_mask", &actionArgMasks},
+                {"action_mask", &actionMask},
+                {"legal_action_count", &legalActionCount},
+                {"total_legal_action_count", &totalLegalActionCount},
+                {"action_truncated", &actionTruncated},
+                {"leaf_id", &leafId},
+                {"tree_id", &treeId},
+                {"to_play", &toPlay},
+                {"player_count", &playerCount},
+            }};
+            validateNonOverlappingBatchStorage(arrays);
+        }
 
         py::dict intoDict() {
             py::dict out;
@@ -3766,9 +4253,12 @@ private:
             out["action_arg_mask"] = std::move(actionArgMasks);
             out["action_mask"] = std::move(actionMask);
             out["legal_action_count"] = std::move(legalActionCount);
+            out["total_legal_action_count"] = std::move(totalLegalActionCount);
+            out["action_truncated"] = std::move(actionTruncated);
             out["leaf_id"] = std::move(leafId);
             out["tree_id"] = std::move(treeId);
             out["to_play"] = std::move(toPlay);
+            out["player_count"] = std::move(playerCount);
             return out;
         }
 
@@ -3779,9 +4269,12 @@ private:
         py::array_t<uint8_t> actionArgMasks;
         py::array_t<uint8_t> actionMask;
         py::array_t<int32_t> legalActionCount;
+        py::array_t<int32_t> totalLegalActionCount;
+        py::array_t<uint8_t> actionTruncated;
         py::array_t<uint64_t> leafId;
         py::array_t<int32_t> treeId;
         py::array_t<int32_t> toPlay;
+        py::array_t<int32_t> playerCount;
     };
 
     struct RootBatch {
@@ -3792,7 +4285,47 @@ private:
             , policy({static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)})
             , rootValue(static_cast<py::ssize_t>(trees))
             , rootVisitCount(static_cast<py::ssize_t>(trees))
-            , rootPlayer(static_cast<py::ssize_t>(trees)) {}
+            , rootPlayer(static_cast<py::ssize_t>(trees))
+            , playerCount(static_cast<py::ssize_t>(trees))
+            , totalLegalActionCount(static_cast<py::ssize_t>(trees))
+            , actionTruncated(static_cast<py::ssize_t>(trees)) {}
+
+        RootBatch(const py::dict& buffers, size_t trees, size_t maxActions)
+            : actionIds(requireWritableBatchArray<int32_t>(
+                buffers, "action_id", {static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)}))
+            , actionMask(requireWritableBatchArray<uint8_t>(
+                buffers, "action_mask", {static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)}))
+            , visitCounts(requireWritableBatchArray<int32_t>(
+                buffers, "visit_count", {static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)}))
+            , policy(requireWritableBatchArray<float>(
+                buffers, "policy", {static_cast<py::ssize_t>(trees), static_cast<py::ssize_t>(maxActions)}))
+            , rootValue(requireWritableBatchArray<float>(
+                buffers, "root_value", {static_cast<py::ssize_t>(trees)}))
+            , rootVisitCount(requireWritableBatchArray<int32_t>(
+                buffers, "root_visit_count", {static_cast<py::ssize_t>(trees)}))
+            , rootPlayer(requireWritableBatchArray<int32_t>(
+                buffers, "root_player", {static_cast<py::ssize_t>(trees)}))
+            , playerCount(requireWritableBatchArray<int32_t>(
+                buffers, "player_count", {static_cast<py::ssize_t>(trees)}))
+            , totalLegalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "total_legal_action_count", {static_cast<py::ssize_t>(trees)}))
+            , actionTruncated(requireWritableBatchArray<uint8_t>(
+                buffers, "action_truncated", {static_cast<py::ssize_t>(trees)}))
+        {
+            const std::array<std::pair<const char*, const py::array*>, 10> arrays{{
+                {"action_id", &actionIds},
+                {"action_mask", &actionMask},
+                {"visit_count", &visitCounts},
+                {"policy", &policy},
+                {"root_value", &rootValue},
+                {"root_visit_count", &rootVisitCount},
+                {"root_player", &rootPlayer},
+                {"player_count", &playerCount},
+                {"total_legal_action_count", &totalLegalActionCount},
+                {"action_truncated", &actionTruncated},
+            }};
+            validateNonOverlappingBatchStorage(arrays);
+        }
 
         py::dict intoDict() {
             py::dict out;
@@ -3803,6 +4336,9 @@ private:
             out["root_value"] = std::move(rootValue);
             out["root_visit_count"] = std::move(rootVisitCount);
             out["root_player"] = std::move(rootPlayer);
+            out["player_count"] = std::move(playerCount);
+            out["total_legal_action_count"] = std::move(totalLegalActionCount);
+            out["action_truncated"] = std::move(actionTruncated);
             return out;
         }
 
@@ -3813,6 +4349,9 @@ private:
         py::array_t<float> rootValue;
         py::array_t<int32_t> rootVisitCount;
         py::array_t<int32_t> rootPlayer;
+        py::array_t<int32_t> playerCount;
+        py::array_t<int32_t> totalLegalActionCount;
+        py::array_t<uint8_t> actionTruncated;
     };
 
     static size_t resolveThreadCount(size_t treeCount, int requested) {
@@ -3825,7 +4364,16 @@ private:
         return static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
     }
 
-    void backup(Node& leaf, float valueFromLeafPlayer) {
+    size_t leafCapacity(int maxLeaves) const {
+        if (maxLeaves < 0) throw std::invalid_argument("max_leaves must be non-negative");
+        if (maxLeaves == 0) return trees_.size();
+        return std::min(trees_.size(), static_cast<size_t>(maxLeaves));
+    }
+
+    // Optimized two-player, zero-sum backup. Keep this scalar/sign-flip path
+    // separate from max^n so the common two-player case retains its compact
+    // node layout and hot-loop behavior.
+    void backupTwoPlayer(Node& leaf, float valueFromLeafPlayer) {
         const PlayerId leafPlayer = leaf.toPlay;
         for (Node* node = &leaf; node; node = node->parent) {
             const float nodeValue = node->toPlay == leafPlayer ? valueFromLeafPlayer : -valueFromLeafPlayer;
@@ -3836,6 +4384,54 @@ private:
                     ? valueFromLeafPlayer : -valueFromLeafPlayer;
                 ++node->parentEdge->visits;
                 node->parentEdge->valueSum += parentValue;
+            }
+        }
+    }
+
+    float multiPlayerValue(const float* values, PlayerId player) const {
+        const size_t index = static_cast<size_t>(player);
+        if (index >= static_cast<size_t>(playerCount_)) {
+            throw std::logic_error("MctsPool encountered an invalid player id while backing up a value vector");
+        }
+        return values[index];
+    }
+
+    // Max^n backup. Node and edge statistics deliberately remain scalar:
+    // each node stores its own actor's value, and each incoming edge stores
+    // the parent actor's value. That is exactly the Q term selected by PUCT,
+    // without an O(player_count) allocation in every node or edge.
+    void backupMultiPlayer(Node& leaf, const float* values) {
+        for (Node* node = &leaf; node; node = node->parent) {
+            ++node->visits;
+            node->valueSum += multiPlayerValue(values, node->toPlay);
+            if (node->parentEdge) {
+                ++node->parentEdge->visits;
+                node->parentEdge->valueSum += multiPlayerValue(values, node->parent->toPlay);
+            }
+        }
+    }
+
+    float terminalUtility(PlayerId winner, PlayerId player) const {
+        if (winner == kNoPlayer) return 0.0f;
+        if (winner == player) return 1.0f;
+        // The terminal vector remains zero-sum for every player count, while
+        // retaining the historical +1/-1 convention for two players.
+        return -1.0f / static_cast<float>(playerCount_ - 1);
+    }
+
+    void backupTerminal(Node& leaf) {
+        if (twoPlayerZeroSum_) {
+            backupTwoPlayer(leaf, leaf.env.terminalValueForCurrentPlayer());
+            return;
+        }
+
+        const PlayerId winner = leaf.env.terminalWinnerNative();
+        for (Node* node = &leaf; node; node = node->parent) {
+            ++node->visits;
+            node->valueSum += terminalUtility(winner, node->toPlay);
+            if (node->parentEdge) {
+                ++node->parentEdge->visits;
+                node->parentEdge->valueSum += terminalUtility(winner, node->parent->toPlay);
             }
         }
     }
@@ -3869,7 +4465,7 @@ private:
 
         if (node->terminal || node->env.isTerminalNative()) {
             node->terminal = true;
-            backup(*node, node->env.terminalValueForCurrentPlayer());
+            backupTerminal(*node);
             return nullptr;
         }
         return node->pending ? nullptr : node;
@@ -3910,17 +4506,12 @@ private:
                     Tree& tree = trees_[treeIndex];
                     Node* node = nodes[item];
                     if (!node) continue;
-                    const size_t legalCount = node->env.legalActionCountNative();
-                    if (legalCount == 0) {
+                    const GameEnv::ModelActionWindow actions = node->env.modelActionWindow(
+                        static_cast<size_t>(maxActions_));
+                    if (actions.count == 0) {
                         node->terminal = true;
-                        backup(*node, node->env.terminalValueForCurrentPlayer());
+                        backupTerminal(*node);
                         continue;
-                    }
-                    if (legalCount > static_cast<size_t>(maxActions_)) {
-                        throw std::runtime_error(
-                            "MctsPool max_actions=" + std::to_string(maxActions_) +
-                            " is too small for tree " + std::to_string(treeIndex) +
-                            ": its selected leaf has " + std::to_string(legalCount) + " legal actions");
                     }
 
                     const uint64_t id = nextLeafId_++;
@@ -3956,9 +4547,12 @@ private:
         uint8_t* actionArgMaskData = out.actionArgMasks.mutable_data();
         uint8_t* actionMaskData = out.actionMask.mutable_data();
         int32_t* legalCountData = out.legalActionCount.mutable_data();
+        int32_t* totalLegalCountData = out.totalLegalActionCount.mutable_data();
+        uint8_t* actionTruncatedData = out.actionTruncated.mutable_data();
         uint64_t* leafIdData = out.leafId.mutable_data();
         int32_t* treeIdData = out.treeId.mutable_data();
         int32_t* toPlayData = out.toPlay.mutable_data();
+        int32_t* playerCountData = out.playerCount.mutable_data();
 
         pool_->parallelFor(rows, [&](size_t begin, size_t end) {
             for (size_t row = begin; row < end; ++row) {
@@ -3971,11 +4565,14 @@ private:
                     actionArgMaskData + row * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
                     actionMaskData + row * static_cast<size_t>(maxActions_),
                     legalCountData + row,
+                    totalLegalCountData + row,
+                    actionTruncatedData + row,
                     static_cast<size_t>(maxActions_),
                     false);
                 leafIdData[row] = selection.id;
                 treeIdData[row] = static_cast<int32_t>(selection.treeIndex);
                 toPlayData[row] = static_cast<int32_t>(selection.node->toPlay);
+                playerCountData[row] = playerCount_;
             }
         });
     }
@@ -4027,31 +4624,36 @@ private:
         return priors;
     }
 
-    void expandOne(const PendingLeaf& pending, const float* logits, float value) {
+    void expandOne(const PendingLeaf& pending, const float* logits, const float* values) {
         Tree& tree = trees_[pending.treeIndex];
         Node& node = *pending.node;
         if (!node.pending || node.expanded || tree.pendingLeafId != pending.id) {
             throw std::logic_error("MctsPool leaf was modified before expansion");
         }
 
-        const auto& legalIds = node.env.legalActionIdsRefNative();
-        if (legalIds.empty()) {
+        const GameEnv::ModelActionWindow actions = node.env.modelActionWindow(
+            static_cast<size_t>(maxActions_));
+        if (actions.count == 0) {
             node.terminal = true;
             node.pending = false;
             tree.pendingLeafId = 0;
-            backup(node, node.env.terminalValueForCurrentPlayer());
+            backupTerminal(node);
             return;
         }
-        const std::vector<float> priors = softmaxPriors(logits, legalIds.size());
+        const std::vector<float> priors = softmaxPriors(logits, actions.count);
         node.edges.clear();
-        node.edges.reserve(legalIds.size());
-        for (size_t index = 0; index < legalIds.size(); ++index) {
-            node.edges.push_back({static_cast<int32_t>(legalIds[index]), priors[index], 0.0, 0, nullptr});
+        node.edges.reserve(actions.count);
+        for (size_t index = 0; index < actions.count; ++index) {
+            node.edges.push_back({static_cast<int32_t>(actions.actionId(index)), priors[index], 0.0, 0, nullptr});
         }
         node.expanded = true;
         node.pending = false;
         tree.pendingLeafId = 0;
-        backup(node, value);
+        if (twoPlayerZeroSum_) {
+            backupTwoPlayer(node, values[0]);
+        } else {
+            backupMultiPlayer(node, values);
+        }
     }
 
     void clearPending(const std::vector<PendingLeaf>& pending) {
@@ -4078,6 +4680,23 @@ private:
         }
     }
 
+    // SelfPlayPool uses this only if writing its additional position metadata
+    // fails after a native leaf selection. It prevents an internal metadata
+    // error from leaving a tree permanently pending.
+    void cancelPendingLeafIds(const uint64_t* ids, size_t count) {
+        std::lock_guard lock(apiMutex_);
+        for (size_t row = 0; row < count; ++row) {
+            const auto found = pending_.find(ids[row]);
+            if (found == pending_.end()) continue;
+            const PendingLeaf& item = found->second;
+            if (item.node && item.node->pending) item.node->pending = false;
+            if (trees_[item.treeIndex].pendingLeafId == item.id) {
+                trees_[item.treeIndex].pendingLeafId = 0;
+            }
+            pending_.erase(found);
+        }
+    }
+
     void writeRootPolicy(RootBatch& out, size_t treeIndex, float temperature) const {
         const Node& root = trees_[treeIndex].root();
         const size_t offset = treeIndex * static_cast<size_t>(maxActions_);
@@ -4094,11 +4713,16 @@ private:
         out.rootVisitCount.mutable_data()[treeIndex] = root.visits > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
             ? std::numeric_limits<int32_t>::max() : static_cast<int32_t>(root.visits);
         out.rootPlayer.mutable_data()[treeIndex] = static_cast<int32_t>(root.toPlay);
+        out.playerCount.mutable_data()[treeIndex] = playerCount_;
+        const GameEnv::ModelActionWindow rootActions = root.env.modelActionWindow(
+            static_cast<size_t>(maxActions_));
+        out.totalLegalActionCount.mutable_data()[treeIndex] = static_cast<int32_t>(rootActions.totalCount);
+        out.actionTruncated.mutable_data()[treeIndex] = rootActions.truncated() ? 1 : 0;
 
         if (!root.expanded) return;
         const size_t count = root.edges.size();
-        if (count > static_cast<size_t>(maxActions_)) {
-            throw std::logic_error("MctsPool root has more edges than its fixed action capacity");
+        if (count != rootActions.count) {
+            throw std::logic_error("MctsPool root action window is inconsistent with its expanded edges");
         }
         double weightSum = 0.0;
         std::vector<double> weights(count, 0.0);
@@ -4141,8 +4765,10 @@ private:
     }
 
     int mapSize_ = 0;
+    int playerCount_ = 0;
     int maxActions_ = 0;
     float cPuct_ = 1.5f;
+    bool twoPlayerZeroSum_ = true;
     std::vector<Tree> trees_;
     std::unordered_map<uint64_t, PendingLeaf> pending_;
     uint64_t nextLeafId_ = 1;
@@ -4183,10 +4809,10 @@ public:
         if (mapSize_ <= 0) throw std::invalid_argument("map_size must be positive");
         if (maxActions_ <= 0) throw std::invalid_argument("max_actions must be positive");
         if (numThreads < 0) throw std::invalid_argument("num_threads must be non-negative");
-        if (tribes_.size() != 2) {
-            throw std::invalid_argument(
-                "SelfPlayPool currently supports exactly two players; its MCTS uses a scalar zero-sum value");
+        if (tribes_.size() < 2 || tribes_.size() > 16) {
+            throw std::invalid_argument("SelfPlayPool requires between 2 and 16 players");
         }
+        playerCount_ = static_cast<int>(tribes_.size());
         if (!std::isfinite(cPuct_) || cPuct_ <= 0.0f) {
             throw std::invalid_argument("c_puct must be finite and positive");
         }
@@ -4224,7 +4850,7 @@ public:
     // observations. state_id is an opaque, per-slot position token required
     // by submit_beliefs(), preventing late model completions from being used.
     py::dict reset(std::optional<uint32_t> seed = std::nullopt) {
-        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_), playerCount_);
         {
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
@@ -4248,17 +4874,51 @@ public:
         return out.intoDict();
     }
 
+    // Caller-owned equivalent of reset(). The external model may supply NumPy
+    // views of its pinned host tensors, but this class remains unaware of any
+    // CUDA stream/event lifetime after the synchronous write returns.
+    void resetInto(const py::dict& buffers, std::optional<uint32_t> seed = std::nullopt) {
+        BeliefRequestBatch out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
+                               static_cast<size_t>(maxActions_), playerCount_);
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            if (seed) {
+                baseSeed_ = *seed;
+                std::fill(resetCounts_.begin(), resetCounts_.end(), 0);
+            }
+            searchActive_ = false;
+            for (size_t i = 0; i < envs_.size(); ++i) {
+                resetOne(i);
+                beginEpisode(i);
+                advanceState(i);
+            }
+            mcts_->replaceRoots(makeDormantRoots());
+            writeBeliefRequests(out, nullptr, false);
+        }
+    }
+
     // Return a fresh, immutable NumPy batch of public observation data for
     // the current positions. This is useful when an external belief model is
     // scheduled separately from the game loop.
     py::dict beliefRequests() {
-        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_), playerCount_);
         {
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
             writeBeliefRequests(out, nullptr, false);
         }
         return out.intoDict();
+    }
+
+    void beliefRequestsInto(const py::dict& buffers) {
+        BeliefRequestBatch out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
+                               static_cast<size_t>(maxActions_), playerCount_);
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            writeBeliefRequests(out, nullptr, false);
+        }
     }
 
     // Build one detached root belief per authoritative game. The tensor must
@@ -4335,6 +4995,27 @@ public:
         return out;
     }
 
+    // Fixed-capacity caller-owned MCTS leaf batch. Only rows
+    // [0:returned_leaf_count] are current; the remainder is deliberately
+    // untouched so the caller can reuse a pinned slot without a large clear.
+    int selectLeavesInto(const py::dict& buffers, int maxLeaves = 0) {
+        const size_t capacity = leafCapacity(maxLeaves);
+        MctsPool::LeafBatch leaf(buffers, capacity, tileCount(), static_cast<size_t>(maxActions_));
+        LeafPositionBatch position(buffers, capacity);
+        validateLeafBatchStorage(leaf, position);
+
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        const int count = mcts_->selectLeavesInto(buffers, maxLeaves);
+        try {
+            attachLeafPositionMetadata(leaf, position, static_cast<size_t>(count));
+        } catch (...) {
+            mcts_->cancelPendingLeafIds(leaf.leafId.data(), static_cast<size_t>(count));
+            throw;
+        }
+        return count;
+    }
+
     void expandAndBackup(py::array leafIds, py::array policyLogits, py::array values) {
         std::lock_guard lock(apiMutex_);
         requireActiveSearch();
@@ -4349,6 +5030,46 @@ public:
         return out;
     }
 
+    void rootPolicyInto(const py::dict& buffers, float temperature = 1.0f) {
+        MctsPool::RootBatch root(buffers, static_cast<size_t>(numEnvs_), static_cast<size_t>(maxActions_));
+        RootPositionBatch position(buffers, static_cast<size_t>(numEnvs_));
+        validateRootBatchStorage(root, position);
+
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        mcts_->rootPolicyInto(buffers, temperature);
+        attachRootPositionMetadata(position);
+    }
+
+    py::dict leafBatchSpec(int maxLeaves = 0) const {
+        const size_t capacity = leafCapacity(maxLeaves);
+        py::dict out = mcts_->leafBatchSpec(maxLeaves);
+        const auto add = [&](const char* name, const py::dtype& dtype) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = py::make_tuple(static_cast<py::ssize_t>(capacity));
+            out[name] = std::move(field);
+        };
+        add("env_id", py::dtype::of<int32_t>());
+        add("state_id", py::dtype::of<uint64_t>());
+        add("episode_id", py::dtype::of<uint64_t>());
+        return out;
+    }
+
+    py::dict rootPolicySpec() const {
+        py::dict out = mcts_->rootPolicySpec();
+        const auto add = [&](const char* name, const py::dtype& dtype) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = py::make_tuple(static_cast<py::ssize_t>(numEnvs_));
+            out[name] = std::move(field);
+        };
+        add("env_id", py::dtype::of<int32_t>());
+        add("state_id", py::dtype::of<uint64_t>());
+        add("episode_id", py::dtype::of<uint64_t>());
+        return out;
+    }
+
     // Execute a selected action in every authoritative game. It is legal to
     // inspect a partial root policy while leaves are pending, but not to
     // advance: that would make a late GPU answer refer to the wrong tree.
@@ -4358,7 +5079,7 @@ public:
             throw std::invalid_argument("action_ids must be a contiguous one-dimensional int32-compatible array with num_envs entries");
         }
 
-        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_));
+        BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_), playerCount_);
         const int32_t* actionData = actions.data();
         {
             py::gil_scoped_release release;
@@ -4385,9 +5106,76 @@ public:
         return out.intoDict();
     }
 
+    void stepInto(py::array actionIds, const py::dict& buffers) {
+        if (!actionIds.dtype().is(py::dtype::of<int32_t>()) ||
+            actionIds.ndim() != 1 || actionIds.shape(0) != numEnvs_) {
+            throw std::invalid_argument(
+                "action_ids for step_into must be a one-dimensional int32 array with num_envs entries");
+        }
+        const auto actions = py::reinterpret_borrow<py::array_t<int32_t>>(actionIds);
+        // Validate all output fields, then detach the potentially aliased
+        // input vector before GIL release and before output is overwritten.
+        BeliefRequestBatch out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
+                               static_cast<size_t>(maxActions_), playerCount_);
+        std::vector<int32_t> copiedActions(static_cast<size_t>(numEnvs_));
+        const auto actionView = actions.unchecked<1>();
+        for (py::ssize_t i = 0; i < actionView.shape(0); ++i) {
+            copiedActions[static_cast<size_t>(i)] = actionView(i);
+        }
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            requireActiveSearch();
+            if (mcts_->pendingCount() != 0) {
+                throw std::logic_error("cannot step SelfPlayPool while MCTS leaf evaluations are pending");
+            }
+            try {
+                writeBeliefRequests(out, copiedActions.data(), true);
+            } catch (...) {
+                searchActive_ = false;
+                throw;
+            }
+            searchActive_ = false;
+        }
+    }
+
+    py::dict beliefBatchSpec() const {
+        const py::ssize_t batch = static_cast<py::ssize_t>(numEnvs_);
+        const py::ssize_t tiles = static_cast<py::ssize_t>(tileCount());
+        const py::ssize_t actions = static_cast<py::ssize_t>(maxActions_);
+        const py::ssize_t players = static_cast<py::ssize_t>(playerCount_);
+        py::dict out;
+        const auto add = [&](const char* name, const py::dtype& dtype, py::tuple shape) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = std::move(shape);
+            out[name] = std::move(field);
+        };
+        add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(batch, tiles, kMapTokenFeatureCount));
+        add("state", py::dtype::of<int32_t>(), py::make_tuple(batch, kVectorStateFeatureCount));
+        add("action_id", py::dtype::of<int32_t>(), py::make_tuple(batch, actions));
+        add("action_features", py::dtype::of<int32_t>(), py::make_tuple(batch, actions, kVectorActionFeatureCount));
+        add("action_arg_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, actions, kVectorActionArgMaskCount));
+        add("action_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, actions));
+        add("legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("total_legal_action_count", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("action_truncated", py::dtype::of<uint8_t>(), py::make_tuple(batch));
+        add("reward", py::dtype::of<float>(), py::make_tuple(batch));
+        add("terminated", py::dtype::of<uint8_t>(), py::make_tuple(batch));
+        add("action_valid", py::dtype::of<uint8_t>(), py::make_tuple(batch));
+        add("winner", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("terminal_values", py::dtype::of<float>(), py::make_tuple(batch, players));
+        add("env_id", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("to_play", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("state_id", py::dtype::of<uint64_t>(), py::make_tuple(batch));
+        add("episode_id", py::dtype::of<uint64_t>(), py::make_tuple(batch));
+        return out;
+    }
+
     int numEnvs() const { return numEnvs_; }
     int numThreads() const { return static_cast<int>(pool_.workerCount()); }
     int mapSize() const { return mapSize_; }
+    int playerCount() const { return playerCount_; }
     int maxActions() const { return maxActions_; }
     bool autoReset() const { return autoReset_; }
     float cPuct() const { return cPuct_; }
@@ -4418,8 +5206,36 @@ public:
     }
 
 private:
+    struct LeafPositionBatch {
+        LeafPositionBatch(const py::dict& buffers, size_t rows)
+            : envId(requireWritableBatchArray<int32_t>(
+                buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
+            , stateId(requireWritableBatchArray<uint64_t>(
+                buffers, "state_id", {static_cast<py::ssize_t>(rows)}))
+            , episodeId(requireWritableBatchArray<uint64_t>(
+                buffers, "episode_id", {static_cast<py::ssize_t>(rows)})) {}
+
+        py::array_t<int32_t> envId;
+        py::array_t<uint64_t> stateId;
+        py::array_t<uint64_t> episodeId;
+    };
+
+    struct RootPositionBatch {
+        RootPositionBatch(const py::dict& buffers, size_t rows)
+            : envId(requireWritableBatchArray<int32_t>(
+                buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
+            , stateId(requireWritableBatchArray<uint64_t>(
+                buffers, "state_id", {static_cast<py::ssize_t>(rows)}))
+            , episodeId(requireWritableBatchArray<uint64_t>(
+                buffers, "episode_id", {static_cast<py::ssize_t>(rows)})) {}
+
+        py::array_t<int32_t> envId;
+        py::array_t<uint64_t> stateId;
+        py::array_t<uint64_t> episodeId;
+    };
+
     struct BeliefRequestBatch {
-        BeliefRequestBatch(size_t rows, size_t tiles, size_t maxActions)
+        BeliefRequestBatch(size_t rows, size_t tiles, size_t maxActions, int playerCount)
             : mapTokens({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
                          static_cast<py::ssize_t>(kMapTokenFeatureCount)})
             , state({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
@@ -4430,13 +5246,84 @@ private:
                               static_cast<py::ssize_t>(kVectorActionArgMaskCount)})
             , actionMask({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
             , legalActionCount(static_cast<py::ssize_t>(rows))
+            , totalLegalActionCount(static_cast<py::ssize_t>(rows))
+            , actionTruncated(static_cast<py::ssize_t>(rows))
             , reward(static_cast<py::ssize_t>(rows))
             , terminated(static_cast<py::ssize_t>(rows))
             , actionValid(static_cast<py::ssize_t>(rows))
+            , winner(static_cast<py::ssize_t>(rows))
+            , terminalValues({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(playerCount)})
             , envId(static_cast<py::ssize_t>(rows))
             , toPlay(static_cast<py::ssize_t>(rows))
             , stateId(static_cast<py::ssize_t>(rows))
             , episodeId(static_cast<py::ssize_t>(rows)) {}
+
+        BeliefRequestBatch(const py::dict& buffers, size_t rows, size_t tiles,
+                           size_t maxActions, int playerCount)
+            : mapTokens(requireWritableBatchArray<int32_t>(
+                buffers, "map_tokens", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
+                                         static_cast<py::ssize_t>(kMapTokenFeatureCount)}))
+            , state(requireWritableBatchArray<int32_t>(
+                buffers, "state", {static_cast<py::ssize_t>(rows),
+                                    static_cast<py::ssize_t>(kVectorStateFeatureCount)}))
+            , actionIds(requireWritableBatchArray<int32_t>(
+                buffers, "action_id", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)}))
+            , actionFeatures(requireWritableBatchArray<int32_t>(
+                buffers, "action_features", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                                              static_cast<py::ssize_t>(kVectorActionFeatureCount)}))
+            , actionArgMasks(requireWritableBatchArray<uint8_t>(
+                buffers, "action_arg_mask", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
+                                              static_cast<py::ssize_t>(kVectorActionArgMaskCount)}))
+            , actionMask(requireWritableBatchArray<uint8_t>(
+                buffers, "action_mask", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)}))
+            , legalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "legal_action_count", {static_cast<py::ssize_t>(rows)}))
+            , totalLegalActionCount(requireWritableBatchArray<int32_t>(
+                buffers, "total_legal_action_count", {static_cast<py::ssize_t>(rows)}))
+            , actionTruncated(requireWritableBatchArray<uint8_t>(
+                buffers, "action_truncated", {static_cast<py::ssize_t>(rows)}))
+            , reward(requireWritableBatchArray<float>(
+                buffers, "reward", {static_cast<py::ssize_t>(rows)}))
+            , terminated(requireWritableBatchArray<uint8_t>(
+                buffers, "terminated", {static_cast<py::ssize_t>(rows)}))
+            , actionValid(requireWritableBatchArray<uint8_t>(
+                buffers, "action_valid", {static_cast<py::ssize_t>(rows)}))
+            , winner(requireWritableBatchArray<int32_t>(
+                buffers, "winner", {static_cast<py::ssize_t>(rows)}))
+            , terminalValues(requireWritableBatchArray<float>(
+                buffers, "terminal_values", {static_cast<py::ssize_t>(rows),
+                                               static_cast<py::ssize_t>(playerCount)}))
+            , envId(requireWritableBatchArray<int32_t>(
+                buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
+            , toPlay(requireWritableBatchArray<int32_t>(
+                buffers, "to_play", {static_cast<py::ssize_t>(rows)}))
+            , stateId(requireWritableBatchArray<uint64_t>(
+                buffers, "state_id", {static_cast<py::ssize_t>(rows)}))
+            , episodeId(requireWritableBatchArray<uint64_t>(
+                buffers, "episode_id", {static_cast<py::ssize_t>(rows)}))
+        {
+            const std::array<std::pair<const char*, const py::array*>, 18> arrays{{
+                {"map_tokens", &mapTokens},
+                {"state", &state},
+                {"action_id", &actionIds},
+                {"action_features", &actionFeatures},
+                {"action_arg_mask", &actionArgMasks},
+                {"action_mask", &actionMask},
+                {"legal_action_count", &legalActionCount},
+                {"total_legal_action_count", &totalLegalActionCount},
+                {"action_truncated", &actionTruncated},
+                {"reward", &reward},
+                {"terminated", &terminated},
+                {"action_valid", &actionValid},
+                {"winner", &winner},
+                {"terminal_values", &terminalValues},
+                {"env_id", &envId},
+                {"to_play", &toPlay},
+                {"state_id", &stateId},
+                {"episode_id", &episodeId},
+            }};
+            validateNonOverlappingBatchStorage(arrays);
+        }
 
         py::dict intoDict() {
             py::dict out;
@@ -4447,9 +5334,13 @@ private:
             out["action_arg_mask"] = std::move(actionArgMasks);
             out["action_mask"] = std::move(actionMask);
             out["legal_action_count"] = std::move(legalActionCount);
+            out["total_legal_action_count"] = std::move(totalLegalActionCount);
+            out["action_truncated"] = std::move(actionTruncated);
             out["reward"] = std::move(reward);
             out["terminated"] = std::move(terminated);
             out["action_valid"] = std::move(actionValid);
+            out["winner"] = std::move(winner);
+            out["terminal_values"] = std::move(terminalValues);
             out["env_id"] = std::move(envId);
             out["to_play"] = std::move(toPlay);
             out["state_id"] = std::move(stateId);
@@ -4464,14 +5355,97 @@ private:
         py::array_t<uint8_t> actionArgMasks;
         py::array_t<uint8_t> actionMask;
         py::array_t<int32_t> legalActionCount;
+        py::array_t<int32_t> totalLegalActionCount;
+        py::array_t<uint8_t> actionTruncated;
         py::array_t<float> reward;
         py::array_t<uint8_t> terminated;
         py::array_t<uint8_t> actionValid;
+        py::array_t<int32_t> winner;
+        py::array_t<float> terminalValues;
         py::array_t<int32_t> envId;
         py::array_t<int32_t> toPlay;
         py::array_t<uint64_t> stateId;
         py::array_t<uint64_t> episodeId;
     };
+
+    static void validateLeafBatchStorage(
+        const MctsPool::LeafBatch& leaf,
+        const LeafPositionBatch& position)
+    {
+        const std::array<std::pair<const char*, const py::array*>, 16> arrays{{
+            {"map_tokens", &leaf.mapTokens},
+            {"state", &leaf.state},
+            {"action_id", &leaf.actionIds},
+            {"action_features", &leaf.actionFeatures},
+            {"action_arg_mask", &leaf.actionArgMasks},
+            {"action_mask", &leaf.actionMask},
+            {"legal_action_count", &leaf.legalActionCount},
+            {"total_legal_action_count", &leaf.totalLegalActionCount},
+            {"action_truncated", &leaf.actionTruncated},
+            {"leaf_id", &leaf.leafId},
+            {"tree_id", &leaf.treeId},
+            {"to_play", &leaf.toPlay},
+            {"player_count", &leaf.playerCount},
+            {"env_id", &position.envId},
+            {"state_id", &position.stateId},
+            {"episode_id", &position.episodeId},
+        }};
+        validateNonOverlappingBatchStorage(arrays);
+    }
+
+    static void validateRootBatchStorage(
+        const MctsPool::RootBatch& root,
+        const RootPositionBatch& position)
+    {
+        const std::array<std::pair<const char*, const py::array*>, 13> arrays{{
+            {"action_id", &root.actionIds},
+            {"action_mask", &root.actionMask},
+            {"visit_count", &root.visitCounts},
+            {"policy", &root.policy},
+            {"root_value", &root.rootValue},
+            {"root_visit_count", &root.rootVisitCount},
+            {"root_player", &root.rootPlayer},
+            {"player_count", &root.playerCount},
+            {"total_legal_action_count", &root.totalLegalActionCount},
+            {"action_truncated", &root.actionTruncated},
+            {"env_id", &position.envId},
+            {"state_id", &position.stateId},
+            {"episode_id", &position.episodeId},
+        }};
+        validateNonOverlappingBatchStorage(arrays);
+    }
+
+    void attachLeafPositionMetadata(
+        const MctsPool::LeafBatch& leaf,
+        LeafPositionBatch& position,
+        size_t rows) const
+    {
+        const int32_t* treeData = leaf.treeId.data();
+        int32_t* envData = position.envId.mutable_data();
+        uint64_t* stateData = position.stateId.mutable_data();
+        uint64_t* episodeData = position.episodeId.mutable_data();
+        for (size_t row = 0; row < rows; ++row) {
+            const int32_t tree = treeData[row];
+            if (tree < 0 || tree >= numEnvs_) {
+                throw std::logic_error("MCTS returned an out-of-range tree id");
+            }
+            const size_t env = static_cast<size_t>(tree);
+            envData[row] = tree;
+            stateData[row] = stateIds_[env];
+            episodeData[row] = episodeIds_[env];
+        }
+    }
+
+    void attachRootPositionMetadata(RootPositionBatch& position) const {
+        int32_t* envData = position.envId.mutable_data();
+        uint64_t* stateData = position.stateId.mutable_data();
+        uint64_t* episodeData = position.episodeId.mutable_data();
+        for (size_t i = 0; i < envs_.size(); ++i) {
+            envData[i] = static_cast<int32_t>(i);
+            stateData[i] = stateIds_[i];
+            episodeData[i] = episodeIds_[i];
+        }
+    }
 
     static size_t resolveThreadCount(int numEnvs, int requested) {
         const unsigned int hardware = std::max(1u, std::thread::hardware_concurrency());
@@ -4481,6 +5455,12 @@ private:
 
     size_t tileCount() const {
         return static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
+    }
+
+    size_t leafCapacity(int maxLeaves) const {
+        if (maxLeaves < 0) throw std::invalid_argument("max_leaves must be non-negative");
+        if (maxLeaves == 0) return static_cast<size_t>(numEnvs_);
+        return std::min(static_cast<size_t>(numEnvs_), static_cast<size_t>(maxLeaves));
     }
 
     uint32_t seedFor(size_t envIndex) const {
@@ -4535,6 +5515,17 @@ private:
         std::fill_n(out.reward.mutable_data(), rows, 0.0f);
         std::fill_n(out.terminated.mutable_data(), rows, uint8_t{0});
         std::fill_n(out.actionValid.mutable_data(), rows, uint8_t{0});
+        std::fill_n(out.winner.mutable_data(), rows, int32_t{-1});
+        std::fill_n(out.terminalValues.mutable_data(), rows * static_cast<size_t>(playerCount_), 0.0f);
+    }
+
+    void writeTerminalValues(float* out, int winner) const {
+        std::fill_n(out, static_cast<size_t>(playerCount_), 0.0f);
+        if (winner < 0 || winner >= playerCount_) return;
+        const float loserValue = -1.0f / static_cast<float>(playerCount_ - 1);
+        for (int player = 0; player < playerCount_; ++player) {
+            out[player] = player == winner ? 1.0f : loserValue;
+        }
     }
 
     void writeBeliefRequests(BeliefRequestBatch& out, const int32_t* actions, bool advance) {
@@ -4548,9 +5539,13 @@ private:
         uint8_t* actionArgMaskData = out.actionArgMasks.mutable_data();
         uint8_t* actionMaskData = out.actionMask.mutable_data();
         int32_t* legalCountData = out.legalActionCount.mutable_data();
+        int32_t* totalLegalCountData = out.totalLegalActionCount.mutable_data();
+        uint8_t* actionTruncatedData = out.actionTruncated.mutable_data();
         float* rewardData = out.reward.mutable_data();
         uint8_t* terminatedData = out.terminated.mutable_data();
         uint8_t* actionValidData = out.actionValid.mutable_data();
+        int32_t* winnerData = out.winner.mutable_data();
+        float* terminalValuesData = out.terminalValues.mutable_data();
         int32_t* envIdData = out.envId.mutable_data();
         int32_t* toPlayData = out.toPlay.mutable_data();
         uint64_t* stateIdData = out.stateId.mutable_data();
@@ -4566,6 +5561,12 @@ private:
                     actionValidData[i] = result.ok ? 1 : 0;
                     rewardData[i] = result.reward;
                     terminatedData[i] = result.done ? 1 : 0;
+                    winnerData[i] = result.winner;
+                    if (result.done) {
+                        writeTerminalValues(
+                            terminalValuesData + i * static_cast<size_t>(playerCount_),
+                            result.winner);
+                    }
                     if (result.ok) {
                         if (result.done && autoReset_) {
                             resetOne(i);
@@ -4583,6 +5584,8 @@ private:
                     actionArgMaskData + i * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
                     actionMaskData + i * static_cast<size_t>(maxActions_),
                     legalCountData + i,
+                    totalLegalCountData + i,
+                    actionTruncatedData + i,
                     static_cast<size_t>(maxActions_),
                     false);
                 envIdData[i] = static_cast<int32_t>(i);
@@ -4592,14 +5595,6 @@ private:
             }
         });
 
-        for (size_t i = 0; i < rows; ++i) {
-            if (legalCountData[i] > maxActions_) {
-                throw std::runtime_error(
-                    "SelfPlayPool max_actions=" + std::to_string(maxActions_) +
-                    " is too small for env " + std::to_string(i) +
-                    ": it has " + std::to_string(legalCountData[i]) + " legal actions");
-            }
-        }
     }
 
     void attachLeafPositionMetadata(py::dict& out) const {
@@ -4648,6 +5643,7 @@ private:
     int numEnvs_ = 0;
     int mapSize_ = 0;
     std::vector<int> tribes_;
+    int playerCount_ = 0;
     uint32_t baseSeed_ = 0;
     std::string unitsJsonPath_;
     MapType mapType_ = MapType::Lakes;
@@ -4815,6 +5811,14 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("step", &VectorGameEnv::step,
              py::arg("action_ids"),
              "Step all environments with one action-space id per environment.")
+        .def("reset_into", &VectorGameEnv::resetInto,
+             py::arg("buffers"), py::arg("seed") = std::nullopt,
+             "Fill validated caller-owned batch arrays in place without allocating output arrays.")
+        .def("step_into", &VectorGameEnv::stepInto,
+             py::arg("action_ids"), py::arg("buffers"),
+             "Step environments and fill validated caller-owned batch arrays in place.")
+        .def("batch_spec", &VectorGameEnv::batchSpec,
+             "Return exact dtype and shape requirements for reset_into()/step_into() buffers.")
         .def_property_readonly("num_envs", &VectorGameEnv::numEnvs)
         .def_property_readonly("num_threads", &VectorGameEnv::numThreads)
         .def_property_readonly("map_size", &VectorGameEnv::mapSize)
@@ -4834,20 +5838,34 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("num_threads") = 0,
              py::arg("max_actions") = 512,
              py::arg("c_puct") = 1.5f,
-             "Native multi-root two-player PUCT scheduler with batched leaf evaluation.")
+             "Native multi-root PUCT scheduler with batched leaf evaluation. "
+             "Two-player pools use scalar values; larger pools use one value per player.")
         .def("select_leaves", &MctsPool::selectLeaves,
              py::arg("max_leaves") = 0,
              "Return at most one pending leaf per tree as a dense model batch.")
+        .def("select_leaves_into", &MctsPool::selectLeavesInto,
+             py::arg("buffers"), py::arg("max_leaves") = 0,
+             "Fill caller-owned leaf buffers and return the valid prefix length.")
         .def("expand_and_backup", &MctsPool::expandAndBackup,
              py::arg("leaf_ids"), py::arg("policy_logits"), py::arg("values"),
              "Expand pending leaves from batched policy logits and back up values.")
         .def("root_policy", &MctsPool::rootPolicy,
              py::arg("temperature") = 1.0f,
              "Return root visit counts and a masked action policy for every tree.")
+        .def("root_policy_into", &MctsPool::rootPolicyInto,
+             py::arg("buffers"), py::arg("temperature") = 1.0f,
+             "Fill caller-owned root-policy buffers in place.")
+        .def("leaf_batch_spec", &MctsPool::leafBatchSpec,
+             py::arg("max_leaves") = 0,
+             "Return buffer requirements for select_leaves_into().")
+        .def("root_policy_spec", &MctsPool::rootPolicySpec,
+             "Return buffer requirements for root_policy_into().")
         .def_property_readonly("num_trees", &MctsPool::numTrees)
         .def_property_readonly("num_threads", &MctsPool::numThreads)
         .def_property_readonly("max_actions", &MctsPool::maxActions)
         .def_property_readonly("map_size", &MctsPool::mapSize)
+        .def_property_readonly("player_count", &MctsPool::playerCount)
+        .def_property_readonly("num_players", &MctsPool::playerCount)
         .def_property_readonly("c_puct", &MctsPool::cPuct)
         .def_property_readonly("pending_count", &MctsPool::pendingCount)
         ;
@@ -4868,26 +5886,50 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("reset", &SelfPlayPool::reset,
              py::arg("seed") = std::nullopt,
              "Reset live games and return dense player-view belief requests.")
+        .def("reset_into", &SelfPlayPool::resetInto,
+             py::arg("buffers"), py::arg("seed") = std::nullopt,
+             "Reset live games and fill validated caller-owned belief buffers in place.")
         .def("belief_requests", &SelfPlayPool::beliefRequests,
              "Return current dense player-view inputs for an external belief model.")
+        .def("belief_requests_into", &SelfPlayPool::beliefRequestsInto,
+             py::arg("buffers"),
+             "Fill validated caller-owned current belief buffers in place.")
         .def("submit_beliefs", &SelfPlayPool::submitBeliefs,
              py::arg("state_ids"), py::arg("completed_map_tokens"),
              "Validate detached belief worlds and make them the active MCTS roots.")
         .def("select_leaves", &SelfPlayPool::selectLeaves,
              py::arg("max_leaves") = 0,
              "Return a dense MCTS leaf batch for an external policy/value model.")
+        .def("select_leaves_into", &SelfPlayPool::selectLeavesInto,
+             py::arg("buffers"), py::arg("max_leaves") = 0,
+             "Fill caller-owned MCTS leaf buffers and return the valid prefix length.")
         .def("expand_and_backup", &SelfPlayPool::expandAndBackup,
              py::arg("leaf_ids"), py::arg("policy_logits"), py::arg("values"),
              "Expand pending leaves and back up external policy/value results.")
         .def("root_policy", &SelfPlayPool::rootPolicy,
              py::arg("temperature") = 1.0f,
              "Return one root visit policy per live game.")
+        .def("root_policy_into", &SelfPlayPool::rootPolicyInto,
+             py::arg("buffers"), py::arg("temperature") = 1.0f,
+             "Fill caller-owned root-policy buffers in place.")
         .def("step", &SelfPlayPool::step,
              py::arg("action_ids"),
              "Apply chosen action ids to live games and return their next belief requests.")
+        .def("step_into", &SelfPlayPool::stepInto,
+             py::arg("action_ids"), py::arg("buffers"),
+             "Apply actions and fill validated caller-owned next-belief buffers in place.")
+        .def("belief_batch_spec", &SelfPlayPool::beliefBatchSpec,
+             "Return exact dtype and shape requirements for SelfPlayPool reusable belief buffers.")
+        .def("leaf_batch_spec", &SelfPlayPool::leafBatchSpec,
+             py::arg("max_leaves") = 0,
+             "Return buffer requirements for SelfPlayPool.select_leaves_into().")
+        .def("root_policy_spec", &SelfPlayPool::rootPolicySpec,
+             "Return buffer requirements for SelfPlayPool.root_policy_into().")
         .def_property_readonly("num_envs", &SelfPlayPool::numEnvs)
         .def_property_readonly("num_threads", &SelfPlayPool::numThreads)
         .def_property_readonly("map_size", &SelfPlayPool::mapSize)
+        .def_property_readonly("player_count", &SelfPlayPool::playerCount)
+        .def_property_readonly("num_players", &SelfPlayPool::playerCount)
         .def_property_readonly("max_actions", &SelfPlayPool::maxActions)
         .def_property_readonly("auto_reset", &SelfPlayPool::autoReset)
         .def_property_readonly("c_puct", &SelfPlayPool::cPuct)

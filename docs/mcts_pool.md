@@ -1,9 +1,9 @@
 # MctsPool: Native Batched PUCT
 
-`MctsPool` runs many independent two-player MCTS trees in native C++. It
-performs PUCT selection, state branching, expansion, and value backup without
-a Python call per node. Python is responsible only for one batched policy/value
-inference on the selected leaves, which is the natural GPU boundary.
+`MctsPool` runs many independent MCTS trees in native C++. It performs PUCT
+selection, state branching, expansion, and value backup without a Python call
+per node. Python is responsible only for one batched policy/value inference on
+the selected leaves, which is the natural GPU boundary.
 
 This is distinct from `VectorGameEnv`: a vector environment owns independent
 episodes, while an MCTS pool owns independent *search trees* rooted at game
@@ -31,16 +31,27 @@ pool = MctsPool(
 )
 ```
 
-The source `GameEnv` is never mutated. Every root must be a two-player game
-with the same map size. `MctsPool` is intentionally restricted to two players:
-its scalar value and PUCT backup use zero-sum sign changes. A multi-player
-version needs a vector-valued evaluator and a different selection objective.
+The source `GameEnv` is never mutated. Every root must have the same map size
+and number of players. Pools support **2--16 players**; the engine's visibility
+representation cannot safely support more than 16.
+
+`pool.player_count` (alias: `pool.num_players`) returns this fixed count.
+
+For two players, `MctsPool` uses its optimized, backward-compatible zero-sum
+path. For three or more players it uses **Maxⁿ PUCT**: at each node, the actor
+selects the action that maximizes that actor's own value component. This is not
+paranoid MCTS: opponents do not implicitly minimize the root player's score.
 
 ## Search Loop
 
-First expand the roots, then repeat one model batch and one native backup. The
-network's scalar `value` must be in `[-1, 1]` **from the perspective identified
-by `leaves["to_play"]`**.
+First expand the roots, then repeat one model batch and one native backup.
+
+- With two players, the network returns scalar `value[L]` in `[-1, 1]` from
+  the perspective identified by `leaves["to_play"]`.
+- With `P > 2`, the network returns `values[L, P]` in `[-1, 1]`. Column `p`
+  is the payoff for global `PlayerId == p`, independent of the leaf actor.
+  Do not broadcast a scalar or rotate columns without applying the same
+  permutation to player ids.
 
 ```python
 import numpy as np
@@ -60,7 +71,7 @@ for _ in range(128):
     pool.expand_and_backup(
         leaves["leaf_id"],
         logits.detach().float().cpu().numpy(),       # [L, max_actions]
-        value.detach().float().squeeze(-1).cpu().numpy(),  # [L], in [-1, 1]
+        value.detach().float().squeeze(-1).cpu().numpy(),  # 2P: [L], in [-1, 1]
     )
     leaves = pool.select_leaves()
 
@@ -75,7 +86,10 @@ root = pool.root_policy(temperature=1.0)
 | --- | --- | --- | --- |
 | `leaf_id` | `uint64` | `[L]` | Opaque handle passed unchanged to `expand_and_backup()` |
 | `tree_id` | `int32` | `[L]` | Index of the independent search tree |
-| `to_play` | `int32` | `[L]` | Player perspective required for the value head |
+| `to_play` | `int32` | `[L]` | Actor at the selected leaf |
+| `player_count` | `int32` | `[L]` | Fixed `P` for the pool; determines the value tensor shape |
+| `total_legal_action_count` | `int32` | `[L]` | Leaf legal-action count before truncation |
+| `action_truncated` | `uint8` | `[L]` | `1` when the leaf action set exceeded `max_actions` |
 
 `L <= num_trees`: a tree has at most one outstanding neural evaluation.
 Calling `select_leaves()` again before backing up a leaf returns no duplicate
@@ -99,6 +113,10 @@ row, but if all legal logits are `-inf`, the pool falls back to uniform priors.
 | `policy` | `float32` | `[T, Amax]` | Visit policy at the requested temperature |
 | `root_value` | `float32` | `[T]` | Mean value from the root player's perspective |
 | `root_visit_count` | `int32` | `[T]` | Number of completed evaluations/backups |
+| `root_player` | `int32` | `[T]` | Player whose component is returned in `root_value` |
+| `player_count` | `int32` | `[T]` | Fixed number of players in the pool |
+| `total_legal_action_count` | `int32` | `[T]` | Root legal-action count before truncation |
+| `action_truncated` | `uint8` | `[T]` | `1` when the root action set exceeded `max_actions` |
 
 Choose an id from `root["action_id"]`, then execute that id on the original
 `GameEnv`. After the real game advances, create a new pool from the new
@@ -107,6 +125,57 @@ unambiguous.
 
 `temperature=0.0` returns a deterministic one-hot policy: highest visit count,
 then highest prior, then lowest action id on ties.
+
+## Reusable Pinned Leaf Buffers
+
+The allocating methods above are simplest for inspection and small searches.
+For a long-running GPU search loop, preallocate caller-owned arrays instead:
+
+```python
+import numpy as np
+
+def allocate(spec):
+    return {
+        name: np.empty(tuple(field["shape"]), dtype=field["dtype"])
+        for name, field in spec.items()
+    }
+
+# The capacity C must match max_leaves passed to select_leaves_into().
+leaf_buffers = allocate(pool.leaf_batch_spec(max_leaves=128))
+root_buffers = allocate(pool.root_policy_spec())
+
+leaf_count = pool.select_leaves_into(leaf_buffers, max_leaves=128)
+if leaf_count:
+    # Only this prefix is current. Rows [leaf_count:C] are intentionally stale.
+    pool.expand_and_backup(
+        leaf_buffers["leaf_id"][:leaf_count],
+        policy_logits[:leaf_count],
+        values[:leaf_count],
+    )
+
+pool.root_policy_into(root_buffers, temperature=1.0)
+```
+
+`leaf_batch_spec()` exposes a capacity of `num_trees`; calling it with
+`max_leaves=C` exposes capacity `min(C, num_trees)`. The same `max_leaves`
+must be used by `select_leaves_into()`. Its integer result is the only valid
+row count: terminal or already-pending trees can make it smaller than the
+capacity, including zero. `root_policy_into()` is fixed at `num_trees` rows.
+
+All `*_into()` arrays need the exact dtype and shape from their spec, must be
+writable, aligned and C-contiguous, and may not overlap. Validation happens
+before leaf selection, so a malformed buffer cannot leave a tree pending.
+The engine holds strong references only during the synchronous call and never
+retains an output pointer afterward.
+
+The arrays may be NumPy views of pinned PyTorch host tensors. Pin the actual
+model inputs (`map_tokens`, `state`, action features and masks), transfer them
+on a copy stream with `non_blocking=True`, and keep at least two buffer slots
+if independent tree groups allow useful overlap. The allocator and CUDA-event
+protocol are shown in [VectorGameEnv's pinned-buffer guide](vector_env.md#reusable-pinned-buffers-and-asynchronous-transfer).
+Before `expand_and_backup()`, wait for any asynchronous GPU-to-CPU copy and
+pass C-contiguous `uint64` leaf ids plus `float32` logits/values to avoid an
+implicit conversion.
 
 ## Performance Design
 
@@ -120,8 +189,19 @@ then highest prior, then lowest action id on ties.
   model inputs.
 - `num_threads` parallelizes independent tree branches during encoding and
   expansion. Do not wrap pool calls in a Python thread pool.
-- `max_actions` is capacity, not truncation. The pool raises an error if a
-  selected leaf exceeds it.
+- The two-player path stores and backs up one scalar with a sign flip. The
+  multi-player Maxⁿ path still stores only one scalar per node and edge: the
+  component for that node's actor. It avoids allocating a `P`-element vector
+  for every visited edge.
+- `max_actions` is a fixed action-window capacity. Wide legal sets are
+  deterministically truncated to the canonical prefix, while retaining
+  `EndTurn` in the final row when needed. Leaf batches expose
+  `total_legal_action_count` and `action_truncated`; make truncation rare for
+  stronger search.
+
+At a terminal state the winner receives `+1`, every loser receives
+`-1 / (P - 1)`, and a terminal state with no resolved winner receives zero.
+This is `+1/-1` for two players and keeps the multi-player target zero-sum.
 
 ## Fog Of War
 

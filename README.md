@@ -58,6 +58,12 @@ batch = env.step(action_ids)
 before selecting a row. See [native batched training](docs/vector_env.md) for
 the complete tensor layout and rollout pattern.
 
+For an allocation-free GPU rollout path, the same API can fill caller-owned
+NumPy buffers in place through `batch_spec()`, `reset_into()` and `step_into()`.
+Those buffers may be views of pinned PyTorch CPU tensors; CUDA streams and
+events remain owned by the external training repository. The vector guide
+shows the safe double-buffering protocol.
+
 Set `visible_event_history=K` when the policy needs the last `K` events that
 are visible under fog of war. The vector API returns these as fixed-size masked
 arrays; leaving the default `K=0` keeps that encoding disabled.
@@ -65,6 +71,11 @@ arrays; leaving the default `K=0` keeps that encoding disabled.
 For batched neural MCTS, `MctsPool` keeps PUCT trees and game branches in C++
 and exchanges only one dense leaf batch per GPU inference round. See
 [native batched MCTS](docs/mcts_pool.md).
+
+`MctsPool` and `SelfPlayPool` also provide fixed-capacity reusable leaf/root
+buffers (`*_batch_spec()` and `*_into()`); this is the pinned-memory path for
+external GPU trainers, including dynamic leaf batches via a returned prefix
+length.
 
 For external AI projects that need many live games plus fog-of-war
 belief-rooted MCTS, `SelfPlayPool` keeps the entire simulation/search

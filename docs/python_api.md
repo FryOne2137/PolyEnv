@@ -35,13 +35,18 @@ batch = env.step(batch["action_id"][:, 0])
 
 See [VectorGameEnv: Native Batched Training](vector_env.md) for its complete
 API and tensor layouts. Use `GameEnv` for a single game, debugging, replays,
-or MCTS cloning.
+or MCTS cloning. For a pinned-memory, allocation-free rollout loop, use
+`env.batch_spec()` to allocate caller-owned arrays and then
+`env.reset_into(buffers)` / `env.step_into(action_ids, buffers)`; the detailed
+CUDA stream and double-buffering protocol is in that guide.
 
 ## Batched MCTS
 
-`MctsPool` keeps many two-player PUCT trees in C++ and exchanges only dense
-leaf batches with a policy/value model. Construct it from one root plus
-`num_trees`, or from a sequence of independent roots:
+`MctsPool` keeps many native PUCT trees in C++ and exchanges only dense leaf
+batches with a policy/value model. It supports 2--16 players: two-player pools
+use scalar values, while larger pools require a player-indexed value vector.
+Construct it from one root plus `num_trees`, or from a sequence of independent
+roots:
 
 ```python
 from PolyEnv import MctsPool
@@ -55,6 +60,9 @@ root_policy = pool.root_policy()
 
 See [MctsPool: Native Batched PUCT](mcts_pool.md) for evaluator shapes,
 value-perspective rules, fog-of-war requirements, and search-loop details.
+For allocation-free GPU batches, use `leaf_batch_spec()` plus
+`select_leaves_into()` (which returns a valid-prefix length), and use
+`root_policy_spec()` plus `root_policy_into()` for root results.
 
 ## Native Belief-MCTS Self-Play
 
@@ -76,6 +84,9 @@ The pool exposes only visible player data and takes a checked, detached belief
 completion as its MCTS root. It has no model-framework dependency. See
 [SelfPlayPool: Native Belief-MCTS Self-Play](self_play_pool.md) for the full
 lifecycle, batch contract, stale-id rules, and fog-of-war limitations.
+`belief_batch_spec()` with `reset_into()` / `belief_requests_into()` /
+`step_into()` makes the live belief-request boundary reusable as well; its MCTS
+leaf and root `*_into()` APIs follow the same contracts as `MctsPool`.
 
 ## Map Type
 
