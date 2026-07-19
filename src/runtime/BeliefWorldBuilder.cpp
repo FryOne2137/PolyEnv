@@ -275,7 +275,38 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
         belief.units.push_back(unit);
         belief.map.setUnitOn(pos, unitId);
         belief.players[static_cast<size_t>(v[3])].addUnit(unitId);
-        if (v[22] >= 0) belief.cities[static_cast<size_t>(v[22])].addUnit(unitId);
+        // For another player's information set, origin is the best available
+        // hypothesis about a unit's city membership.  For the perspective's
+        // own units it is not: units can be reassigned between cities while
+        // retaining their immutable origin-city id.  The public city token
+        // carries the authoritative current occupancy in column 17 and is
+        // restored exactly below.
+        if (v[22] >= 0 && static_cast<PlayerId>(v[3]) != perspective) {
+            belief.cities[static_cast<size_t>(v[22])].addUnit(unitId);
+        }
+    }
+
+    // ``city_units_occupied`` is visible to the city owner and determines
+    // whether a city can train another unit.  Reconstruct the exact count for
+    // the perspective without inventing map units: these sentinel ids occupy
+    // only City::units capacity slots, never the map or Player::units list.
+    // This is necessary because ``unit_origin_city`` describes origin, not a
+    // unit's current city assignment.
+    UnitId syntheticOccupancyId = static_cast<UnitId>(kNoUnit - 1);
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+        const int32_t* v = tokens + static_cast<size_t>(y * width + x) * columnCount;
+        if (v[14] != static_cast<int>(SettlementTypeEnum::City) ||
+            static_cast<PlayerId>(v[16]) != perspective || v[17] < 0) {
+            continue;
+        }
+        City& city = belief.cities[static_cast<size_t>(v[15])];
+        const int desiredOccupancy = std::max(0, v[17]);
+        for (int occupied = 0; occupied < desiredOccupancy; ++occupied) {
+            if (syntheticOccupancyId == kNoUnit) {
+                throw std::invalid_argument("belief city occupancy exceeds synthetic unit id capacity");
+            }
+            city.addUnit(syntheticOccupancyId--);
+        }
     }
 
     belief.currentPlayer = observedSource.currentPlayer;
