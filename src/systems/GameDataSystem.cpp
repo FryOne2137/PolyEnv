@@ -30,6 +30,7 @@ static UnitType unitTypeFromString(const std::string& s) {
     if (s == "Knight") return UnitType::Knight;
     if (s == "Dagger") return UnitType::Dagger;
     if (s == "Giant") return UnitType::Giant;
+    if (s == "GiantSuper") return UnitType::GiantSuper;
     if (s == "Bunny") return UnitType::Bunny;
     if (s == "Bunta") return UnitType::Bunta;
     if (s == "Raft") return UnitType::Raft;
