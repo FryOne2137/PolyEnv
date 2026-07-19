@@ -6315,6 +6315,94 @@ public:
         return accepted;
     }
 
+    // Diagnostic counterpart to beliefAcceptanceMask.  This intentionally
+    // exposes only action ids that are already public to the current player
+    // and action ids produced by the caller's own candidate belief world.  It
+    // never returns source-map tokens or any other hidden-state data.
+    py::list beliefAcceptanceDiagnostics(py::array stateIds, py::array completedMapTokens) {
+        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
+        auto tokens = py::array_t<int32_t, py::array::c_style>::ensure(completedMapTokens);
+        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
+            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
+        }
+        if (!tokens || tokens.ndim() != 3 || tokens.shape(0) != numEnvs_ ||
+            tokens.shape(1) != static_cast<py::ssize_t>(tileCount()) ||
+            tokens.shape(2) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
+            throw std::invalid_argument(
+                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 23]");
+        }
+
+        const auto describe = [](const GameEnv& env, size_t actionId) {
+            py::dict out = env.decodeAction(actionId);
+            if (out.empty()) {
+                out["action_id"] = actionId;
+                out["type_fullname"] = "unknown";
+                out["source_index"] = -1;
+                out["target_index"] = -1;
+            }
+            return out;
+        };
+
+        py::list result;
+        const uint64_t* idData = ids.data();
+        const int32_t* tokenData = tokens.data();
+        const size_t tiles = tileCount();
+        const size_t tokenStride = tiles * kMapTokenFeatureCount;
+        std::lock_guard lock(apiMutex_);
+        if (searchActive_) {
+            throw std::logic_error("a belief forest is already active; step or reset before validating beliefs");
+        }
+        for (size_t i = 0; i < envs_.size(); ++i) {
+            if (idData[i] != stateIds_[i]) {
+                throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
+            }
+            py::dict row;
+            row["env_id"] = static_cast<int>(i);
+            try {
+                GameEnv belief = envs_[i].makeBeliefEnvFromCurrentPlayerFlatTokens(
+                    tokenData + i * tokenStride, tiles, kMapTokenFeatureCount,
+                    beliefValidationScratch_.data() + i * tokenStride);
+                const auto& realIds = envs_[i].legalActionIdsRefNative();
+                const auto& beliefIds = belief.legalActionIdsRefNative();
+                py::list missing;
+                py::list extra;
+                // The engine preserves an action-generation order, not a
+                // numeric action-id sort order. Compare sets while retaining
+                // each world's natural order in the diagnostic output.
+                const std::unordered_set<size_t> realSet(realIds.begin(), realIds.end());
+                const std::unordered_set<size_t> beliefSet(beliefIds.begin(), beliefIds.end());
+                for (const size_t actionId : realIds) {
+                    if (beliefSet.find(actionId) == beliefSet.end()) missing.append(describe(envs_[i], actionId));
+                }
+                for (const size_t actionId : beliefIds) {
+                    if (realSet.find(actionId) == realSet.end()) extra.append(describe(belief, actionId));
+                }
+                const bool terminalMismatch = !envs_[i].isTerminalNative() && belief.isTerminalNative();
+                const bool legalMismatch = !missing.empty() || !extra.empty();
+                row["accepted"] = !legalMismatch && !terminalMismatch;
+                row["reason"] = terminalMismatch ? "belief_terminal" : (legalMismatch ? "legal_action_mismatch" : "accepted");
+                row["real_action_count"] = realIds.size();
+                row["belief_action_count"] = beliefIds.size();
+                row["missing_actions"] = std::move(missing);
+                row["extra_actions"] = std::move(extra);
+            } catch (const std::exception& error) {
+                row["accepted"] = false;
+                row["reason"] = "belief_build_error";
+                row["error"] = error.what();
+                row["missing_actions"] = py::list();
+                row["extra_actions"] = py::list();
+            } catch (...) {
+                row["accepted"] = false;
+                row["reason"] = "belief_build_error";
+                row["error"] = "unknown belief construction error";
+                row["missing_actions"] = py::list();
+                row["extra_actions"] = py::list();
+            }
+            result.append(std::move(row));
+        }
+        return result;
+    }
+
     // Explicitly training-only full-map targets. They are paired with state
     // ids so an external trainer cannot accidentally label a later position.
     // SelfPlayPool never consumes this data in submitBeliefs or MCTS.
@@ -7832,8 +7920,11 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("all_player_belief_batch_spec", &SelfPlayPool::allPlayerBeliefBatchSpec,
              "Return dtype/shape metadata for all_player_belief_requests().")
         .def("belief_acceptance_mask", &SelfPlayPool::beliefAcceptanceMask,
-             py::arg("state_ids"), py::arg("completed_map_tokens"),
-             "Training-only per-slot legality/terminal acceptance mask for belief hypotheses.")
+            py::arg("state_ids"), py::arg("completed_map_tokens"),
+            "Training-only per-slot legality/terminal acceptance mask for belief hypotheses.")
+        .def("belief_acceptance_diagnostics", &SelfPlayPool::beliefAcceptanceDiagnostics,
+            py::arg("state_ids"), py::arg("completed_map_tokens"),
+            "Training-only public legal-action mismatch diagnostics for belief hypotheses.")
         .def("belief_targets_numpy", &SelfPlayPool::beliefTargetsNumpy,
              py::arg("state_ids"),
              "Training-only authoritative map-token labels; never consumed by native MCTS.")
