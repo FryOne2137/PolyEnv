@@ -6377,10 +6377,27 @@ public:
                 for (const size_t actionId : beliefIds) {
                     if (realSet.find(actionId) == realSet.end()) extra.append(describe(belief, actionId));
                 }
+                const bool orderMismatch = realIds != beliefIds;
+                if (orderMismatch) {
+                    size_t firstDifference = 0;
+                    const size_t shared = std::min(realIds.size(), beliefIds.size());
+                    while (firstDifference < shared && realIds[firstDifference] == beliefIds[firstDifference]) {
+                        ++firstDifference;
+                    }
+                    row["first_difference_index"] = firstDifference;
+                    if (firstDifference < realIds.size()) {
+                        row["real_action_at_difference"] = describe(envs_[i], realIds[firstDifference]);
+                    }
+                    if (firstDifference < beliefIds.size()) {
+                        row["belief_action_at_difference"] = describe(belief, beliefIds[firstDifference]);
+                    }
+                }
                 const bool terminalMismatch = !envs_[i].isTerminalNative() && belief.isTerminalNative();
-                const bool legalMismatch = !missing.empty() || !extra.empty();
+                const bool legalMismatch = orderMismatch;
                 row["accepted"] = !legalMismatch && !terminalMismatch;
-                row["reason"] = terminalMismatch ? "belief_terminal" : (legalMismatch ? "legal_action_mismatch" : "accepted");
+                row["reason"] = terminalMismatch ? "belief_terminal" : (
+                    legalMismatch ? (missing.empty() && extra.empty()
+                        ? "legal_action_order_mismatch" : "legal_action_mismatch") : "accepted");
                 row["real_action_count"] = realIds.size();
                 row["belief_action_count"] = beliefIds.size();
                 row["missing_actions"] = std::move(missing);
@@ -6472,9 +6489,26 @@ public:
                         for (const size_t actionId : beliefIds) {
                             if (realSet.find(actionId) == realSet.end()) extra.append(describe(belief, actionId));
                         }
+                        const bool orderMismatch = realIds != beliefIds;
+                        if (orderMismatch) {
+                            size_t firstDifference = 0;
+                            const size_t shared = std::min(realIds.size(), beliefIds.size());
+                            while (firstDifference < shared && realIds[firstDifference] == beliefIds[firstDifference]) {
+                                ++firstDifference;
+                            }
+                            row["first_difference_index"] = firstDifference;
+                            if (firstDifference < realIds.size()) {
+                                row["real_action_at_difference"] = describe(envs_[i], realIds[firstDifference]);
+                            }
+                            if (firstDifference < beliefIds.size()) {
+                                row["belief_action_at_difference"] = describe(belief, beliefIds[firstDifference]);
+                            }
+                        }
                         const bool terminalMismatch = !envs_[i].isTerminalNative() && belief.isTerminalNative();
-                        if (missing.empty() && extra.empty() && !terminalMismatch) continue;
-                        row["reason"] = terminalMismatch ? "belief_terminal" : "legal_action_mismatch";
+                        if (!orderMismatch && !terminalMismatch) continue;
+                        row["reason"] = terminalMismatch ? "belief_terminal" : (
+                            missing.empty() && extra.empty()
+                                ? "legal_action_order_mismatch" : "legal_action_mismatch");
                         row["real_action_count"] = realIds.size();
                         row["belief_action_count"] = beliefIds.size();
                         row["missing_actions"] = std::move(missing);
