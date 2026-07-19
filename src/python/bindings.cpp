@@ -4771,6 +4771,13 @@ private:
         uint32_t virtualVisits = 0;
         double virtualLossSum = 0.0;
         Node* child = nullptr;
+        // A full-ISMCTS transition can occasionally be incompatible with
+        // every submitted particle of the next player.  The edge remains a
+        // legal action in its parent information state, but this particular
+        // sampled history cannot be represented without inventing hidden
+        // state.  Exclude only that branch instead of aborting the whole
+        // vector search.
+        bool redeterminizationBlocked = false;
 
         uint32_t completedVisits() const { return visits - virtualVisits; }
         double completedValueSum() const { return valueSum + virtualLossSum; }
@@ -5395,10 +5402,10 @@ private:
     // live GameSession.  Replaying only the actor's own actions plus public
     // EndTurn transitions preserves private stars/tech/unit runtime while
     // visible map cells are refreshed after every simulated transition.
-    GameEnv redeterminizeTransition(const Tree& tree,
-                                    const Node& parent,
-                                    int32_t actionId,
-                                    const GameEnv& simulatedChild) const {
+    std::optional<GameEnv> redeterminizeTransition(const Tree& tree,
+                                                   const Node& parent,
+                                                   int32_t actionId,
+                                                   const GameEnv& simulatedChild) const {
         const PlayerId perspective = simulatedChild.currentPlayerNative();
         if (tree.playerBeliefParticles.empty() || perspective == parent.toPlay) {
             return simulatedChild;
@@ -5431,45 +5438,64 @@ private:
             particleHash ^= static_cast<uint64_t>(static_cast<uint32_t>(transition.actor));
             particleHash *= 1099511628211ull;
         }
-        GameEnv personal = particles[static_cast<size_t>(particleHash % particles.size())].cloneForMcts();
         const size_t tokenCount = tileCount() * kMapTokenFeatureCount;
-        std::vector<int32_t> completed(tokenCount);
-        std::vector<int32_t> personalObserved(tokenCount);
-        std::vector<int32_t> observed(tokenCount);
-        for (const Transition& transition : reversed) {
-            // Action id zero is permanently EndTurn in ActionSpace. It is a
-            // public turn-boundary transition, so every player must replay it
-            // even if the preceding actor's other actions stayed in fog.
-            if (transition.actor == perspective || transition.actionId == 0) {
-                personal = personal.mctsChild(static_cast<size_t>(transition.actionId));
-            }
-
-            personal.writeFullMapTokens(completed.data());
-            // Preserve this actor's own visibility from their particle.  A
-            // predecessor's determinization may not contain an enemy player's
-            // private units and therefore cannot be trusted to reconstruct
-            // that player's sight range.
-            personal.writePlayerMapTokensFor(perspective, personalObserved.data());
-            transition.observedAfter->writePlayerMapTokensFor(perspective, observed.data());
-            for (size_t tile = 0; tile < tileCount(); ++tile) {
-                int32_t* destination = completed.data() + tile * kMapTokenFeatureCount;
-                const int32_t* ownVisible = personalObserved.data() + tile * kMapTokenFeatureCount;
-                const int32_t* visible = observed.data() + tile * kMapTokenFeatureCount;
-                if (visible[0] != 0) {
-                    std::copy_n(visible, kMapTokenFeatureCount, destination);
-                } else {
-                    // Keep the previously sampled completion for hidden data
-                    // and retain the actor's own information boundary.
-                    destination[0] = ownVisible[0];
+        // Try every independently sampled particle, starting from a stable
+        // hash-selected one.  A particle can make an older, player-owned move
+        // impossible because a different opponent determinization preceded
+        // it.  Another particle can still represent the exact same public
+        // history, and choosing it is the normal ISMCTS remedy.
+        for (size_t particleOffset = 0; particleOffset < particles.size(); ++particleOffset) {
+            const size_t particleIndex =
+                (static_cast<size_t>(particleHash % particles.size()) + particleOffset) % particles.size();
+            GameEnv personal = particles[particleIndex].cloneForMcts();
+            std::vector<int32_t> completed(tokenCount);
+            std::vector<int32_t> personalObserved(tokenCount);
+            std::vector<int32_t> observed(tokenCount);
+            bool replayable = true;
+            for (const Transition& transition : reversed) {
+                // Action id zero is permanently EndTurn in ActionSpace. It is
+                // a public turn-boundary transition, so every player must
+                // replay it even if the preceding actor's other actions stayed
+                // in fog.  Never force an action that this particle considers
+                // illegal: doing so would require hidden information.
+                if (transition.actor == perspective || transition.actionId == 0) {
+                    const auto& legal = personal.legalActionIdsRefNative();
+                    if (transition.actionId < 0 ||
+                        !std::binary_search(legal.begin(), legal.end(),
+                                            static_cast<size_t>(transition.actionId))) {
+                        replayable = false;
+                        break;
+                    }
+                    personal = personal.mctsChild(static_cast<size_t>(transition.actionId));
                 }
+
+                personal.writeFullMapTokens(completed.data());
+                // Preserve this actor's own visibility from their particle. A
+                // predecessor's determinization may not contain an enemy
+                // player's private units and therefore cannot reconstruct that
+                // player's sight range.
+                personal.writePlayerMapTokensFor(perspective, personalObserved.data());
+                transition.observedAfter->writePlayerMapTokensFor(perspective, observed.data());
+                for (size_t tile = 0; tile < tileCount(); ++tile) {
+                    int32_t* destination = completed.data() + tile * kMapTokenFeatureCount;
+                    const int32_t* ownVisible = personalObserved.data() + tile * kMapTokenFeatureCount;
+                    const int32_t* visible = observed.data() + tile * kMapTokenFeatureCount;
+                    if (visible[0] != 0) {
+                        std::copy_n(visible, kMapTokenFeatureCount, destination);
+                    } else {
+                        // Keep sampled hidden data while retaining this
+                        // particle's own information boundary.
+                        destination[0] = ownVisible[0];
+                    }
+                }
+                personal = personal.redeterminizeFromPlayerFlatTokens(
+                    perspective, completed.data(), tileCount(), kMapTokenFeatureCount);
             }
-            personal = personal.redeterminizeFromPlayerFlatTokens(
-                perspective, completed.data(), tileCount(), kMapTokenFeatureCount);
+            if (replayable && personal.currentPlayerNative() == perspective) {
+                return personal;
+            }
         }
-        if (personal.currentPlayerNative() != perspective) {
-            throw std::logic_error("ISMCTS redeterminization lost the active-player turn state");
-        }
-        return personal;
+        return std::nullopt;
     }
 
     Node* selectNode(Tree& tree) {
@@ -5482,7 +5508,8 @@ private:
                 // A direct child that is awaiting a network result cannot
                 // yield another leaf. Skip it rather than wasting a whole
                 // selection slot on a known-pending node.
-                if (edge.child && (edge.child->pending || edge.child->budgetBlocked)) continue;
+                if (edge.redeterminizationBlocked ||
+                    (edge.child && (edge.child->pending || edge.child->budgetBlocked))) continue;
                 // Once a tree has hit its node/byte budget it may still reuse
                 // materialized branches, but it must not clone another GameEnv.
                 if (!edge.child && !canMaterializeNode(tree)) continue;
@@ -5507,7 +5534,19 @@ private:
                 try {
                     GameEnv child = node->env.mctsChild(static_cast<size_t>(best->actionId));
                     VisibleActionHistories histories = childVisibleHistories(*node, child);
-                    child = redeterminizeTransition(tree, *node, best->actionId, child);
+                    std::optional<GameEnv> redeterminized =
+                        redeterminizeTransition(tree, *node, best->actionId, child);
+                    if (!redeterminized) {
+                        // This action is legal to the parent player, but no
+                        // submitted information-state particle of the next
+                        // player can replay its path.  Skip the branch rather
+                        // than falling back to a different player's hidden
+                        // world or terminating all SelfPlayPool environments.
+                        best->redeterminizationBlocked = true;
+                        tree.accountedBytes -= nodeReservationBytes_;
+                        continue;
+                    }
+                    child = std::move(*redeterminized);
                     tree.nodes.emplace_back(std::make_unique<Node>(
                         std::move(child), node, best, std::move(histories)));
                     best->child = tree.nodes.back().get();
