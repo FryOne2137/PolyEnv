@@ -6403,6 +6403,100 @@ public:
         return result;
     }
 
+    // Full-ISMCTS counterpart to beliefAcceptanceDiagnostics.  Its iteration
+    // order and active-player legality check mirror submitBeliefs exactly, so
+    // a trainer can diagnose the precise [env, player, particle] that made an
+    // otherwise atomic belief submission fail.
+    py::list ismctsBeliefDiagnostics(py::array stateIds, py::array completedMapTokens) {
+        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
+        auto tokens = py::array_t<int32_t, py::array::c_style>::ensure(completedMapTokens);
+        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
+            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
+        }
+        if (!tokens || tokens.ndim() != 5 || tokens.shape(0) != numEnvs_ ||
+            tokens.shape(1) != playerCount_ || tokens.shape(2) <= 0 ||
+            tokens.shape(3) != static_cast<py::ssize_t>(tileCount()) ||
+            tokens.shape(4) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
+            throw std::invalid_argument(
+                "completed_map_tokens must be contiguous int32 with shape [num_envs, player_count, particles, tiles, 23]");
+        }
+
+        const auto describe = [](const GameEnv& env, size_t actionId) {
+            py::dict out = env.decodeAction(actionId);
+            if (out.empty()) {
+                out["action_id"] = actionId;
+                out["type_fullname"] = "unknown";
+                out["source_index"] = -1;
+                out["target_index"] = -1;
+            }
+            return out;
+        };
+        py::list result;
+        const uint64_t* idData = ids.data();
+        const int32_t* tokenData = tokens.data();
+        const size_t players = static_cast<size_t>(playerCount_);
+        const size_t particles = static_cast<size_t>(tokens.shape(2));
+        const size_t tokenStride = tileCount() * kMapTokenFeatureCount;
+        const size_t forestStride = players * particles * tokenStride;
+        std::lock_guard lock(apiMutex_);
+        if (searchActive_) {
+            throw std::logic_error("a belief forest is already active; step or reset before validating beliefs");
+        }
+        for (size_t i = 0; i < envs_.size(); ++i) {
+            if (idData[i] != stateIds_[i]) {
+                throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
+            }
+            const PlayerId active = envs_[i].currentPlayerNative();
+            for (size_t player = 0; player < players; ++player) {
+                for (size_t particle = 0; particle < particles; ++particle) {
+                    py::dict row;
+                    row["env_id"] = static_cast<int>(i);
+                    row["player"] = static_cast<int>(player);
+                    row["particle"] = static_cast<int>(particle);
+                    try {
+                        GameEnv belief = envs_[i].makeBeliefEnvFromPlayerFlatTokens(
+                            static_cast<PlayerId>(player),
+                            tokenData + i * forestStride + (player * particles + particle) * tokenStride,
+                            tileCount(), kMapTokenFeatureCount,
+                            beliefValidationScratch_.data() + (i * players + player) * tokenStride);
+                        if (static_cast<PlayerId>(player) != active) continue;
+                        const auto& realIds = envs_[i].legalActionIdsRefNative();
+                        const auto& beliefIds = belief.legalActionIdsRefNative();
+                        const std::unordered_set<size_t> realSet(realIds.begin(), realIds.end());
+                        const std::unordered_set<size_t> beliefSet(beliefIds.begin(), beliefIds.end());
+                        py::list missing;
+                        py::list extra;
+                        for (const size_t actionId : realIds) {
+                            if (beliefSet.find(actionId) == beliefSet.end()) missing.append(describe(envs_[i], actionId));
+                        }
+                        for (const size_t actionId : beliefIds) {
+                            if (realSet.find(actionId) == realSet.end()) extra.append(describe(belief, actionId));
+                        }
+                        const bool terminalMismatch = !envs_[i].isTerminalNative() && belief.isTerminalNative();
+                        if (missing.empty() && extra.empty() && !terminalMismatch) continue;
+                        row["reason"] = terminalMismatch ? "belief_terminal" : "legal_action_mismatch";
+                        row["real_action_count"] = realIds.size();
+                        row["belief_action_count"] = beliefIds.size();
+                        row["missing_actions"] = std::move(missing);
+                        row["extra_actions"] = std::move(extra);
+                    } catch (const std::exception& error) {
+                        row["reason"] = "belief_build_error";
+                        row["error"] = error.what();
+                        row["missing_actions"] = py::list();
+                        row["extra_actions"] = py::list();
+                    } catch (...) {
+                        row["reason"] = "belief_build_error";
+                        row["error"] = "unknown belief construction error";
+                        row["missing_actions"] = py::list();
+                        row["extra_actions"] = py::list();
+                    }
+                    result.append(std::move(row));
+                }
+            }
+        }
+        return result;
+    }
+
     // Explicitly training-only full-map targets. They are paired with state
     // ids so an external trainer cannot accidentally label a later position.
     // SelfPlayPool never consumes this data in submitBeliefs or MCTS.
@@ -7925,6 +8019,9 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("belief_acceptance_diagnostics", &SelfPlayPool::beliefAcceptanceDiagnostics,
             py::arg("state_ids"), py::arg("completed_map_tokens"),
             "Training-only public legal-action mismatch diagnostics for belief hypotheses.")
+        .def("ismcts_belief_diagnostics", &SelfPlayPool::ismctsBeliefDiagnostics,
+            py::arg("state_ids"), py::arg("completed_map_tokens"),
+            "Training-only full-ISMCTS belief submission diagnostics without source-map leakage.")
         .def("belief_targets_numpy", &SelfPlayPool::beliefTargetsNumpy,
              py::arg("state_ids"),
              "Training-only authoritative map-token labels; never consumed by native MCTS.")
