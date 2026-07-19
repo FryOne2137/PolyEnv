@@ -9,12 +9,12 @@ PolyEnv does **not** import PyTorch, CUDA, or a model callback. Its Python
 boundary is a small number of dense NumPy arrays per phase.
 
 ```text
-visible observation batch ──> external belief model
-                                  │ completed map hypotheses
-                                  ▼
-live C++ games ──> detached belief roots ──> native MCTS forest
-                                               │ dense leaf batch
-external policy/value model <──────────────────┘
+per-player observations ──> external belief model
+                                │ per-player belief particles
+                                ▼
+live C++ games ──> detached ISMCTS belief forest ──> native MCTS
+                                                       │ dense leaf batch
+external policy/value model <────────────────────────┘
 ```
 
 ## Create A Pool
@@ -28,9 +28,12 @@ pool = SelfPlayPool(
     map_size=11,
     players=(Bardur, Imperius),
     num_threads=8,
-    max_actions=512,
+    # 0: complete stable ActionSpace; no legal move is omitted.
+    max_actions=0,
+    require_all_actions=True,
     auto_reset=True,
     c_puct=1.5,
+    visible_action_history=512,  # 0--1024 compact visible-action tokens
     max_pending_leaves_per_tree=4,  # 1--8; 1 preserves legacy behavior
     virtual_loss=1.0,
     max_nodes_per_tree=20_000,      # 0 disables this hard admission limit
@@ -55,9 +58,12 @@ import numpy as np
 request = pool.reset()
 
 while training:
-    # Input contains only the current player's visible observation.
-    completed_map_tokens = belief_model(request)
-    # Must be a C-contiguous np.int32 array: [B, tiles, 23].
+    # One fog-safe observation for every player. The belief model must never
+    # receive one player's row as input for another player.
+    belief_request = pool.all_player_belief_requests()
+    completed_map_tokens = belief_model(belief_request)
+    # C-contiguous int32 [B, P, K, tiles, 23]. K >= 1 belief particles.
+    # [B, P, tiles, 23] is accepted as the K=1 shorthand.
 
     pool.submit_beliefs(request["state_id"], completed_map_tokens)
 
@@ -95,6 +101,10 @@ validates every live slot before advancing any of them. The legacy `step()`
 still rejects an active pending leaf evaluation, but cannot distinguish a late
 action that remains legal in a newer position.
 
+Calling `submit_beliefs()` with `[B, tiles, 23]` retains the legacy
+root-perspective determinization mode. Use the per-player form above for
+ISMCTS; it is the intended training path whenever fog of war matters.
+
 ## Public Observation And Belief Input
 
 `reset()`, `step()`, and `belief_requests()` return a dense batch with these
@@ -108,11 +118,14 @@ core model fields:
 | `action_features` | `int32` | `[B, Amax, 17]` | Action features |
 | `action_arg_mask` | `uint8` | `[B, Amax, 12]` | Action argument validity |
 | `action_mask` | `uint8` | `[B, Amax]` | Valid padded action rows |
-| `legal_action_count` | `int32` | `[B]` | Number of represented action rows (`<= Amax`) |
-| `total_legal_action_count` | `int32` | `[B]` | Legal actions before fixed-capacity truncation |
-| `action_truncated` | `uint8` | `[B]` | `1` when not every legal action fit in the batch |
+| `legal_action_count` | `int32` | `[B]` | Number of legal action rows represented for the model |
+| `total_legal_action_count` | `int32` | `[B]` | Total engine-generated legal actions |
+| `action_truncated` | `uint8` | `[B]` | Always `0` when `require_all_actions=True` |
 | `env_id` / `to_play` | `int32` | `[B]` | Live slot and current player |
 | `state_id` / `episode_id` | `uint64` | `[B]` | Opaque lifecycle ids |
+| `visible_action_history` | `int32` | `[B, H, 12]` | Right-aligned compact history observed by `to_play` |
+| `visible_action_history_mask` | `uint8` | `[B, H]` | `1` for a valid history row |
+| `visible_action_history_length` | `int32` | `[B]` | Valid row count, capped at `H` |
 | `reward`, `terminated`, `action_valid` | `float32`, `uint8`, `uint8` | `[B]` | Result for the actor of the preceding `step()` |
 | `winner` | `int32` | `[B]` | Terminal winner of the preceding step, or `-1` for no winner/no terminal transition |
 | `terminal_values` | `float32` | `[B, P]` | Terminal payoff vector for the preceding step; zero otherwise |
@@ -122,6 +135,45 @@ zero and `winner` is `-1`. If `auto_reset=True`, a terminal game is immediately
 replaced by its next episode after the terminal result is recorded in those
 fields. Preserve that transition result before consuming the returned next
 observation.
+
+The action rows come directly from `GameStateAdapter`'s canonical legal-action
+enumerator. They therefore include every **currently legal** engine action:
+`EndTurn`, `BuyTech`, movement, attack, heal, city upgrades, buildings, unit
+spawns, roads/bridges and every other tile/unit action. `SelfPlayPool` does not
+maintain a reduced action vocabulary. With the default
+`require_all_actions=True`, a capacity overflow raises instead of silently
+omitting moves. Set `max_actions=0` to derive `pool.action_space_size`, which
+guarantees capacity for the complete stable action space. Setting
+`require_all_actions=False` is an explicit legacy/performance trade-off and
+restores deterministic truncation plus `action_truncated=1`.
+
+### Per-player ISMCTS belief input
+
+`all_player_belief_requests()` returns a fog-safe packet with map/state/history
+shapes `[B, P, ...]`, plus `belief_player[B, P]` and the repeated live
+`to_play[B, P]`. It contains no action rows:
+only `to_play` chooses an action in the live game, while MCTS leaf packets
+always contain the complete legal action list for the leaf actor. The external
+belief model expands this packet to either:
+
+```python
+# One particle per player (valid but less diverse)
+completed.shape == (B, P, tiles, 23)
+
+# Recommended: K independent completions per player's own observation.
+completed.shape == (B, P, K, tiles, 23)
+```
+
+Every visible row in every particle is validated against that same player's
+observation. The current actor's particles additionally must reproduce the
+live legal action set. A malformed particle rejects the entire submission, so
+the active MCTS forest is never half-updated.
+
+For pinned, reusable host storage use
+`all_player_belief_batch_spec()` with
+`all_player_belief_requests_into(buffers)`. This packet is emitted once per
+real move, before `submit_beliefs()`, and can share the same double-buffering
+discipline as the ordinary belief packet.
 
 `completed_map_tokens` submitted to `submit_beliefs()` has exact shape
 `[B, tiles, 23]`, dtype `np.int32`, and C-contiguous layout. It must preserve:
@@ -133,6 +185,28 @@ The external belief model may fill only hidden rows. PolyEnv validates the
 complete result and rejects a hypothesis that changes the current player's
 legal root action set. This prevents an imagined hidden object from producing
 an action that cannot be executed in the live game.
+
+### Compact visible-action history
+
+`visible_action_history=H` enables a fixed window of `0..1024` earlier
+**observed world actions**. The newest token is at `H - 1`; left padding has a
+zero mask. The same fields occur in belief and MCTS leaf batches, so the model
+receives the history appropriate for the actor of each hypothetical leaf.
+
+Each row has 12 `int32` features: `event_type`, `actor_player`, `actor_tribe`,
+`visibility_flags`, `source_index`, `target_index`, `source_unit_type`,
+`target_unit_type`, `source_observed_unit_id`, `target_observed_unit_id`,
+`detail_kind`, and `detail_value`.
+
+This is not a replay of raw action ids. Source/target and unit fields have
+already been filtered when the action occurred; an unseen opponent move adds
+no row for that observer. `EndTurn`, technology purchases, and other
+non-world events also add no row. This prevents fog-of-war leaks.
+
+The pool stores immutable compact entries and shares their prefixes between
+MCTS nodes; it packs `H` rows only for selected batch entries. At `H=1024`,
+the channel is 48 KiB per row: about 12 MiB for 256 belief rows or 48 MiB for
+1024 leaf rows. Use `*_into()` and externally pinned buffers for large runs.
 
 ## MCTS Leaf And Root Batches
 
@@ -148,6 +222,8 @@ fields plus:
 | `total_legal_action_count` | `int32` | `[L]` | Leaf legal-action count before truncation |
 | `action_truncated` | `uint8` | `[L]` | `1` when the leaf action set exceeded `max_actions` |
 | `state_id` / `episode_id` | `uint64` | `[L]` | Live root lifecycle metadata |
+| `visible_action_history` | `int32` | `[L, H, 12]` | History observed by this leaf's `to_play` actor |
+| `visible_action_history_mask` / `visible_action_history_length` | `uint8`, `int32` | `[L, H]`, `[L]` | Valid rows and their count |
 
 The default has one pending leaf per tree. Set
 `max_pending_leaves_per_tree` to `2--8` to obtain up to `B * pending` rows per
@@ -164,11 +240,11 @@ leaf actor. `policy_logits` has shape `[L, max_actions]` and is indexed by
 padded **action row**, not global action id. Apply `action_mask` in the
 external model.
 
-When a legal set exceeds `max_actions`, PolyEnv deterministically truncates it
-to the canonical prefix and reserves the final row for `EndTurn` when needed.
-It does not abort the self-play loop. Watch `action_truncated` and
-`total_legal_action_count`: a truncated MCTS tree cannot evaluate omitted
-moves, so choose a capacity that makes this exceptional rather than routine.
+For exact action coverage keep `require_all_actions=True` (the default). A
+leaf or root whose legal count exceeds `max_actions` then fails before a model
+sees a reduced policy target. The opt-out truncation mode reserves the final
+row for `EndTurn` when needed, but a truncated tree cannot evaluate omitted
+moves and is unsuitable for exact training.
 
 `root_policy()` returns `action_id`, `action_mask`, `visit_count`, `policy`,
 `root_value`, `root_visit_count`, `root_player`, and `player_count`, one row
@@ -262,35 +338,20 @@ public position metadata and that submitted hypothesis. The authoritative
 world seed is never copied into a belief root, so seed-based hidden outcomes
 cannot leak through MCTS rollouts.
 
-This is **root-perspective determinized MCTS**, not full ISMCTS. In particular,
-the current belief format contains a map completion, while an exact opponent
-information state would also require predicted stars, technologies, city/unit
-runtime state, per-player visibility, and redeterminization when the actor
-changes. PolyEnv intentionally does not copy those hidden opponent facts from
-the live game. That preserves the no-leak boundary, but makes opponent nodes
-an approximation; the impact becomes greater with more players.
+The `[B, P, K, ...]` contract enables **per-player re-determinizing ISMCTS**.
+At an actor change, C++ selects a particle belonging to the next actor from a
+stable branch hash, rebuilds a detached world from that actor's own belief,
+replays their own actions and public `EndTurn` transitions, then merges only
+cells visible in the already-simulated belief world. Thus a player never acts
+from the predecessor's hidden completion, and the authoritative world is never
+read by the tree after initial per-player validation.
 
-### Current belief-state limits
-
-The multi-player search API is functional, but the current fog-of-war belief
-format is not yet a faithful multi-player information-state model:
-
-- `completed_map_tokens` represents one root player's map. The belief builder
-  installs that player's visibility only. After a turn change, a non-root
-  actor can have an under-complete legal-action set (in an extreme case, only
-  `EndTurn`). Supplying the real opponent visibility would fix mechanics but
-  would leak hidden knowledge, so the correct future solution is explicit
-  per-player belief state plus redeterminization.
-- The tensor does not carry pending city-upgrade choices or all player runtime
-  state. A root position with such a pending choice can fail the root legal
-  action equivalence check until the belief-state contract is extended.
-- `submit_beliefs()` validates visible rows and the current root's legal
-  actions; it cannot prove that the hypothesis creates realistic future
-  opponent economies or action sets.
-
-These are search-quality limitations, not a path for reading the live hidden
-world. They should be addressed before treating multi-player fog self-play as
-a fully faithful ISMCTS implementation.
+The quality of ISMCTS is bounded by the external belief distribution: `K=1`
+is a valid deterministic special case but does not represent uncertainty well;
+use several diverse, internally consistent particles when GPU budget permits.
+The engine validates visibility and active-root legality, but cannot prove that
+an externally hallucinated hidden economy is statistically realistic. That is
+a model-quality issue, not a fog-of-war leak.
 
 Use `GameEnv.full_map_numpy()` only for offline labels, tests, or debugging;
 do not feed it to `SelfPlayPool` during fog-of-war self-play.
@@ -311,14 +372,16 @@ do not feed it to `SelfPlayPool` during fog-of-war self-play.
 - The ordinary methods return fresh NumPy arrays. The `*_into()` methods avoid
   those allocations and can write into framework-owned pinned host memory, but
   GPU streams, events, and the physical H2D/D2H transfer remain the external
-  repository's responsibility.
+  repository's responsibility. `all_player_belief_requests()` is intentionally
+  a separate per-player packet: it is emitted once per real move, not per MCTS
+  leaf; its cost is `O(B * P * tiles)` rather than `O(nodes * P)`.
 
 Larger `num_envs` usually improves GPU throughput but increases live-state,
 belief-root, and MCTS-tree memory. More CPU threads improve independent game
 and leaf work until they contend with the model process; profile the complete
 training job rather than maximizing `num_threads` blindly.
 
-`SelfPlayPool` intentionally does not currently expose
-`visible_event_history`: MCTS branch sessions omit replay/event journals for
-memory efficiency, so offering the field only on the belief request would make
-the model interface inconsistent between root and leaf batches.
+`SelfPlayPool` intentionally does not expose VectorGameEnv's large
+`visible_event_history` layout. It would be too costly to duplicate across
+MCTS leaves. Use the compact, fog-safe `visible_action_history` channel,
+which is available consistently on both belief and leaf packets.

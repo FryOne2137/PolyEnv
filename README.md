@@ -82,10 +82,17 @@ buffers (`*_batch_spec()` and `*_into()`); this is the pinned-memory path for
 external GPU trainers, including dynamic leaf batches via a returned prefix
 length.
 
-For external AI projects that need many live games plus fog-of-war
-belief-rooted MCTS, `SelfPlayPool` keeps the entire simulation/search
-scheduler in C++ and exchanges only dense NumPy batches with the external
-model. It has no PyTorch or CUDA dependency; see
+For external AI projects that need many live games plus fog-of-war ISMCTS,
+`SelfPlayPool` keeps the simulation/search scheduler in C++ and exchanges only
+dense NumPy batches with the external model. Submit `[B, P, K, tiles, 23]`
+per-player belief particles to enable re-determinization when the actor
+changes (`K=1` is accepted). By default `require_all_actions=True` and
+`max_actions=0`, so every engine-generated legal action—including `EndTurn`,
+technology, building and unit actions—reaches the model; use a smaller explicit
+capacity only when it still covers the legal set. Set
+`visible_action_history=256..1024` when the model needs compact fog-safe
+history tokens in both belief and MCTS leaf packets. It has no PyTorch or CUDA
+dependency; see
 [native belief-MCTS self-play](docs/self_play_pool.md).
 
 `map_type` accepts `Lakes` / `"lakes"` or `Drylands` / `"drylands"`.

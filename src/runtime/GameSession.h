@@ -43,6 +43,11 @@ public:
         return eventsFor(currentPlayer());
     }
 
+    // The sequence of the most recently applied action.  Native self-play
+    // uses it to distinguish an observer's newest event from an older event
+    // when that observer did not see the latest action.
+    uint64_t lastActionSequence() const { return lastActionSequence_; }
+
     GameStateAdapter state;
     ReplayRecorder replay;
     ObservationKnowledge observations;
@@ -50,4 +55,5 @@ public:
 
 private:
     uint64_t nextActionSequence_ = 0;
+    uint64_t lastActionSequence_ = UINT64_MAX;
 };

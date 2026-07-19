@@ -194,6 +194,7 @@ GameSession::GameSession(Game game)
 bool GameSession::apply(const Action& action, std::optional<size_t> actionId) {
     const int round = static_cast<int>(game().getTurnNumber());
     const uint64_t actionSequence = nextActionSequence_++;
+    lastActionSequence_ = actionSequence;
     int sourceIndex = -1;
     const int width = game().getMap().getWidth();
     if (action.unit != kNoUnit) {

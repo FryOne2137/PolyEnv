@@ -191,6 +191,19 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
             for (TechId tech : sourcePlayer.getTechs()) belief.players.back().addTech(tech);
         }
     }
+    // Pending city choices and lighthouse discoveries belong to the owning
+    // player's private runtime.  They are required for an exact legal-action
+    // reconstruction when a redeterminized ISMCTS branch returns to that
+    // player, but copying another player's entries would leak information.
+    for (const Game::PendingCityUpgrade& pending : observedSource.pendingCityUpgrades) {
+        if (pending.pid == perspective) belief.pendingCityUpgrades.push_back(pending);
+    }
+    for (size_t lighthouse = 0; lighthouse < belief.lighthouseDiscoveredBy.size(); ++lighthouse) {
+        const uint16_t bit = static_cast<uint16_t>(uint16_t(1) << perspective);
+        if ((observedSource.lighthouseDiscoveredBy[lighthouse] & bit) != 0) {
+            belief.lighthouseDiscoveredBy[lighthouse] |= bit;
+        }
+    }
 
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
         const int32_t* v = tokens + static_cast<size_t>(y * width + x) * columnCount;
@@ -247,10 +260,16 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
         if (static_cast<PlayerId>(v[3]) == perspective && sourceId != Map::kNoUnit) {
             if (const Unit* sourceUnit = observedSource.getUnit(sourceId);
                 sourceUnit && sourceUnit->getOwnerId() == perspective &&
-                static_cast<int>(sourceUnit->getType()) == v[4] &&
-                sourceUnit->getHealth() == v[2] && sourceUnit->getMaxHealth() == v[21]) {
+                static_cast<int>(sourceUnit->getType()) == v[4]) {
                 unit = *sourceUnit;
+                // An observed enemy attack can change health without changing
+                // the rest of an owned unit's runtime (skills, movement,
+                // veteran state, etc.). Preserve that private runtime while
+                // applying the public/own token values.
                 unit.setId(unitId); unit.setPos(pos);
+                unit.setHealth(v[2]); unit.setMaxHealth(v[21]);
+                if (v[22] >= 0) unit.setOriginCityId(static_cast<CityId>(v[22]));
+                if (v[5] >= 0) unit.setKillCounter(v[5]);
             }
         }
         belief.units.push_back(unit);

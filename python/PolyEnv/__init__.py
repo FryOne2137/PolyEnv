@@ -293,10 +293,17 @@ class SelfPlayPool(_SelfPlayPool):
     The external repository owns the neural model and exchanges only dense
     NumPy batches with this native scheduler. Call ``reset``/``step`` to get a
     player-visible request, submit a completed belief map using its
-    ``state_id``, then run the MCTS leaf/backup loop. It supports 2--16
+    ``state_id``, then run the MCTS leaf/backup loop. For fog-safe ISMCTS,
+    call ``all_player_belief_requests()`` and submit ``[B, P, K, tiles, 23]``
+    belief particles (the ``K=1`` shorthand is accepted). It supports 2--16
     players; the two-player value path is specially optimized. Its
     ``belief_batch_spec()``, ``leaf_batch_spec()`` and ``root_policy_spec()``
     support reusable external buffers for the complete high-throughput loop.
+    ``visible_action_history`` enables a compact, fog-safe history window in
+    both belief and MCTS leaf packets; choose a value from 0 to 1024.
+    ``max_actions=0`` derives complete ActionSpace capacity and, together with
+    the default ``require_all_actions=True``, prevents legal moves from being
+    silently omitted from the external model's action packet.
     """
 
     def __init__(
@@ -309,13 +316,15 @@ class SelfPlayPool(_SelfPlayPool):
         tribes: list[Any] | tuple[Any, ...] | None = None,
         map_type: MapType | str = Lakes,
         num_threads: int | None = None,
-        max_actions: int = 512,
+        max_actions: int = 0,
         auto_reset: bool = True,
         c_puct: float = 1.5,
+        visible_action_history: int = 0,
         max_pending_leaves_per_tree: int = 1,
         virtual_loss: float = 1.0,
         max_nodes_per_tree: int = 0,
         max_tree_bytes: int = 0,
+        require_all_actions: bool = True,
     ) -> None:
         selected_players = tribes if tribes is not None else players
         super().__init__(
@@ -329,6 +338,8 @@ class SelfPlayPool(_SelfPlayPool):
             max_actions,
             auto_reset,
             c_puct,
+            visible_action_history,
+            require_all_actions,
         )
         self.configure_search(
             max_pending_leaves_per_tree,
