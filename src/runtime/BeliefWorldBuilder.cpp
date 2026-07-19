@@ -189,6 +189,16 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
         if (static_cast<PlayerId>(i) == perspective) {
             belief.players.back().addStars(sourcePlayer.getStars());
             for (TechId tech : sourcePlayer.getTechs()) belief.players.back().addTech(tech);
+            // A monument's earned/placed state belongs to its owner and is
+            // therefore known to this belief perspective.  It controls the
+            // public legal build actions on already-visible tiles; omitting it
+            // makes all placements of an earned monument disappear.
+            for (BuildingTypeEnum monument : sourcePlayer.getEarnedMonuments()) {
+                (void)belief.players.back().addMonument(monument);
+            }
+            for (BuildingTypeEnum monument : sourcePlayer.getPlacedMonuments()) {
+                (void)belief.players.back().placeMonument(monument);
+            }
         }
     }
     // Pending city choices and lighthouse discoveries belong to the owning
