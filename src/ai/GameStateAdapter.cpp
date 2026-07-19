@@ -1,5 +1,6 @@
 #include "GameStateAdapter.h"
 
+#include <algorithm>
 #include <array>
 
 #include "content/tech/TechDB.h"
@@ -327,6 +328,14 @@ void GameStateAdapter::ensureLegalCache(PlayerId pid) const {
         legalMaskCache_[actionId] = 1;
         legalIdsCache_.push_back(actionId);
     });
+
+    // A belief world rebuilds the same public units/cities into fresh internal
+    // containers. Their insertion order is not authoritative game state and
+    // may differ from the live world's order, even when both worlds expose
+    // exactly the same legal action ids.  Keep action packets canonically
+    // ordered by their stable ActionSpace id so policy rows, root targets and
+    // the ISMCTS no-leak action check remain aligned.
+    std::sort(legalIdsCache_.begin(), legalIdsCache_.end());
 
     legalCachePid_ = pid;
     legalCacheValid_ = true;
