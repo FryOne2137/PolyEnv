@@ -21,6 +21,9 @@ endif()
 option(GAME_ENGINE_BUILD_APPS "Build CLI/GUI applications" ${_default_build_apps})
 option(GAME_ENGINE_BUILD_GUI "Build GUI application (requires SFML)" ${_default_build_gui})
 option(GAME_ENGINE_BUILD_PYTHON_BINDINGS "Build Python extension module" ${_default_build_python})
+# Keep this opt-in: a PDB is useful when diagnosing crashes on Windows, but it
+# can make the regular Python wheel substantially larger.
+option(GAME_ENGINE_INSTALL_PDB "Install Windows PDB symbols with the Python extension" OFF)
 
 if(GAME_ENGINE_BUILD_GUI)
     FetchContent_Declare(
@@ -234,13 +237,33 @@ if(GAME_ENGINE_BUILD_GUI)
 endif()
 
 if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
+    # Native diagnostics for the Python extension. In a RelWithDebInfo build
+    # the matching PDB lets cpptrace turn an engine frame into its C++ file and
+    # line. Keeping this here means non-Python engine builds do not download it.
+    FetchContent_Declare(
+        cpptrace
+        GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
+        GIT_TAG        v1.0.4
+    )
+    FetchContent_MakeAvailable(cpptrace)
+
     find_package(pybind11 CONFIG REQUIRED)
 
     pybind11_add_module(_game_engine MODULE
             src/python/bindings.cpp
     )
     target_link_libraries(_game_engine PRIVATE game_engine_lib)
+    target_link_libraries(_game_engine PRIVATE cpptrace::cpptrace)
     target_compile_features(_game_engine PRIVATE cxx_std_20)
+
+    # cpptrace is a DLL on the Windows configuration used by FetchContent.
+    # A Python extension can only load when that DLL is beside its .pyd.
+    if(WIN32)
+        add_custom_command(TARGET _game_engine POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:cpptrace::cpptrace>
+                $<TARGET_FILE_DIR:_game_engine>)
+    endif()
 
     # ---- Python package layout for scikit-build-core (SKBUILD) ----
     set(_GE_PY_PKG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python/PolyEnv")
@@ -250,6 +273,26 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
             LIBRARY DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
             RUNTIME DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
             ARCHIVE DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv")
+
+    # A PDB must be produced by the exact same link as _game_engine.pyd.  When
+    # installed next to the extension, Windows debuggers and stacktrace tools
+    # can resolve native frames to C++ source locations.  It is deliberately
+    # opt-in so ordinary Release wheels do not carry the extra debug artifact.
+    if(MSVC AND GAME_ENGINE_INSTALL_PDB)
+        install(FILES "$<TARGET_PDB_FILE:_game_engine>"
+                DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
+                OPTIONAL)
+    endif()
+
+    if(WIN32)
+        install(FILES "$<TARGET_FILE:cpptrace::cpptrace>"
+                DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv")
+        if(MSVC AND GAME_ENGINE_INSTALL_PDB)
+            install(FILES "$<TARGET_PDB_FILE:cpptrace::cpptrace>"
+                    DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
+                    OPTIONAL)
+        endif()
+    endif()
 
     # Install the pure-Python package files and bundled data (e.g. JSON) in one go
     install(DIRECTORY "${_GE_PY_PKG_DIR}/"

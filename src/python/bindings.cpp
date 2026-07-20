@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include <cpptrace/cpptrace.hpp>
+#include <cpptrace/from_current.hpp>
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -3463,13 +3465,29 @@ public:
             nextIndex_.store(0, std::memory_order_relaxed);
             completedWorkers_ = 0;
             workerException_ = nullptr;
+            workerExceptionTrace_.clear();
             ++generation_;
         }
         workReady_.notify_all();
 
         std::unique_lock lock(mutex_);
         workDone_.wait(lock, [this] { return completedWorkers_ == workers_.size(); });
-        if (workerException_) std::rethrow_exception(workerException_);
+        if (!workerException_) return;
+        if (workerExceptionTrace_.empty()) std::rethrow_exception(workerException_);
+
+        try {
+            std::rethrow_exception(workerException_);
+        } catch (const std::exception& error) {
+            throw std::runtime_error(
+                std::string("native worker exception: ") + error.what() +
+                "\n\nC++ throw stack (requires matching symbols for file:line):\n" +
+                workerExceptionTrace_);
+        } catch (...) {
+            throw std::runtime_error(
+                "native worker threw a non-std exception\n\n"
+                "C++ throw stack (requires matching symbols for file:line):\n" +
+                workerExceptionTrace_);
+        }
     }
 
 private:
@@ -3485,15 +3503,28 @@ private:
                 seenGeneration = generation_;
             }
 
-            try {
+            CPPTRACE_TRY {
                 for (;;) {
                     const size_t begin = nextIndex_.fetch_add(1, std::memory_order_relaxed);
                     if (begin >= taskCount_) break;
                     task_(begin, begin + 1);
                 }
-            } catch (...) {
+            } CPPTRACE_CATCH(...) {
+                // Capture the trace in the worker while the exception's
+                // original throw stack is still available.  Merely
+                // rethrowing the exception on the Python thread would lose
+                // that information during stack unwinding.
+                std::string trace;
+                try {
+                    trace = cpptrace::from_current_exception().to_string(false);
+                } catch (...) {
+                    trace = "<cpptrace could not resolve this worker exception>";
+                }
                 std::lock_guard lock(mutex_);
-                if (!workerException_) workerException_ = std::current_exception();
+                if (!workerException_) {
+                    workerException_ = std::current_exception();
+                    workerExceptionTrace_ = std::move(trace);
+                }
             }
 
             {
@@ -3515,6 +3546,7 @@ private:
     size_t generation_ = 0;
     bool stopping_ = false;
     std::exception_ptr workerException_;
+    std::string workerExceptionTrace_;
 };
 
 class VectorGameEnv {
@@ -7805,6 +7837,12 @@ private:
 
 PYBIND11_MODULE(_game_engine, m) {
     m.doc() = "Polytopia-like game engine Python bindings";
+
+    // Reports a useful native stack for exceptions that escape a worker or
+    // trigger std::terminate.  It does not make a memory-corruption crash
+    // recoverable, but with RelWithDebInfo + matching PDB it identifies the
+    // engine function and source line that led to termination.
+    cpptrace::register_terminate_handler();
 
     py::enum_<TribeType>(m, "TribeType")
         .value("Unknown", TribeType::Unknown)

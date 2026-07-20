@@ -27,6 +27,33 @@ python -m pip uninstall PolyEnv
 `numpy` is installed automatically. Building from source requires Python 3.10+
 a C++20 compiler and CMake 3.20+.
 
+### Windows diagnostic build (native C++ crashes)
+
+For a native crash report with C++ function names and source lines, build from
+the repository with MSVC's `RelWithDebInfo` configuration. This installs the
+matching `_game_engine.pdb` beside `_game_engine.pyd` and enables the bundled
+`cpptrace` diagnostics:
+
+```powershell
+git clone https://github.com/FryOne2137/PolyEnv.git
+cd PolyEnv
+python -m pip install --no-build-isolation --no-deps --force-reinstall -v `
+  -Ccmake.build-type=RelWithDebInfo `
+  -Ccmake.args=-DGAME_ENGINE_INSTALL_PDB=ON `
+  .
+```
+
+Verify that the PDB was installed:
+
+```powershell
+python -c "import PolyEnv, pathlib; p=pathlib.Path(PolyEnv.__file__).parent; print(p); print(list(p.glob('*.pdb')))"
+```
+
+Keep `_game_engine.pyd` and its PDB from the same installation together. On a
+native worker exception PolyEnv appends a `C++ throw stack` to the Python
+error; on `std::terminate` it prints a native stack to stderr. A PDB can show
+the source line, but cannot make memory-access violations recoverable.
+
 ## Use
 
 ```python
