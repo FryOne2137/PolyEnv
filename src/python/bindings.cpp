@@ -1130,12 +1130,14 @@ public:
         return GameEnv(session_->cloneForSearch(), mapSize_, tribesRaw_, seed_, unitsJsonPath_, mapType_);
     }
 
-    GameEnv mctsChild(size_t actionId) const {
+    // A belief particle can become inconsistent with a previously expanded
+    // action after re-determinization. That is an expected ISMCTS outcome,
+    // not an engine fault: callers must prune only that branch and continue
+    // searching the remaining particles/trees.
+    std::optional<GameEnv> mctsChild(size_t actionId) const {
         GameEnv child = cloneForMcts();
         const NativeStepResult result = child.stepNative(actionId);
-        if (!result.ok) {
-            throw std::logic_error("MCTS attempted to expand a non-legal action id");
-        }
+        if (!result.ok) return std::nullopt;
         return child;
     }
 
@@ -5504,7 +5506,13 @@ private:
                         replayable = false;
                         break;
                     }
-                    personal = personal.mctsChild(static_cast<size_t>(transition.actionId));
+                    std::optional<GameEnv> replayed =
+                        personal.mctsChild(static_cast<size_t>(transition.actionId));
+                    if (!replayed) {
+                        replayable = false;
+                        break;
+                    }
+                    personal = std::move(*replayed);
                 }
 
                 personal.writeFullMapTokens(completed.data());
@@ -5565,12 +5573,20 @@ private:
             if (!best) return nullptr;
             if (!best->child) {
                 // Reserve before cloning: a failed admission never allocates
-                // a new persistent branch. If the game transition itself
-                // throws, return the reservation before surfacing the error.
+                // a new persistent branch. A sampled belief may no longer be
+                // able to replay this edge; reject that edge locally instead
+                // of aborting the whole batched MCTS call.
                 if (!canMaterializeNode(tree)) return nullptr;
                 tree.accountedBytes += nodeReservationBytes_;
                 try {
-                    GameEnv child = node->env.mctsChild(static_cast<size_t>(best->actionId));
+                    std::optional<GameEnv> materialized =
+                        node->env.mctsChild(static_cast<size_t>(best->actionId));
+                    if (!materialized) {
+                        best->redeterminizationBlocked = true;
+                        tree.accountedBytes -= nodeReservationBytes_;
+                        continue;
+                    }
+                    GameEnv child = std::move(*materialized);
                     VisibleActionHistories histories = childVisibleHistories(*node, child);
                     std::optional<GameEnv> redeterminized =
                         redeterminizeTransition(tree, *node, best->actionId, child);
