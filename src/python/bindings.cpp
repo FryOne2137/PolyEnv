@@ -3485,6 +3485,14 @@ public:
 
         try {
             std::rethrow_exception(workerException_);
+        } catch (const std::invalid_argument& error) {
+            // pybind11 translates invalid_argument to Python ValueError. Keep
+            // that contract: SelfPlayPool uses ValueError to reject/resample
+            // an invalid belief batch instead of terminating training.
+            throw std::invalid_argument(
+                std::string("native worker exception: ") + error.what() +
+                "\n\nC++ throw stack (requires matching symbols for file:line):\n" +
+                workerExceptionTrace_);
         } catch (const std::exception& error) {
             throw std::runtime_error(
                 std::string("native worker exception: ") + error.what() +
