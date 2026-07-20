@@ -38,9 +38,9 @@ matching `_game_engine.pdb` beside `_game_engine.pyd` and enables the bundled
 ```powershell
 git clone https://github.com/FryOne2137/PolyEnv.git
 cd PolyEnv
-python -m pip install --no-build-isolation --no-deps --force-reinstall -v `
-  -Ccmake.build-type=RelWithDebInfo `
-  -Ccmake.args=-DGAME_ENGINE_INSTALL_PDB=ON `
+python -m pip install --no-deps --force-reinstall -v `
+  -C "cmake.build-type=RelWithDebInfo" `
+  -C "cmake.args=-DGAME_ENGINE_INSTALL_PDB=ON" `
   .
 ```
 

@@ -240,6 +240,9 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
     # Native diagnostics for the Python extension. In a RelWithDebInfo build
     # the matching PDB lets cpptrace turn an engine frame into its C++ file and
     # line. Keeping this here means non-Python engine builds do not download it.
+    # A static dependency keeps the Python wheel self-contained: importing the
+    # .pyd never requires a separate cpptrace.dll beside it.
+    set(CPPTRACE_BUILD_SHARED OFF CACHE BOOL "Build cpptrace as a shared library" FORCE)
     FetchContent_Declare(
         cpptrace
         GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
@@ -255,15 +258,6 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
     target_link_libraries(_game_engine PRIVATE game_engine_lib)
     target_link_libraries(_game_engine PRIVATE cpptrace::cpptrace)
     target_compile_features(_game_engine PRIVATE cxx_std_20)
-
-    # cpptrace is a DLL on the Windows configuration used by FetchContent.
-    # A Python extension can only load when that DLL is beside its .pyd.
-    if(WIN32)
-        add_custom_command(TARGET _game_engine POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:cpptrace::cpptrace>
-                $<TARGET_FILE_DIR:_game_engine>)
-    endif()
 
     # ---- Python package layout for scikit-build-core (SKBUILD) ----
     set(_GE_PY_PKG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python/PolyEnv")
@@ -282,16 +276,6 @@ if(GAME_ENGINE_BUILD_PYTHON_BINDINGS)
         install(FILES "$<TARGET_PDB_FILE:_game_engine>"
                 DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
                 OPTIONAL)
-    endif()
-
-    if(WIN32)
-        install(FILES "$<TARGET_FILE:cpptrace::cpptrace>"
-                DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv")
-        if(MSVC AND GAME_ENGINE_INSTALL_PDB)
-            install(FILES "$<TARGET_PDB_FILE:cpptrace::cpptrace>"
-                    DESTINATION "${SKBUILD_PLATLIB_DIR}/PolyEnv"
-                    OPTIONAL)
-        endif()
     endif()
 
     # Install the pure-Python package files and bundled data (e.g. JSON) in one go
