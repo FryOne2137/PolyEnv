@@ -8,9 +8,10 @@ It supports the 12 regular tribes. It is not affiliated with The Battle of
 Polytopia, does not implement special tribes, and does not include a trained
 bot or reward shaping.
 
-For high-throughput RL training, `VectorGameEnv` runs many independent games
-in a native C++ worker pool and returns dense batched NumPy arrays without a
-Python loop or JSON serialization per game.
+For high-throughput RL self-play with batched MCTS, use `SelfPlayPool`. It
+keeps live games, ISMCTS trees, and the native C++ worker pool inside the
+engine, exchanging only dense batched NumPy arrays with the model. Use
+`VectorGameEnv` for flat vectorized rollouts that do not require MCTS.
 
 ## Install
 
