@@ -20,6 +20,12 @@
 #include <utility>
 #include <vector>
 
+// cpptrace includes Windows headers on MSVC.  Prevent the legacy min/max
+// macros from corrupting std::min/std::max in pybind11 and engine code.
+#if defined(_WIN32) && !defined(NOMINMAX)
+#define NOMINMAX
+#endif
+
 #include <cpptrace/cpptrace.hpp>
 #include <cpptrace/from_current.hpp>
 #include <pybind11/pybind11.h>
