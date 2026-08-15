@@ -16,7 +16,7 @@ engine, exchanging only dense batched NumPy arrays with the model. Use
 ## Install
 
 ```bash
-python -m pip install git+https://github.com/FryOne2137/PolyEnv.git
+pip install git+https://github.com/FryOne2137/PolyEnv.git
 ```
 
 Uninstall:

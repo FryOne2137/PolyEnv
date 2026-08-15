@@ -5542,8 +5542,20 @@ private:
                         destination[0] = ownVisible[0];
                     }
                 }
-                personal = personal.redeterminizeFromPlayerFlatTokens(
-                    perspective, completed.data(), tileCount(), kMapTokenFeatureCount);
+                try {
+                    personal = personal.redeterminizeFromPlayerFlatTokens(
+                        perspective, completed.data(), tileCount(), kMapTokenFeatureCount);
+                } catch (const std::invalid_argument&) {
+                    // Every submitted particle was validated before the search
+                    // started, but merging observations from another simulated
+                    // determinization can make one particle contradictory. For
+                    // example, a newly observed city may have the same stable id
+                    // as a city this particle placed on a different hidden tile.
+                    // This is an expected particle rejection in ISMCTS: try the
+                    // remaining particles and block only this branch if none fit.
+                    replayable = false;
+                    break;
+                }
             }
             if (replayable && personal.currentPlayerNative() == perspective) {
                 return personal;
