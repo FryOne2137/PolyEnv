@@ -42,6 +42,7 @@
 #include "replay/ReplayRecorder.h"
 #include "runtime/BeliefWorldBuilder.h"
 #include "runtime/GameSession.h"
+#include "runtime/SelfPlayRouting.h"
 #include "systems/BuildingSystem.h"
 #include "systems/CitySystem.h"
 #include "systems/DisbandSystem.h"
@@ -2638,6 +2639,11 @@ public:
 
     std::vector<size_t> replayActionIds() const {
         return session_->replay.actionIds();
+    }
+
+    size_t replayActionCountNative() const {
+        ensureState();
+        return session_->replay.actionIds().size();
     }
 
     void saveReplay(const std::string& path) const {
@@ -6070,6 +6076,17 @@ private:
 // It owns authoritative live games and a separate forest of belief roots. The
 // two are intentionally never exposed as Python GameEnv objects: Python sees
 // only dense player-view packets and returns model predictions / hypotheses.
+struct CompletedSelfPlayEpisode {
+    int32_t envId = -1;
+    uint64_t episodeId = 0;
+    uint32_t mapSeed = 0;
+    std::array<int32_t, 16> agentIds{};
+    int32_t winnerPlayer = -1;
+    std::array<float, 16> terminalValues{};
+    int32_t moves = 0;
+    uint8_t truncated = 0;
+};
+
 class SelfPlayPool {
 public:
     SelfPlayPool(int numEnvs,
@@ -6121,6 +6138,13 @@ public:
         episodeGenerations_.assign(static_cast<size_t>(numEnvs_), 0);
         stateIds_.assign(static_cast<size_t>(numEnvs_), 0);
         episodeIds_.assign(static_cast<size_t>(numEnvs_), 0);
+        mapSeeds_.assign(static_cast<size_t>(numEnvs_), 0);
+        agentAssignments_.assign(
+            static_cast<size_t>(numEnvs_) * static_cast<size_t>(playerCount_), int32_t{0});
+        stopped_.assign(static_cast<size_t>(numEnvs_), uint8_t{0});
+        completedScratch_.resize(static_cast<size_t>(numEnvs_));
+        completedScratchValid_.assign(static_cast<size_t>(numEnvs_), uint8_t{0});
+        completedQueue_.resize(std::max<size_t>(1024, static_cast<size_t>(numEnvs_) * 8));
         liveVisibleActionHistories_.assign(
             static_cast<size_t>(numEnvs_),
             VisibleActionHistories(static_cast<size_t>(playerCount_)));
@@ -6128,7 +6152,9 @@ public:
             static_cast<size_t>(numEnvs_) * static_cast<size_t>(playerCount_) *
             tileCount() * kMapTokenFeatureCount);
         for (int i = 0; i < numEnvs_; ++i) {
-            envs_.emplace_back(mapSize_, tribes_, seedFor(static_cast<size_t>(i)), unitsJsonPath_, mapType_);
+            const uint32_t mapSeed = seedFor(static_cast<size_t>(i));
+            envs_.emplace_back(mapSize_, tribes_, mapSeed, unitsJsonPath_, mapType_);
+            mapSeeds_[static_cast<size_t>(i)] = envs_.back().worldSeed();
             beginEpisode(static_cast<size_t>(i));
             advanceState(static_cast<size_t>(i));
         }
@@ -6156,7 +6182,11 @@ public:
     // Reset all authoritative games and return only their current players'
     // observations. state_id is an opaque, per-slot position token required
     // by submit_beliefs(), preventing late model completions from being used.
-    py::dict reset(std::optional<uint32_t> seed = std::nullopt) {
+    py::dict reset(std::optional<uint32_t> seed = std::nullopt,
+                   py::object seeds = py::none(),
+                   py::object agentIds = py::none()) {
+        const ResetInputs inputs = parseResetInputs(
+            std::move(seeds), std::move(agentIds), static_cast<size_t>(numEnvs_), seed.has_value());
         BeliefRequestBatch out(static_cast<size_t>(numEnvs_), tileCount(), static_cast<size_t>(maxActions_),
                                playerCount_, static_cast<size_t>(visibleActionHistory_));
         {
@@ -6166,11 +6196,16 @@ public:
                 baseSeed_ = *seed;
                 std::fill(resetCounts_.begin(), resetCounts_.end(), 0);
             }
+            if (inputs.hasAgentIds) {
+                agentAssignments_ = inputs.agentIds;
+            } else {
+                std::fill(agentAssignments_.begin(), agentAssignments_.end(), int32_t{0});
+            }
             // Invalidate Python-visible search handles before any live slot
             // changes, including the unlikely case that reset encoding throws.
             searchActive_ = false;
             for (size_t i = 0; i < envs_.size(); ++i) {
-                resetOne(i);
+                resetOne(i, inputs.hasSeeds ? std::optional<uint32_t>(inputs.seeds[i]) : std::nullopt);
                 beginEpisode(i);
                 advanceState(i);
             }
@@ -6185,7 +6220,12 @@ public:
     // Caller-owned equivalent of reset(). The external model may supply NumPy
     // views of its pinned host tensors, but this class remains unaware of any
     // CUDA stream/event lifetime after the synchronous write returns.
-    void resetInto(const py::dict& buffers, std::optional<uint32_t> seed = std::nullopt) {
+    void resetInto(const py::dict& buffers,
+                   std::optional<uint32_t> seed = std::nullopt,
+                   py::object seeds = py::none(),
+                   py::object agentIds = py::none()) {
+        const ResetInputs inputs = parseResetInputs(
+            std::move(seeds), std::move(agentIds), static_cast<size_t>(numEnvs_), seed.has_value());
         BeliefRequestBatch out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
                                static_cast<size_t>(maxActions_), playerCount_,
                                static_cast<size_t>(visibleActionHistory_));
@@ -6196,9 +6236,14 @@ public:
                 baseSeed_ = *seed;
                 std::fill(resetCounts_.begin(), resetCounts_.end(), 0);
             }
+            if (inputs.hasAgentIds) {
+                agentAssignments_ = inputs.agentIds;
+            } else {
+                std::fill(agentAssignments_.begin(), agentAssignments_.end(), int32_t{0});
+            }
             searchActive_ = false;
             for (size_t i = 0; i < envs_.size(); ++i) {
-                resetOne(i);
+                resetOne(i, inputs.hasSeeds ? std::optional<uint32_t>(inputs.seeds[i]) : std::nullopt);
                 beginEpisode(i);
                 advanceState(i);
             }
@@ -6210,33 +6255,57 @@ public:
     // Discard only belief-incompatible live slots without exposing their
     // source maps. This is the recovery path for a training sampler that
     // exhausted its public-action rejection budget for one environment.
-    void resetSlots(py::array envIds) {
-        auto ids = py::array_t<int32_t, py::array::c_style>::ensure(envIds);
-        if (!ids || ids.ndim() != 1) {
-            throw std::invalid_argument("env_ids must be a contiguous one-dimensional int32 array");
-        }
-        const int32_t* data = ids.data();
-        const size_t count = static_cast<size_t>(ids.shape(0));
+    void resetSlots(py::array envIds,
+                    py::object seeds = py::none(),
+                    py::object agentIds = py::none()) {
+        const std::vector<int32_t> ids = parseEnvIds(envIds);
+        const ResetInputs inputs = parseResetInputs(
+            std::move(seeds), std::move(agentIds), ids.size(), false);
         {
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
-            if (searchActive_) {
-                throw std::logic_error("cannot reset individual SelfPlayPool slots while MCTS is active");
-            }
             std::vector<uint8_t> seen(envs_.size(), 0);
-            for (size_t row = 0; row < count; ++row) {
-                const int32_t id = data[row];
-                if (id < 0 || static_cast<size_t>(id) >= envs_.size()) {
-                    throw std::invalid_argument("env_ids contains an invalid SelfPlayPool slot");
-                }
+            searchActive_ = false;
+            for (size_t row = 0; row < ids.size(); ++row) {
+                const int32_t id = ids[row];
                 const size_t index = static_cast<size_t>(id);
                 if (seen[index]) continue;
                 seen[index] = 1;
-                resetOne(index);
+                if (inputs.hasAgentIds) setAgentAssignment(index, inputs.agentIds.data() + row * playerCount_);
+                resetOne(index, inputs.hasSeeds ? std::optional<uint32_t>(inputs.seeds[row]) : std::nullopt);
                 beginEpisode(index);
                 advanceState(index);
             }
             mcts_->replaceRoots(makeDormantRoots());
+        }
+    }
+
+    void resetSlotsInto(py::array envIds,
+                        py::object seeds,
+                        py::object agentIds,
+                        const py::dict& buffers) {
+        const std::vector<int32_t> ids = parseEnvIds(envIds);
+        const ResetInputs inputs = parseResetInputs(
+            std::move(seeds), std::move(agentIds), ids.size(), false);
+        BeliefRequestBatch out(buffers, static_cast<size_t>(numEnvs_), tileCount(),
+                               static_cast<size_t>(maxActions_), playerCount_,
+                               static_cast<size_t>(visibleActionHistory_));
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            std::vector<uint8_t> seen(envs_.size(), 0);
+            searchActive_ = false;
+            for (size_t row = 0; row < ids.size(); ++row) {
+                const size_t index = static_cast<size_t>(ids[row]);
+                if (seen[index]) continue;
+                seen[index] = 1;
+                if (inputs.hasAgentIds) setAgentAssignment(index, inputs.agentIds.data() + row * playerCount_);
+                resetOne(index, inputs.hasSeeds ? std::optional<uint32_t>(inputs.seeds[row]) : std::nullopt);
+                beginEpisode(index);
+                advanceState(index);
+            }
+            mcts_->replaceRoots(makeDormantRoots());
+            writeBeliefRequests(out, nullptr, false);
         }
     }
 
@@ -6281,6 +6350,8 @@ public:
         py::array_t<int32_t> envId({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<int32_t> beliefPlayer({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<int32_t> toPlay({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
+        py::array_t<int32_t> agentId({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
+        py::array_t<uint32_t> mapSeed({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<uint64_t> stateId({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<uint64_t> episodeId({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<int32_t> history({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players),
@@ -6295,7 +6366,7 @@ public:
             std::lock_guard lock(apiMutex_);
             writeAllPlayerBeliefRequests(
                 mapTokens.mutable_data(), state.mutable_data(), envId.mutable_data(), beliefPlayer.mutable_data(),
-                toPlay.mutable_data(),
+                toPlay.mutable_data(), agentId.mutable_data(), mapSeed.mutable_data(),
                 stateId.mutable_data(), episodeId.mutable_data(), history.mutable_data(), historyMask.mutable_data(),
                 historyLength.mutable_data());
         }
@@ -6306,6 +6377,8 @@ public:
         out["env_id"] = std::move(envId);
         out["belief_player"] = std::move(beliefPlayer);
         out["to_play"] = std::move(toPlay);
+        out["agent_id"] = std::move(agentId);
+        out["map_seed"] = std::move(mapSeed);
         out["state_id"] = std::move(stateId);
         out["episode_id"] = std::move(episodeId);
         out["visible_action_history"] = std::move(history);
@@ -6326,6 +6399,8 @@ public:
         auto envId = requireWritableBatchArray<int32_t>(buffers, "env_id", {envs, players});
         auto beliefPlayer = requireWritableBatchArray<int32_t>(buffers, "belief_player", {envs, players});
         auto toPlay = requireWritableBatchArray<int32_t>(buffers, "to_play", {envs, players});
+        auto agentId = requireWritableBatchArray<int32_t>(buffers, "agent_id", {envs, players});
+        auto mapSeed = requireWritableBatchArray<uint32_t>(buffers, "map_seed", {envs, players});
         auto stateId = requireWritableBatchArray<uint64_t>(buffers, "state_id", {envs, players});
         auto episodeId = requireWritableBatchArray<uint64_t>(buffers, "episode_id", {envs, players});
         auto visibleActionHistory = requireWritableBatchArray<int32_t>(
@@ -6334,9 +6409,10 @@ public:
             buffers, "visible_action_history_mask", {envs, players, history});
         auto visibleActionHistoryLength = requireWritableBatchArray<int32_t>(
             buffers, "visible_action_history_length", {envs, players});
-        const std::array<std::pair<const char*, const py::array*>, 10> arrays{{
+        const std::array<std::pair<const char*, const py::array*>, 12> arrays{{
             {"map_tokens", &mapTokens}, {"state", &state}, {"env_id", &envId},
             {"belief_player", &beliefPlayer}, {"to_play", &toPlay},
+            {"agent_id", &agentId}, {"map_seed", &mapSeed},
             {"state_id", &stateId}, {"episode_id", &episodeId},
             {"visible_action_history", &visibleActionHistory},
             {"visible_action_history_mask", &visibleActionHistoryMask},
@@ -6348,7 +6424,7 @@ public:
             std::lock_guard lock(apiMutex_);
             writeAllPlayerBeliefRequests(
                 mapTokens.mutable_data(), state.mutable_data(), envId.mutable_data(), beliefPlayer.mutable_data(),
-                toPlay.mutable_data(),
+                toPlay.mutable_data(), agentId.mutable_data(), mapSeed.mutable_data(),
                 stateId.mutable_data(), episodeId.mutable_data(), visibleActionHistory.mutable_data(),
                 visibleActionHistoryMask.mutable_data(), visibleActionHistoryLength.mutable_data());
         }
@@ -6371,6 +6447,8 @@ public:
         add("env_id", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
         add("belief_player", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
         add("to_play", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
+        add("agent_id", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
+        add("map_seed", py::dtype::of<uint32_t>(), py::make_tuple(envs, players));
         add("state_id", py::dtype::of<uint64_t>(), py::make_tuple(envs, players));
         add("episode_id", py::dtype::of<uint64_t>(), py::make_tuple(envs, players));
         add("visible_action_history", py::dtype::of<int32_t>(),
@@ -6955,6 +7033,8 @@ public:
             out[name] = std::move(field);
         };
         add("env_id", py::dtype::of<int32_t>());
+        add("agent_id", py::dtype::of<int32_t>());
+        add("map_seed", py::dtype::of<uint32_t>());
         add("state_id", py::dtype::of<uint64_t>());
         add("episode_id", py::dtype::of<uint64_t>());
         addShape("visible_action_history", py::dtype::of<int32_t>(),
@@ -6978,6 +7058,8 @@ public:
             out[name] = std::move(field);
         };
         add("env_id", py::dtype::of<int32_t>());
+        add("agent_id", py::dtype::of<int32_t>());
+        add("map_seed", py::dtype::of<uint32_t>());
         add("state_id", py::dtype::of<uint64_t>());
         add("episode_id", py::dtype::of<uint64_t>());
         return out;
@@ -7171,6 +7253,8 @@ public:
         add("terminal_values", py::dtype::of<float>(), py::make_tuple(batch, players));
         add("env_id", py::dtype::of<int32_t>(), py::make_tuple(batch));
         add("to_play", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("agent_id", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("map_seed", py::dtype::of<uint32_t>(), py::make_tuple(batch));
         add("state_id", py::dtype::of<uint64_t>(), py::make_tuple(batch));
         add("episode_id", py::dtype::of<uint64_t>(), py::make_tuple(batch));
         add("visible_action_history", py::dtype::of<int32_t>(),
@@ -7179,6 +7263,59 @@ public:
             py::make_tuple(batch, visibleActionHistory_));
         add("visible_action_history_length", py::dtype::of<int32_t>(), py::make_tuple(batch));
         return out;
+    }
+
+    py::dict completedBatchSpec(int maxRecords = 0) const {
+        if (maxRecords < 0) throw std::invalid_argument("max_records must be non-negative");
+        const py::ssize_t rows = static_cast<py::ssize_t>(
+            maxRecords == 0 ? static_cast<size_t>(numEnvs_) : static_cast<size_t>(maxRecords));
+        const py::ssize_t players = static_cast<py::ssize_t>(playerCount_);
+        py::dict out;
+        const auto add = [&](const char* name, const py::dtype& dtype, py::tuple shape) {
+            py::dict field;
+            field["dtype"] = dtype;
+            field["shape"] = std::move(shape);
+            out[name] = std::move(field);
+        };
+        add("env_id", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("episode_id", py::dtype::of<uint64_t>(), py::make_tuple(rows));
+        add("map_seed", py::dtype::of<uint32_t>(), py::make_tuple(rows));
+        add("agent_id", py::dtype::of<int32_t>(), py::make_tuple(rows, players));
+        add("winner_player", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("terminal_values", py::dtype::of<float>(), py::make_tuple(rows, players));
+        add("moves", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("truncated", py::dtype::of<uint8_t>(), py::make_tuple(rows));
+        return out;
+    }
+
+    py::dict drainCompleted(int maxRecords = 0) {
+        if (maxRecords < 0) throw std::invalid_argument("max_records must be non-negative");
+        std::lock_guard lock(apiMutex_);
+        const size_t capacity = maxRecords == 0
+            ? completedQueueSize_
+            : std::min(completedQueueSize_, static_cast<size_t>(maxRecords));
+        CompletedBatch out(capacity, playerCount_);
+        writeCompletedBatch(out, capacity);
+        return out.intoDict();
+    }
+
+    int drainCompletedInto(const py::dict& buffers, int maxRecords = 0) {
+        if (maxRecords < 0) throw std::invalid_argument("max_records must be non-negative");
+        const size_t capacity = maxRecords == 0
+            ? static_cast<size_t>(numEnvs_)
+            : static_cast<size_t>(maxRecords);
+        CompletedBatch out(buffers, capacity, playerCount_);
+        std::lock_guard lock(apiMutex_);
+        return static_cast<int>(writeCompletedBatch(out, capacity));
+    }
+
+    int completedCount() const {
+        std::lock_guard lock(apiMutex_);
+        return static_cast<int>(completedQueueSize_);
+    }
+
+    int completedQueueCapacity() const {
+        return static_cast<int>(completedQueue_.size());
     }
 
     int numEnvs() const { return numEnvs_; }
@@ -7244,16 +7381,172 @@ public:
     }
 
 private:
+    struct ResetInputs {
+        std::vector<uint32_t> seeds;
+        std::vector<int32_t> agentIds;
+        bool hasSeeds = false;
+        bool hasAgentIds = false;
+    };
+
+    ResetInputs parseResetInputs(py::object seeds,
+                                 py::object agentIds,
+                                 size_t rows,
+                                 bool hasLegacySeed) const {
+        ResetInputs out;
+        if (!seeds.is_none()) {
+            if (hasLegacySeed) {
+                throw std::invalid_argument("seed and seeds are mutually exclusive");
+            }
+            auto array = py::array_t<uint32_t, py::array::c_style | py::array::forcecast>::ensure(seeds);
+            if (!array || array.ndim() != 1 || static_cast<size_t>(array.shape(0)) != rows) {
+                throw std::invalid_argument("seeds must be a one-dimensional uint32-compatible array with one entry per reset row");
+            }
+            out.seeds.assign(array.data(), array.data() + rows);
+            out.hasSeeds = true;
+        }
+        if (!agentIds.is_none()) {
+            auto array = py::array_t<int32_t, py::array::c_style | py::array::forcecast>::ensure(agentIds);
+            if (!array || array.ndim() != 2 || static_cast<size_t>(array.shape(0)) != rows ||
+                array.shape(1) != playerCount_) {
+                throw std::invalid_argument(
+                    "agent_ids must be a contiguous int32-compatible array with shape [reset_rows, player_count]");
+            }
+            const size_t count = rows * static_cast<size_t>(playerCount_);
+            out.agentIds.assign(array.data(), array.data() + count);
+            if (std::any_of(out.agentIds.begin(), out.agentIds.end(), [](int32_t id) { return id < 0; })) {
+                throw std::invalid_argument("agent_ids must be non-negative logical model identifiers");
+            }
+            out.hasAgentIds = true;
+        }
+        return out;
+    }
+
+    std::vector<int32_t> parseEnvIds(py::array envIds) const {
+        auto ids = py::array_t<int32_t, py::array::c_style | py::array::forcecast>::ensure(envIds);
+        if (!ids || ids.ndim() != 1) {
+            throw std::invalid_argument("env_ids must be a contiguous one-dimensional int32-compatible array");
+        }
+        std::vector<int32_t> out(ids.data(), ids.data() + ids.shape(0));
+        for (const int32_t id : out) {
+            if (id < 0 || static_cast<size_t>(id) >= envs_.size()) {
+                throw std::invalid_argument("env_ids contains an invalid SelfPlayPool slot");
+            }
+        }
+        return out;
+    }
+
+    void setAgentAssignment(size_t envIndex, const int32_t* ids) {
+        polyenv::selfplay::setAssignment(
+            agentAssignments_, envIndex, ids, static_cast<size_t>(playerCount_));
+    }
+
+    int32_t agentFor(size_t envIndex, int player) const {
+        return polyenv::selfplay::agentFor(
+            agentAssignments_, envIndex, player, static_cast<size_t>(playerCount_));
+    }
+
+    struct CompletedBatch {
+        CompletedBatch(size_t rows, int playerCount)
+            : envId(static_cast<py::ssize_t>(rows))
+            , episodeId(static_cast<py::ssize_t>(rows))
+            , mapSeed(static_cast<py::ssize_t>(rows))
+            , agentId({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(playerCount)})
+            , winnerPlayer(static_cast<py::ssize_t>(rows))
+            , terminalValues({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(playerCount)})
+            , moves(static_cast<py::ssize_t>(rows))
+            , truncated(static_cast<py::ssize_t>(rows)) {}
+
+        CompletedBatch(const py::dict& buffers, size_t rows, int playerCount)
+            : envId(requireWritableBatchArray<int32_t>(buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
+            , episodeId(requireWritableBatchArray<uint64_t>(buffers, "episode_id", {static_cast<py::ssize_t>(rows)}))
+            , mapSeed(requireWritableBatchArray<uint32_t>(buffers, "map_seed", {static_cast<py::ssize_t>(rows)}))
+            , agentId(requireWritableBatchArray<int32_t>(
+                buffers, "agent_id", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(playerCount)}))
+            , winnerPlayer(requireWritableBatchArray<int32_t>(
+                buffers, "winner_player", {static_cast<py::ssize_t>(rows)}))
+            , terminalValues(requireWritableBatchArray<float>(
+                buffers, "terminal_values", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(playerCount)}))
+            , moves(requireWritableBatchArray<int32_t>(buffers, "moves", {static_cast<py::ssize_t>(rows)}))
+            , truncated(requireWritableBatchArray<uint8_t>(buffers, "truncated", {static_cast<py::ssize_t>(rows)}))
+        {
+            const std::array<std::pair<const char*, const py::array*>, 8> arrays{{
+                {"env_id", &envId}, {"episode_id", &episodeId}, {"map_seed", &mapSeed},
+                {"agent_id", &agentId}, {"winner_player", &winnerPlayer},
+                {"terminal_values", &terminalValues}, {"moves", &moves}, {"truncated", &truncated},
+            }};
+            validateNonOverlappingBatchStorage(arrays);
+        }
+
+        py::dict intoDict() {
+            py::dict out;
+            out["env_id"] = std::move(envId);
+            out["episode_id"] = std::move(episodeId);
+            out["map_seed"] = std::move(mapSeed);
+            out["agent_id"] = std::move(agentId);
+            out["winner_player"] = std::move(winnerPlayer);
+            out["terminal_values"] = std::move(terminalValues);
+            out["moves"] = std::move(moves);
+            out["truncated"] = std::move(truncated);
+            return out;
+        }
+
+        py::array_t<int32_t> envId;
+        py::array_t<uint64_t> episodeId;
+        py::array_t<uint32_t> mapSeed;
+        py::array_t<int32_t> agentId;
+        py::array_t<int32_t> winnerPlayer;
+        py::array_t<float> terminalValues;
+        py::array_t<int32_t> moves;
+        py::array_t<uint8_t> truncated;
+    };
+
+    void enqueueCompleted(const CompletedSelfPlayEpisode& record) {
+        if (completedQueueSize_ == completedQueue_.size()) {
+            throw std::overflow_error(
+                "SelfPlayPool completed episode queue is full; drain_completed_into() more frequently");
+        }
+        const size_t tail = (completedQueueHead_ + completedQueueSize_) % completedQueue_.size();
+        completedQueue_[tail] = record;
+        ++completedQueueSize_;
+    }
+
+    size_t writeCompletedBatch(CompletedBatch& out, size_t capacity) {
+        const size_t count = std::min(capacity, completedQueueSize_);
+        for (size_t row = 0; row < count; ++row) {
+            const CompletedSelfPlayEpisode& record =
+                completedQueue_[(completedQueueHead_ + row) % completedQueue_.size()];
+            out.envId.mutable_data()[row] = record.envId;
+            out.episodeId.mutable_data()[row] = record.episodeId;
+            out.mapSeed.mutable_data()[row] = record.mapSeed;
+            out.winnerPlayer.mutable_data()[row] = record.winnerPlayer;
+            out.moves.mutable_data()[row] = record.moves;
+            out.truncated.mutable_data()[row] = record.truncated;
+            std::copy_n(record.agentIds.data(), static_cast<size_t>(playerCount_),
+                        out.agentId.mutable_data() + row * static_cast<size_t>(playerCount_));
+            std::copy_n(record.terminalValues.data(), static_cast<size_t>(playerCount_),
+                        out.terminalValues.mutable_data() + row * static_cast<size_t>(playerCount_));
+        }
+        completedQueueHead_ = (completedQueueHead_ + count) % completedQueue_.size();
+        completedQueueSize_ -= count;
+        return count;
+    }
+
     struct LeafPositionBatch {
         LeafPositionBatch(const py::dict& buffers, size_t rows)
             : envId(requireWritableBatchArray<int32_t>(
                 buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
+            , agentId(requireWritableBatchArray<int32_t>(
+                buffers, "agent_id", {static_cast<py::ssize_t>(rows)}))
+            , mapSeed(requireWritableBatchArray<uint32_t>(
+                buffers, "map_seed", {static_cast<py::ssize_t>(rows)}))
             , stateId(requireWritableBatchArray<uint64_t>(
                 buffers, "state_id", {static_cast<py::ssize_t>(rows)}))
             , episodeId(requireWritableBatchArray<uint64_t>(
                 buffers, "episode_id", {static_cast<py::ssize_t>(rows)})) {}
 
         py::array_t<int32_t> envId;
+        py::array_t<int32_t> agentId;
+        py::array_t<uint32_t> mapSeed;
         py::array_t<uint64_t> stateId;
         py::array_t<uint64_t> episodeId;
     };
@@ -7262,12 +7555,18 @@ private:
         RootPositionBatch(const py::dict& buffers, size_t rows)
             : envId(requireWritableBatchArray<int32_t>(
                 buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
+            , agentId(requireWritableBatchArray<int32_t>(
+                buffers, "agent_id", {static_cast<py::ssize_t>(rows)}))
+            , mapSeed(requireWritableBatchArray<uint32_t>(
+                buffers, "map_seed", {static_cast<py::ssize_t>(rows)}))
             , stateId(requireWritableBatchArray<uint64_t>(
                 buffers, "state_id", {static_cast<py::ssize_t>(rows)}))
             , episodeId(requireWritableBatchArray<uint64_t>(
                 buffers, "episode_id", {static_cast<py::ssize_t>(rows)})) {}
 
         py::array_t<int32_t> envId;
+        py::array_t<int32_t> agentId;
+        py::array_t<uint32_t> mapSeed;
         py::array_t<uint64_t> stateId;
         py::array_t<uint64_t> episodeId;
     };
@@ -7325,6 +7624,8 @@ private:
             , terminalValues({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(playerCount)})
             , envId(static_cast<py::ssize_t>(rows))
             , toPlay(static_cast<py::ssize_t>(rows))
+            , agentId(static_cast<py::ssize_t>(rows))
+            , mapSeed(static_cast<py::ssize_t>(rows))
             , stateId(static_cast<py::ssize_t>(rows))
             , episodeId(static_cast<py::ssize_t>(rows))
             , visibleActionHistory({static_cast<py::ssize_t>(rows),
@@ -7373,6 +7674,10 @@ private:
                 buffers, "env_id", {static_cast<py::ssize_t>(rows)}))
             , toPlay(requireWritableBatchArray<int32_t>(
                 buffers, "to_play", {static_cast<py::ssize_t>(rows)}))
+            , agentId(requireWritableBatchArray<int32_t>(
+                buffers, "agent_id", {static_cast<py::ssize_t>(rows)}))
+            , mapSeed(requireWritableBatchArray<uint32_t>(
+                buffers, "map_seed", {static_cast<py::ssize_t>(rows)}))
             , stateId(requireWritableBatchArray<uint64_t>(
                 buffers, "state_id", {static_cast<py::ssize_t>(rows)}))
             , episodeId(requireWritableBatchArray<uint64_t>(
@@ -7387,7 +7692,7 @@ private:
             , visibleActionHistoryLength(requireWritableBatchArray<int32_t>(
                 buffers, "visible_action_history_length", {static_cast<py::ssize_t>(rows)}))
         {
-            const std::array<std::pair<const char*, const py::array*>, 21> arrays{{
+            const std::array<std::pair<const char*, const py::array*>, 23> arrays{{
                 {"map_tokens", &mapTokens},
                 {"state", &state},
                 {"action_id", &actionIds},
@@ -7404,6 +7709,8 @@ private:
                 {"terminal_values", &terminalValues},
                 {"env_id", &envId},
                 {"to_play", &toPlay},
+                {"agent_id", &agentId},
+                {"map_seed", &mapSeed},
                 {"state_id", &stateId},
                 {"episode_id", &episodeId},
                 {"visible_action_history", &visibleActionHistory},
@@ -7431,6 +7738,8 @@ private:
             out["terminal_values"] = std::move(terminalValues);
             out["env_id"] = std::move(envId);
             out["to_play"] = std::move(toPlay);
+            out["agent_id"] = std::move(agentId);
+            out["map_seed"] = std::move(mapSeed);
             out["state_id"] = std::move(stateId);
             out["episode_id"] = std::move(episodeId);
             out["visible_action_history"] = std::move(visibleActionHistory);
@@ -7455,6 +7764,8 @@ private:
         py::array_t<float> terminalValues;
         py::array_t<int32_t> envId;
         py::array_t<int32_t> toPlay;
+        py::array_t<int32_t> agentId;
+        py::array_t<uint32_t> mapSeed;
         py::array_t<uint64_t> stateId;
         py::array_t<uint64_t> episodeId;
         py::array_t<int32_t> visibleActionHistory;
@@ -7467,7 +7778,7 @@ private:
         const LeafPositionBatch& position,
         const VisibleActionHistoryBatch& history)
     {
-        const std::array<std::pair<const char*, const py::array*>, 19> arrays{{
+        const std::array<std::pair<const char*, const py::array*>, 21> arrays{{
             {"map_tokens", &leaf.mapTokens},
             {"state", &leaf.state},
             {"action_id", &leaf.actionIds},
@@ -7482,6 +7793,8 @@ private:
             {"to_play", &leaf.toPlay},
             {"player_count", &leaf.playerCount},
             {"env_id", &position.envId},
+            {"agent_id", &position.agentId},
+            {"map_seed", &position.mapSeed},
             {"state_id", &position.stateId},
             {"episode_id", &position.episodeId},
             {"visible_action_history", &history.features},
@@ -7495,7 +7808,7 @@ private:
         const MctsPool::RootBatch& root,
         const RootPositionBatch& position)
     {
-        const std::array<std::pair<const char*, const py::array*>, 13> arrays{{
+        const std::array<std::pair<const char*, const py::array*>, 15> arrays{{
             {"action_id", &root.actionIds},
             {"action_mask", &root.actionMask},
             {"visit_count", &root.visitCounts},
@@ -7507,6 +7820,8 @@ private:
             {"total_legal_action_count", &root.totalLegalActionCount},
             {"action_truncated", &root.actionTruncated},
             {"env_id", &position.envId},
+            {"agent_id", &position.agentId},
+            {"map_seed", &position.mapSeed},
             {"state_id", &position.stateId},
             {"episode_id", &position.episodeId},
         }};
@@ -7519,7 +7834,10 @@ private:
         size_t rows) const
     {
         const int32_t* treeData = leaf.treeId.data();
+        const int32_t* toPlayData = leaf.toPlay.data();
         int32_t* envData = position.envId.mutable_data();
+        int32_t* agentData = position.agentId.mutable_data();
+        uint32_t* mapSeedData = position.mapSeed.mutable_data();
         uint64_t* stateData = position.stateId.mutable_data();
         uint64_t* episodeData = position.episodeId.mutable_data();
         for (size_t row = 0; row < rows; ++row) {
@@ -7529,6 +7847,8 @@ private:
             }
             const size_t env = static_cast<size_t>(tree);
             envData[row] = tree;
+            agentData[row] = agentFor(env, toPlayData[row]);
+            mapSeedData[row] = mapSeeds_[env];
             stateData[row] = stateIds_[env];
             episodeData[row] = episodeIds_[env];
         }
@@ -7536,10 +7856,14 @@ private:
 
     void attachRootPositionMetadata(RootPositionBatch& position) const {
         int32_t* envData = position.envId.mutable_data();
+        int32_t* agentData = position.agentId.mutable_data();
+        uint32_t* mapSeedData = position.mapSeed.mutable_data();
         uint64_t* stateData = position.stateId.mutable_data();
         uint64_t* episodeData = position.episodeId.mutable_data();
         for (size_t i = 0; i < envs_.size(); ++i) {
             envData[i] = static_cast<int32_t>(i);
+            agentData[i] = agentFor(i, envs_[i].currentPlayerNative());
+            mapSeedData[i] = mapSeeds_[i];
             stateData[i] = stateIds_[i];
             episodeData[i] = episodeIds_[i];
         }
@@ -7591,8 +7915,11 @@ private:
         stateIds_[envIndex] = composeSlotId(stateGenerations_[envIndex], envIndex, "state");
     }
 
-    void resetOne(size_t envIndex) {
-        envs_[envIndex].resetNative(seedFor(envIndex));
+    void resetOne(size_t envIndex, std::optional<uint32_t> explicitSeed = std::nullopt) {
+        const uint32_t mapSeed = explicitSeed.value_or(seedFor(envIndex));
+        envs_[envIndex].resetNative(mapSeed);
+        mapSeeds_[envIndex] = envs_[envIndex].worldSeed();
+        stopped_[envIndex] = 0;
         ++resetCounts_[envIndex];
         std::fill(liveVisibleActionHistories_[envIndex].begin(),
                   liveVisibleActionHistories_[envIndex].end(),
@@ -7648,6 +7975,8 @@ private:
                                       int32_t* envId,
                                       int32_t* beliefPlayer,
                                       int32_t* toPlay,
+                                      int32_t* agentId,
+                                      uint32_t* mapSeed,
                                       uint64_t* stateId,
                                       uint64_t* episodeId,
                                       int32_t* history,
@@ -7670,6 +7999,8 @@ private:
                     envId[row] = static_cast<int32_t>(env);
                     beliefPlayer[row] = static_cast<int32_t>(player);
                     toPlay[row] = static_cast<int32_t>(envs_[env].currentPlayerNative());
+                    agentId[row] = agentFor(env, static_cast<int>(player));
+                    mapSeed[row] = mapSeeds_[env];
                     stateId[row] = stateIds_[env];
                     episodeId[row] = episodeIds_[env];
                     const VisibleActionHistory& source = liveVisibleActionHistories_[env][player];
@@ -7731,37 +8062,60 @@ private:
         float* terminalValuesData = out.terminalValues.mutable_data();
         int32_t* envIdData = out.envId.mutable_data();
         int32_t* toPlayData = out.toPlay.mutable_data();
+        int32_t* agentIdData = out.agentId.mutable_data();
+        uint32_t* mapSeedData = out.mapSeed.mutable_data();
         uint64_t* stateIdData = out.stateId.mutable_data();
         uint64_t* episodeIdData = out.episodeId.mutable_data();
         int32_t* historyData = out.visibleActionHistory.mutable_data();
         uint8_t* historyMaskData = out.visibleActionHistoryMask.mutable_data();
         int32_t* historyLengthData = out.visibleActionHistoryLength.mutable_data();
         const size_t historyLength = static_cast<size_t>(visibleActionHistory_);
+        if (advance) {
+            std::fill(completedScratchValid_.begin(), completedScratchValid_.end(), uint8_t{0});
+        }
 
         pool_.parallelFor(rows, [&](size_t begin, size_t end) {
             for (size_t i = begin; i < end; ++i) {
                 if (advance) {
-                    const int32_t actionId = actions[i];
-                    const NativeStepResult result = actionId >= 0
-                        ? envs_[i].stepNative(static_cast<size_t>(actionId))
-                        : NativeStepResult{};
-                    actionValidData[i] = result.ok ? 1 : 0;
-                    rewardData[i] = result.reward;
-                    terminatedData[i] = result.done ? 1 : 0;
-                    winnerData[i] = result.winner;
-                    if (result.done) {
-                        writeTerminalValues(
-                            terminalValuesData + i * static_cast<size_t>(playerCount_),
-                            result.winner);
-                    }
-                    if (result.ok) {
-                        if (result.done && autoReset_) {
-                            resetOne(i);
-                            beginEpisode(i);
-                        } else {
-                            appendLiveVisibleActionHistories(i, result.actionSequence);
+                    if (stopped_[i]) {
+                        terminatedData[i] = 1;
+                    } else {
+                        const int32_t actionId = actions[i];
+                        const NativeStepResult result = actionId >= 0
+                            ? envs_[i].stepNative(static_cast<size_t>(actionId))
+                            : NativeStepResult{};
+                        actionValidData[i] = result.ok ? 1 : 0;
+                        rewardData[i] = result.reward;
+                        terminatedData[i] = result.done ? 1 : 0;
+                        winnerData[i] = result.winner;
+                        if (result.done) {
+                            float* values = terminalValuesData + i * static_cast<size_t>(playerCount_);
+                            writeTerminalValues(values, result.winner);
+                            CompletedSelfPlayEpisode& completed = completedScratch_[i];
+                            completed.envId = static_cast<int32_t>(i);
+                            completed.episodeId = episodeIds_[i];
+                            completed.mapSeed = mapSeeds_[i];
+                            completed.winnerPlayer = result.winner;
+                            const size_t moveCount = envs_[i].replayActionCountNative();
+                            completed.moves = static_cast<int32_t>(std::min<size_t>(
+                                moveCount, static_cast<size_t>(std::numeric_limits<int32_t>::max())));
+                            completed.truncated = 0;
+                            for (int player = 0; player < playerCount_; ++player) {
+                                completed.agentIds[static_cast<size_t>(player)] = agentFor(i, player);
+                                completed.terminalValues[static_cast<size_t>(player)] = values[player];
+                            }
+                            completedScratchValid_[i] = 1;
                         }
-                        advanceState(i);
+                        if (result.ok) {
+                            if (result.done && autoReset_) {
+                                resetOne(i);
+                                beginEpisode(i);
+                            } else {
+                                appendLiveVisibleActionHistories(i, result.actionSequence);
+                                if (result.done) stopped_[i] = 1;
+                            }
+                            advanceState(i);
+                        }
                     }
                 }
 
@@ -7783,6 +8137,8 @@ private:
                 }
                 envIdData[i] = static_cast<int32_t>(i);
                 toPlayData[i] = static_cast<int32_t>(envs_[i].currentPlayerNative());
+                agentIdData[i] = agentFor(i, toPlayData[i]);
+                mapSeedData[i] = mapSeeds_[i];
                 stateIdData[i] = stateIds_[i];
                 episodeIdData[i] = episodeIds_[i];
                 const int currentPlayer = toPlayData[i];
@@ -7804,6 +8160,12 @@ private:
             }
         });
 
+        if (advance) {
+            for (size_t i = 0; i < rows; ++i) {
+                if (completedScratchValid_[i]) enqueueCompleted(completedScratch_[i]);
+            }
+        }
+
     }
 
     void attachLeafPositionMetadata(py::dict& out) const {
@@ -7812,11 +8174,19 @@ private:
             throw std::logic_error("MCTS returned an invalid tree_id batch");
         }
         const size_t rows = static_cast<size_t>(treeIds.shape(0));
+        auto toPlay = py::array_t<int32_t, py::array::c_style>::ensure(out["to_play"]);
+        if (!toPlay || toPlay.ndim() != 1 || static_cast<size_t>(toPlay.shape(0)) != rows) {
+            throw std::logic_error("MCTS returned an invalid to_play batch");
+        }
         py::array_t<int32_t> envIds(static_cast<py::ssize_t>(rows));
+        py::array_t<int32_t> agentIds(static_cast<py::ssize_t>(rows));
+        py::array_t<uint32_t> mapSeeds(static_cast<py::ssize_t>(rows));
         py::array_t<uint64_t> stateIds(static_cast<py::ssize_t>(rows));
         py::array_t<uint64_t> episodeIds(static_cast<py::ssize_t>(rows));
         const int32_t* treeData = treeIds.data();
         int32_t* envData = envIds.mutable_data();
+        int32_t* agentData = agentIds.mutable_data();
+        uint32_t* mapSeedData = mapSeeds.mutable_data();
         uint64_t* stateData = stateIds.mutable_data();
         uint64_t* episodeData = episodeIds.mutable_data();
         for (size_t row = 0; row < rows; ++row) {
@@ -7824,27 +8194,39 @@ private:
             if (tree < 0 || tree >= numEnvs_) throw std::logic_error("MCTS returned an out-of-range tree id");
             const size_t env = static_cast<size_t>(tree);
             envData[row] = tree;
+            agentData[row] = agentFor(env, toPlay.data()[row]);
+            mapSeedData[row] = mapSeeds_[env];
             stateData[row] = stateIds_[env];
             episodeData[row] = episodeIds_[env];
         }
         out["env_id"] = std::move(envIds);
+        out["agent_id"] = std::move(agentIds);
+        out["map_seed"] = std::move(mapSeeds);
         out["state_id"] = std::move(stateIds);
         out["episode_id"] = std::move(episodeIds);
     }
 
     void attachRootPositionMetadata(py::dict& out) const {
         py::array_t<int32_t> envIds(static_cast<py::ssize_t>(envs_.size()));
+        py::array_t<int32_t> agentIds(static_cast<py::ssize_t>(envs_.size()));
+        py::array_t<uint32_t> mapSeeds(static_cast<py::ssize_t>(envs_.size()));
         py::array_t<uint64_t> stateIds(static_cast<py::ssize_t>(envs_.size()));
         py::array_t<uint64_t> episodeIds(static_cast<py::ssize_t>(envs_.size()));
         int32_t* envData = envIds.mutable_data();
+        int32_t* agentData = agentIds.mutable_data();
+        uint32_t* mapSeedData = mapSeeds.mutable_data();
         uint64_t* stateData = stateIds.mutable_data();
         uint64_t* episodeData = episodeIds.mutable_data();
         for (size_t i = 0; i < envs_.size(); ++i) {
             envData[i] = static_cast<int32_t>(i);
+            agentData[i] = agentFor(i, envs_[i].currentPlayerNative());
+            mapSeedData[i] = mapSeeds_[i];
             stateData[i] = stateIds_[i];
             episodeData[i] = episodeIds_[i];
         }
         out["env_id"] = std::move(envIds);
+        out["agent_id"] = std::move(agentIds);
+        out["map_seed"] = std::move(mapSeeds);
         out["state_id"] = std::move(stateIds);
         out["episode_id"] = std::move(episodeIds);
     }
@@ -7867,6 +8249,14 @@ private:
     std::vector<uint64_t> episodeGenerations_;
     std::vector<uint64_t> stateIds_;
     std::vector<uint64_t> episodeIds_;
+    std::vector<uint32_t> mapSeeds_;
+    std::vector<int32_t> agentAssignments_;
+    std::vector<uint8_t> stopped_;
+    std::vector<CompletedSelfPlayEpisode> completedScratch_;
+    std::vector<uint8_t> completedScratchValid_;
+    std::vector<CompletedSelfPlayEpisode> completedQueue_;
+    size_t completedQueueHead_ = 0;
+    size_t completedQueueSize_ = 0;
     std::vector<VisibleActionHistories> liveVisibleActionHistories_;
     std::vector<int32_t> beliefValidationScratch_;
     BatchThreadPool pool_;
@@ -8147,13 +8537,20 @@ PYBIND11_MODULE(_game_engine, m) {
              "Native model-agnostic self-play scheduler with full-legal-action safety and detached belief MCTS.")
         .def("reset", &SelfPlayPool::reset,
              py::arg("seed") = std::nullopt,
+             py::arg("seeds") = py::none(),
+             py::arg("agent_ids") = py::none(),
              "Reset live games and return dense player-view belief requests.")
         .def("reset_into", &SelfPlayPool::resetInto,
              py::arg("buffers"), py::arg("seed") = std::nullopt,
+             py::arg("seeds") = py::none(),
+             py::arg("agent_ids") = py::none(),
              "Reset live games and fill validated caller-owned belief buffers in place.")
         .def("reset_slots", &SelfPlayPool::resetSlots,
-             py::arg("env_ids"),
+             py::arg("env_ids"), py::arg("seeds") = py::none(), py::arg("agent_ids") = py::none(),
              "Reset selected inactive live slots after belief rejection without exposing source maps.")
+        .def("reset_slots_into", &SelfPlayPool::resetSlotsInto,
+             py::arg("env_ids"), py::arg("seeds"), py::arg("agent_ids"), py::arg("buffers"),
+             "Reset selected slots with explicit seeds/agents, invalidate old search ids, and fill current requests.")
         .def("belief_requests", &SelfPlayPool::beliefRequests,
              "Return current dense player-view inputs for an external belief model.")
         .def("belief_requests_into", &SelfPlayPool::beliefRequestsInto,
@@ -8228,6 +8625,15 @@ PYBIND11_MODULE(_game_engine, m) {
              "Return buffer requirements for SelfPlayPool.select_leaves_into().")
         .def("root_policy_spec", &SelfPlayPool::rootPolicySpec,
              "Return buffer requirements for SelfPlayPool.root_policy_into().")
+        .def("completed_batch_spec", &SelfPlayPool::completedBatchSpec,
+             py::arg("max_records") = 0,
+             "Return buffer requirements for drain_completed_into().")
+        .def("drain_completed", &SelfPlayPool::drainCompleted,
+             py::arg("max_records") = 0,
+             "Return and remove compact records for completed episodes.")
+        .def("drain_completed_into", &SelfPlayPool::drainCompletedInto,
+             py::arg("buffers"), py::arg("max_records") = 0,
+             "Fill a reusable completed-episode buffer and return its valid prefix length.")
         .def_property_readonly("num_envs", &SelfPlayPool::numEnvs)
         .def_property_readonly("num_threads", &SelfPlayPool::numThreads)
         .def_property_readonly("map_size", &SelfPlayPool::mapSize)
@@ -8241,6 +8647,8 @@ PYBIND11_MODULE(_game_engine, m) {
         .def_property_readonly("require_all_actions", &SelfPlayPool::requireAllActions)
         .def_property_readonly("search_active", &SelfPlayPool::searchActive)
         .def_property_readonly("pending_count", &SelfPlayPool::pendingCount)
+        .def_property_readonly("completed_count", &SelfPlayPool::completedCount)
+        .def_property_readonly("completed_queue_capacity", &SelfPlayPool::completedQueueCapacity)
         .def_property_readonly("max_pending_leaves_per_tree", &SelfPlayPool::maxPendingLeavesPerTree)
         .def_property_readonly("virtual_loss", &SelfPlayPool::virtualLoss)
         .def_property_readonly("max_nodes_per_tree", &SelfPlayPool::maxNodesPerTree)

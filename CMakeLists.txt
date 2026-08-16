@@ -21,6 +21,7 @@ endif()
 option(GAME_ENGINE_BUILD_APPS "Build CLI/GUI applications" ${_default_build_apps})
 option(GAME_ENGINE_BUILD_GUI "Build GUI application (requires SFML)" ${_default_build_gui})
 option(GAME_ENGINE_BUILD_PYTHON_BINDINGS "Build Python extension module" ${_default_build_python})
+option(GAME_ENGINE_BUILD_TESTS "Build native unit tests" OFF)
 # Keep this opt-in: a PDB is useful when diagnosing crashes on Windows, but it
 # can make the regular Python wheel substantially larger.
 option(GAME_ENGINE_INSTALL_PDB "Install Windows PDB symbols with the Python extension" OFF)
@@ -67,6 +68,7 @@ set(ENGINE_SOURCES
         src/runtime/GameSession.h
         src/runtime/BeliefWorldBuilder.cpp
         src/runtime/BeliefWorldBuilder.h
+        src/runtime/SelfPlayRouting.h
         src/replay/ReplayRecorder.cpp
         src/replay/ReplayRecorder.h
         src/ai/GameStateSerializer.cpp
@@ -191,6 +193,14 @@ target_include_directories(game_engine_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/content/buildings
         ${CMAKE_CURRENT_SOURCE_DIR}/src/content/settlements
 )
+
+if(GAME_ENGINE_BUILD_TESTS)
+    enable_testing()
+    add_executable(self_play_routing_tests tests/SelfPlayRoutingTests.cpp)
+    target_link_libraries(self_play_routing_tests PRIVATE game_engine_lib)
+    target_compile_features(self_play_routing_tests PRIVATE cxx_std_20)
+    add_test(NAME self_play_routing_tests COMMAND self_play_routing_tests)
+endif()
 
 if(GAME_ENGINE_BUILD_APPS)
     # ---- Console/core executable (uses main.cpp) ----

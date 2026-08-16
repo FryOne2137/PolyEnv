@@ -105,6 +105,53 @@ Calling `submit_beliefs()` with `[B, tiles, 23]` retains the legacy
 root-perspective determinization mode. Use the per-player form above for
 ISMCTS; it is the intended training path whenever fog of war matters.
 
+## Multiple Models And Explicit Episode Assignment
+
+`agent_id` is a logical model id, independent of `player_id`, tribe, and any
+framework runtime id. Assign one model to every `[environment, player]` when
+resetting a pool:
+
+```python
+seeds = np.array([7001, 7002, 7003, 7004], dtype=np.uint32)
+agent_ids = np.array(
+    [[0, 0], [0, 1], [0, 2], [0, 7]],  # candidate/self/champion/teacher/history
+    dtype=np.int32,
+)
+request = pool.reset(seeds=seeds, agent_ids=agent_ids)
+```
+
+The assignment is immutable until that slot is reset. Automatic reset keeps
+the slot's assignment; use `auto_reset=False` plus `reset_slots()` or
+`reset_slots_into()` to choose a new opponent for every episode. Omitting
+`agent_ids` from a full `reset()` assigns model `0` to every player, preserving
+legacy same-network self-play. A selective reset without `agent_ids` preserves
+the selected slots' current assignments.
+
+Belief rows carry the model belonging to `belief_player`. MCTS leaf rows carry
+the model belonging to that leaf's `to_play`, including after control changes
+inside a deeper simulation. Route inference by rows and restore the original
+order before submitting results:
+
+```python
+belief = pool.all_player_belief_requests()
+completed = np.empty((pool.num_envs, pool.player_count, tiles, 23), np.int32)
+for agent_id in np.unique(belief["agent_id"]):
+    rows = belief["agent_id"] == agent_id
+    completed[rows] = models[int(agent_id)].belief(belief, rows)
+
+pool.submit_beliefs(request["state_id"], completed)
+leaves = pool.select_leaves()
+logits = np.empty((len(leaves["leaf_id"]), pool.max_actions), np.float32)
+values = np.empty(len(leaves["leaf_id"]), np.float32)
+for agent_id in np.unique(leaves["agent_id"]):
+    rows = leaves["agent_id"] == agent_id
+    logits[rows], values[rows] = models[int(agent_id)].policy_value(leaves, rows)
+pool.expand_and_backup(leaves["leaf_id"], logits, values)
+```
+
+No model or framework is loaded in C++; one pool and one persistent worker set
+serve the entire mixed population.
+
 ## Public Observation And Belief Input
 
 `reset()`, `step()`, and `belief_requests()` return a dense batch with these
@@ -122,6 +169,8 @@ core model fields:
 | `total_legal_action_count` | `int32` | `[B]` | Total engine-generated legal actions |
 | `action_truncated` | `uint8` | `[B]` | Always `0` when `require_all_actions=True` |
 | `env_id` / `to_play` | `int32` | `[B]` | Live slot and current player |
+| `agent_id` | `int32` | `[B]` | Model assigned to `to_play` |
+| `map_seed` | `uint32` | `[B]` | Effective seed of the current episode |
 | `state_id` / `episode_id` | `uint64` | `[B]` | Opaque lifecycle ids |
 | `visible_action_history` | `int32` | `[B, H, 12]` | Right-aligned compact history observed by `to_play` |
 | `visible_action_history_mask` | `uint8` | `[B, H]` | `1` for a valid history row |
@@ -151,7 +200,8 @@ restores deterministic truncation plus `action_truncated=1`.
 
 `all_player_belief_requests()` returns a fog-safe packet with map/state/history
 shapes `[B, P, ...]`, plus `belief_player[B, P]` and the repeated live
-`to_play[B, P]`. It contains no action rows:
+`to_play[B, P]`. `agent_id[B, P]` belongs to `belief_player`, not the repeated
+`to_play`, so different models can own different belief heads. It contains no action rows:
 only `to_play` chooses an action in the live game, while MCTS leaf packets
 always contain the complete legal action list for the leaf actor. The external
 belief model expands this packet to either:
@@ -218,6 +268,8 @@ fields plus:
 | `leaf_id` | `uint64` | `[L]` | Handle passed to `expand_and_backup()` |
 | `tree_id` / `env_id` | `int32` | `[L]` | MCTS tree and live game slot |
 | `to_play` | `int32` | `[L]` | Actor at the selected MCTS leaf |
+| `agent_id` | `int32` | `[L]` | Model assigned to this leaf's `to_play` |
+| `map_seed` | `uint32` | `[L]` | Effective seed of the live root episode |
 | `player_count` | `int32` | `[L]` | Fixed `P`; determines the MCTS value tensor shape |
 | `total_legal_action_count` | `int32` | `[L]` | Leaf legal-action count before truncation |
 | `action_truncated` | `uint8` | `[L]` | `1` when the leaf action set exceeded `max_actions` |
@@ -249,13 +301,62 @@ moves and is unsuitable for exact training.
 `root_policy()` returns `action_id`, `action_mask`, `visit_count`, `policy`,
 `root_value`, `root_visit_count`, `root_player`, and `player_count`, one row
 per live game. `root_value` is always the component for `root_player`, keeping
-the old scalar output shape `[B]`. It also adds `env_id`, `state_id`, and
-`episode_id`.
+the old scalar output shape `[B]`. It also adds `env_id`, `agent_id`,
+`map_seed`, `state_id`, and `episode_id`.
 
 For a resolved terminal transition, `terminal_values` gives the complete
 training target: winner `+1`, each loser `-1 / (P - 1)`, and all zero for a
 terminal state with no winner. This is exactly the historical `+1/-1` result
 for two players.
+
+## Completed Episodes And Paired Evaluation
+
+Terminal records survive automatic reset in a preallocated native ring. Drain
+them without allocating in the hot loop:
+
+```python
+completed_buffers = allocate(pool.completed_batch_spec())
+count = pool.drain_completed_into(completed_buffers)
+records = {name: value[:count] for name, value in completed_buffers.items()}
+```
+
+Each record contains `env_id`, `episode_id`, `map_seed`, `agent_id`,
+`winner_player`, `terminal_values`, `moves`, and `truncated`. It never contains
+an observation, hidden map, belief particle, or search tree. The convenience
+`drain_completed(max_records=...)` returns freshly allocated exact-length
+arrays. Drain before `completed_queue_capacity` is exhausted.
+
+For deterministic paired evaluation, create two slots per map and disable all
+training-side exploration:
+
+```python
+map_seeds = np.array([91001, 91001, 91002, 91002], dtype=np.uint32)
+assignments = np.array(
+    [[0, 1], [1, 0], [0, 1], [1, 0]],  # candidate=0, opponent=1
+    dtype=np.int32,
+)
+pool = SelfPlayPool(num_envs=4, auto_reset=False)
+request = pool.reset(seeds=map_seeds, agent_ids=assignments)
+
+# Use deterministic belief/model inference, no teacher or strategic prior,
+# no optimizer update, and choose root_policy(temperature=0.0).
+```
+
+Both games in a pair receive the same `map_seed`; swapping the two assignment
+columns swaps which model controls each player slot. A terminal slot remains
+stopped when `auto_reset=False` until an explicit reset. Pass `-1` for stopped
+rows while other slots finish; those rows are ignored and cannot start a new
+episode.
+
+For asynchronous league scheduling, reset a subset and atomically refresh the
+full request buffer:
+
+```python
+pool.reset_slots_into(slot_ids, new_seeds, new_agent_ids, belief_buffers)
+```
+
+This invalidates every old tree and leaf handle. A late leaf result or old
+`state_id` is rejected rather than being applied to the replacement episode.
 
 ## Reusable Pinned Batches
 
@@ -381,7 +482,29 @@ belief-root, and MCTS-tree memory. More CPU threads improve independent game
 and leaf work until they contend with the model process; profile the complete
 training job rather than maximizing `num_threads` blindly.
 
+On the acceptance machine (Apple Silicon, 128 environments, 4 workers,
+11x11 maps, reusable belief buffers, median of 7 x 200 writes), the legacy
+installed binding produced 1,922,896 belief rows/s and this multi-agent binding
+produced 1,911,398 rows/s: a 0.60% same-agent regression. This measures the
+native hot packet path, including the new `agent_id` and `map_seed` writes, but
+not model inference.
+
 `SelfPlayPool` intentionally does not expose VectorGameEnv's large
 `visible_event_history` layout. It would be too costly to duplicate across
 MCTS leaves. Use the compact, fog-safe `visible_action_history` channel,
 which is available consistently on both belief and leaf packets.
+
+## PolyBot Migration
+
+Replace per-opponent pools or scalar league/evaluation loops with one persistent
+`SelfPlayPool`. Keep checkpoints in Python and maintain a mapping
+`agent_id -> loaded model`. Schedule matchups through `agent_ids`, batch belief
+and leaf inference by the emitted `agent_id`, and scatter outputs back into the
+original row order before `submit_beliefs()` or `expand_and_backup()`.
+
+For training, keep the candidate as one stable id and assign champion, teacher,
+and historical ids per slot. For evaluation, use `auto_reset=False`, explicit
+paired seeds/assignments, deterministic inference, `temperature=0`, and consume
+only `drain_completed*()` records for scores. Remove `anchor_model` or mixed
+policy-target substitutions: every frozen opponent now selects its own actions
+through its routed leaf rows.

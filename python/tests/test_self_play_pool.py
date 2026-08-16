@@ -123,6 +123,51 @@ def _action_row(packet: dict[str, np.ndarray], env: int, action_type: int) -> in
     return int(rows[0])
 
 
+def _route_oracle_beliefs(
+    pool: SelfPlayPool, request: dict[str, np.ndarray]
+) -> None:
+    pool.submit_beliefs(request["state_id"], _oracle_beliefs(pool, request))
+
+
+def _play_aggressive_until_terminal(
+    pool: SelfPlayPool,
+    request: dict[str, np.ndarray],
+    *,
+    max_moves: int = 256,
+) -> tuple[dict[str, np.ndarray], int]:
+    """Small deterministic policy used only to exercise native terminal records."""
+    for move in range(max_moves):
+        _route_oracle_beliefs(pool, request)
+        features = request["action_features"][0]
+        mask = request["action_mask"][0].astype(bool)
+        priorities = (
+            (features[:, 0] == 8) & (features[:, 8] == 14),  # capture city
+            features[:, 0] == 1,  # attack
+            (features[:, 0] == 8) & (features[:, 8] == 10),  # found city
+            features[:, 0] == 0,  # move
+            features[:, 0] == 7,  # spawn
+            features[:, 0] == 8,  # other tile actions
+            features[:, 0] == 9,
+            features[:, 0] == 5,
+            features[:, 0] == 6,
+            features[:, 0] == 4,
+            features[:, 0] == 2,
+            features[:, 0] == 3,  # end turn
+        )
+        for condition in priorities:
+            rows = np.flatnonzero(mask & condition)
+            if len(rows):
+                break
+        else:  # pragma: no cover - every non-terminal position has EndTurn
+            raise AssertionError("non-terminal test position has no legal action")
+        row = int(rows[(move // 3) % len(rows)])
+        action = np.array([request["action_id"][0, row]], dtype=np.int32)
+        request = pool.step(action)
+        if request["terminated"][0]:
+            return request, move + 1
+    raise AssertionError("deterministic terminal policy exceeded its move budget")
+
+
 def _assert_same_packet(expected: dict[str, np.ndarray], actual: dict[str, np.ndarray]) -> None:
     assert actual.keys() == expected.keys()
     for name, value in expected.items():
@@ -811,3 +856,210 @@ def test_self_play_external_leaf_buffer_metadata_is_validated_before_selection()
 
     one_leaf_buffers = _allocate_buffers(pool.leaf_batch_spec(max_leaves=1))
     assert pool.select_leaves_into(one_leaf_buffers, max_leaves=1) == 1
+
+
+def test_self_play_multi_agent_explicit_seeds_and_paired_maps() -> None:
+    pool = _pool(1103)
+    seeds = np.array([12001, 12001], dtype=np.uint32)
+    assignments = np.array([[0, 1], [1, 0]], dtype=np.int32)
+    request = pool.reset(seeds=seeds, agent_ids=assignments)
+
+    np.testing.assert_array_equal(request["map_seed"], seeds)
+    np.testing.assert_array_equal(request["agent_id"], np.array([0, 1], np.int32))
+    np.testing.assert_array_equal(request["map_tokens"][0], request["map_tokens"][1])
+
+    all_players = pool.all_player_belief_requests()
+    np.testing.assert_array_equal(all_players["agent_id"], assignments)
+    np.testing.assert_array_equal(
+        all_players["map_seed"], np.broadcast_to(seeds[:, None], (2, 2))
+    )
+    for player in range(2):
+        np.testing.assert_array_equal(
+            all_players["map_tokens"][0, player],
+            all_players["map_tokens"][1, player],
+        )
+
+    legacy = pool.reset(seed=12001)
+    assert np.all(legacy["agent_id"] == 0)
+    assert np.all(pool.all_player_belief_requests()["agent_id"] == 0)
+
+
+def test_self_play_leaf_routing_uses_leaf_to_play_and_swaps_model_behavior() -> None:
+    pool = _pool(1213)
+    seeds = np.array([1213, 1214], dtype=np.uint32)
+
+    def selected_child_players(assignments: np.ndarray) -> np.ndarray:
+        request = pool.reset(seeds=seeds, agent_ids=assignments)
+        _route_oracle_beliefs(pool, request)
+        roots = pool.select_leaves()
+        np.testing.assert_array_equal(roots["agent_id"], assignments[:, 0])
+
+        logits = np.full((2, pool.max_actions), -100.0, dtype=np.float32)
+        for row, agent_id in enumerate(roots["agent_id"]):
+            # Test model 0 always ends its turn; test model 1 always moves.
+            action_type = 3 if int(agent_id) == 0 else 0
+            action_row = _action_row(roots, row, action_type)
+            logits[row, action_row] = 100.0
+        pool.expand_and_backup(roots["leaf_id"], logits, np.zeros(2, np.float32))
+
+        children = pool.select_leaves()
+        assert len(children["leaf_id"]) == 2
+        expected_agents = assignments[
+            children["env_id"], children["to_play"]
+        ]
+        np.testing.assert_array_equal(children["agent_id"], expected_agents)
+        players = children["to_play"].copy()
+        assert pool.abort_search() == 2
+        return players
+
+    first = selected_child_players(np.array([[0, 1], [1, 0]], dtype=np.int32))
+    swapped = selected_child_players(np.array([[1, 0], [0, 1]], dtype=np.int32))
+    np.testing.assert_array_equal(first, np.array([1, 0], dtype=np.int32))
+    np.testing.assert_array_equal(swapped, np.array([0, 1], dtype=np.int32))
+
+
+def test_self_play_reset_slots_reassigns_and_rejects_old_leaf_ids() -> None:
+    pool = _pool(1301)
+    assignments = np.array([[0, 1], [2, 3]], dtype=np.int32)
+    request = pool.reset(
+        seeds=np.array([1301, 1302], dtype=np.uint32), agent_ids=assignments
+    )
+    _route_oracle_beliefs(pool, request)
+    stale_leaves = pool.select_leaves()
+
+    buffers = _allocate_belief_buffers(pool)
+    pool.reset_slots_into(
+        np.array([1], dtype=np.int32),
+        np.array([9001], dtype=np.uint32),
+        np.array([[7, 8]], dtype=np.int32),
+        buffers,
+    )
+    assert pool.search_active is False
+    assert pool.pending_count == 0
+    assert buffers["state_id"][0] == request["state_id"][0]
+    assert buffers["state_id"][1] != request["state_id"][1]
+    np.testing.assert_array_equal(buffers["map_seed"], np.array([1301, 9001], np.uint32))
+    np.testing.assert_array_equal(
+        pool.all_player_belief_requests()["agent_id"],
+        np.array([[0, 1], [7, 8]], dtype=np.int32),
+    )
+
+    _route_oracle_beliefs(pool, buffers)
+    with pytest.raises(ValueError, match="unknown, stale or already-expanded"):
+        pool.expand_and_backup(
+            stale_leaves["leaf_id"],
+            np.zeros((2, pool.max_actions), dtype=np.float32),
+            np.zeros(2, dtype=np.float32),
+        )
+    fresh = pool.select_leaves()
+    assert len(fresh["leaf_id"]) == 2
+    assert pool.abort_search() == 2
+
+    pool.reset_slots(np.array([1], np.int32), seeds=np.array([9002], np.uint32))
+    np.testing.assert_array_equal(
+        pool.all_player_belief_requests()["agent_id"][1],
+        np.array([7, 8], dtype=np.int32),
+    )
+
+
+def test_self_play_128_envs_six_agents_do_not_mix_inference_rows() -> None:
+    num_envs = 128
+    pool = SelfPlayPool(
+        num_envs=num_envs,
+        seed=1401,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=4,
+        max_actions=128,
+        auto_reset=False,
+    )
+    seeds = np.arange(1401, 1401 + num_envs, dtype=np.uint32)
+    env_rows = np.arange(num_envs, dtype=np.int32)
+    assignments = np.stack((env_rows % 6, (env_rows + 3) % 6), axis=1)
+    request = pool.reset(seeds=seeds, agent_ids=assignments)
+    np.testing.assert_array_equal(request["agent_id"], assignments[:, 0])
+
+    _route_oracle_beliefs(pool, request)
+    leaves = pool.select_leaves()
+    assert len(leaves["leaf_id"]) == num_envs
+    assert set(np.unique(leaves["agent_id"]).tolist()) == set(range(6))
+
+    logits = np.empty((num_envs, pool.max_actions), dtype=np.float32)
+    values = np.empty(num_envs, dtype=np.float32)
+    for agent_id in np.unique(leaves["agent_id"]):
+        rows = leaves["agent_id"] == agent_id
+        logits[rows] = float(agent_id)
+        values[rows] = float(agent_id) / 10.0
+    pool.expand_and_backup(leaves["leaf_id"], logits, values)
+
+    root = pool.root_policy()
+    np.testing.assert_array_equal(root["agent_id"], assignments[:, 0])
+    np.testing.assert_allclose(root["root_value"], assignments[:, 0] / 10.0)
+
+
+def test_self_play_completed_record_and_auto_reset_false_stop() -> None:
+    pool = SelfPlayPool(
+        num_envs=1,
+        seed=2,
+        map_size=5,
+        players=(Bardur, Imperius),
+        num_threads=1,
+        max_actions=0,
+        auto_reset=False,
+    )
+    request = pool.reset(
+        seeds=np.array([2], np.uint32),
+        agent_ids=np.array([[5, 9]], np.int32),
+    )
+    episode_id = request["episode_id"].copy()
+    request, moves = _play_aggressive_until_terminal(pool, request)
+    assert pool.completed_count == 1
+
+    completed = _allocate_buffers(pool.completed_batch_spec())
+    addresses = {name: value.ctypes.data for name, value in completed.items()}
+    assert pool.drain_completed_into(completed) == 1
+    assert {name: value.ctypes.data for name, value in completed.items()} == addresses
+    assert completed["env_id"][0] == 0
+    assert completed["episode_id"][0] == episode_id[0]
+    assert completed["map_seed"][0] == 2
+    np.testing.assert_array_equal(completed["agent_id"][0], np.array([5, 9], np.int32))
+    assert completed["winner_player"][0] == request["winner"][0]
+    assert completed["moves"][0] == moves
+    assert completed["truncated"][0] == 0
+    np.testing.assert_array_equal(
+        completed["terminal_values"][0], request["terminal_values"][0]
+    )
+
+    stopped_state = request["state_id"].copy()
+    _route_oracle_beliefs(pool, request)
+    stopped = pool.step(np.array([-1], dtype=np.int32))
+    np.testing.assert_array_equal(stopped["state_id"], stopped_state)
+    np.testing.assert_array_equal(stopped["episode_id"], episode_id)
+    assert stopped["terminated"][0] == 1
+    assert pool.completed_count == 0
+
+
+def test_self_play_completed_record_survives_auto_reset() -> None:
+    pool = SelfPlayPool(
+        num_envs=1,
+        seed=2,
+        map_size=5,
+        players=(Bardur, Imperius),
+        num_threads=1,
+        max_actions=0,
+        auto_reset=True,
+    )
+    request = pool.reset(
+        seeds=np.array([2], np.uint32),
+        agent_ids=np.array([[4, 6]], np.int32),
+    )
+    terminal_episode = request["episode_id"][0]
+    request, _ = _play_aggressive_until_terminal(pool, request)
+
+    assert request["episode_id"][0] != terminal_episode
+    assert request["agent_id"][0] == 4
+    record = pool.drain_completed()
+    assert len(record["env_id"]) == 1
+    assert record["episode_id"][0] == terminal_episode
+    assert record["map_seed"][0] == 2
+    np.testing.assert_array_equal(record["agent_id"][0], np.array([4, 6], np.int32))

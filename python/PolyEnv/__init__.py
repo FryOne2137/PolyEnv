@@ -299,6 +299,11 @@ class SelfPlayPool(_SelfPlayPool):
     players; the two-player value path is specially optimized. Its
     ``belief_batch_spec()``, ``leaf_batch_spec()`` and ``root_policy_spec()``
     support reusable external buffers for the complete high-throughput loop.
+    Pass ``seeds[B]`` and ``agent_ids[B, P]`` to ``reset``/``reset_into`` for
+    deterministic mixed-model play. Belief and leaf batches expose the routed
+    ``agent_id``; leaf routing follows the leaf's own ``to_play`` player.
+    ``completed_batch_spec()`` and ``drain_completed_into()`` preserve compact
+    terminal records even when ``auto_reset=True``.
     ``visible_action_history`` enables a compact, fog-safe history window in
     both belief and MCTS leaf packets; choose a value from 0 to 1024.
     ``max_actions=0`` derives complete ActionSpace capacity and, together with
