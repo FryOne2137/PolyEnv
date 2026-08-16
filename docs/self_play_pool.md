@@ -216,8 +216,44 @@ completed.shape == (B, P, K, tiles, 23)
 
 Every visible row in every particle is validated against that same player's
 observation. The current actor's particles additionally must reproduce the
-live legal action set. A malformed particle rejects the entire submission, so
-the active MCTS forest is never half-updated.
+live legal action list exactly, including its engine-defined order. Every
+particle must build a non-spurious-terminal detached world. A malformed
+particle rejects the entire submission, so the active MCTS forest is never
+half-updated.
+
+Preflight the whole forest and resample only rejected environment rows before
+the one atomic submit:
+
+```python
+belief_request = pool.all_player_belief_requests()
+particles = belief_model.sample(belief_request, particles=K)
+# C-contiguous int32 [B, P, K, tiles, 23]
+
+accepted = np.empty(pool.num_envs, dtype=np.uint8)  # reusable host buffer
+pool.ismcts_belief_acceptance_mask_into(
+    request["state_id"], particles, accepted
+)
+while not np.all(accepted):
+    rejected = np.flatnonzero(accepted == 0)
+    # sample_rows returns complete [len(rejected), P, K, tiles, 23] rows;
+    # each player is conditioned only on that player's fog-safe request.
+    particles[rejected] = belief_model.sample_rows(
+        belief_request, rejected, particles=K
+    )
+    pool.ismcts_belief_acceptance_mask_into(
+        request["state_id"], particles, accepted
+    )
+
+pool.submit_beliefs(request["state_id"], particles)
+```
+
+`ismcts_belief_acceptance_mask(...)` is the allocating convenience form and
+returns `uint8[B]`. Both mask forms use the exact validator used by
+`submit_beliefs()` and `ismcts_belief_diagnostics()`: bad particle contents set
+only that slot to `0`; stale ids, an active search, wrong dtype/shape, or
+non-contiguous storage raise. The diagnostic method is intentionally reserved
+for explaining rejected caller beliefs and may return the public root action
+list; neither mask exposes hidden live-world data.
 
 For pinned, reusable host storage use
 `all_player_belief_batch_spec()` with
@@ -225,8 +261,9 @@ For pinned, reusable host storage use
 real move, before `submit_beliefs()`, and can share the same double-buffering
 discipline as the ordinary belief packet.
 
-`completed_map_tokens` submitted to `submit_beliefs()` has exact shape
-`[B, tiles, 23]`, dtype `np.int32`, and C-contiguous layout. It must preserve:
+The legacy root-perspective `completed_map_tokens` form has exact shape
+`[B, tiles, 23]`; the ISMCTS forms are shown above. Every form has dtype
+`np.int32`, C-contiguous layout, and must preserve:
 
 - the observation's visibility mask in column `0`;
 - every token in a currently visible row.

@@ -156,6 +156,27 @@ static py::array_t<T> makeArray2D(size_t rows, size_t cols) {
     });
 }
 
+// Bind an input/output NumPy array without allowing pybind11 to materialize a
+// contiguous temporary.  Belief tensors can be very large, and accepting a
+// strided view by silently copying it would both violate the API contract and
+// make the supposedly allocation-free validation entry point allocate.
+template <typename T>
+static py::array_t<T> requireContiguousArray(const py::array& array, const char* name) {
+    if (!array.dtype().is(py::dtype::of<T>())) {
+        const std::string dtypeName = py::str(py::dtype::of<T>());
+        throw std::invalid_argument(
+            std::string(name) + " has an incorrect dtype; expected a C-contiguous " +
+            dtypeName + " array");
+    }
+    if ((array.flags() & py::array::c_style) != py::array::c_style) {
+        throw std::invalid_argument(std::string(name) + " must be C-contiguous");
+    }
+    if (!py::cast<bool>(array.attr("flags").attr("aligned"))) {
+        throw std::invalid_argument(std::string(name) + " must be aligned");
+    }
+    return py::reinterpret_borrow<py::array_t<T>>(array);
+}
+
 // Bind caller-owned output arrays without coercion or copying. This is the
 // boundary used by reset_into()/step_into(): an external training repository
 // can supply NumPy views of framework-pinned host tensors while PolyEnv stays
@@ -6611,23 +6632,70 @@ public:
         return result;
     }
 
-    // Full-ISMCTS counterpart to beliefAcceptanceDiagnostics.  Its iteration
-    // order and active-player legality check mirror submitBeliefs exactly, so
-    // a trainer can diagnose the precise [env, player, particle] that made an
-    // otherwise atomic belief submission fail.
+    // Fast full-ISMCTS preflight.  A malformed caller particle rejects only
+    // its environment row; lifecycle and tensor-contract errors still throw.
+    py::array_t<uint8_t> ismctsBeliefAcceptanceMask(
+        py::array stateIds,
+        py::array completedMapTokens)
+    {
+        IsmctsBeliefInput input = parseIsmctsBeliefInput(stateIds, completedMapTokens);
+        py::array_t<uint8_t> accepted(static_cast<py::ssize_t>(numEnvs_));
+        const uint64_t* idData = input.stateIds.data();
+        const int32_t* tokenData = input.tokens.data();
+        uint8_t* acceptedData = accepted.mutable_data();
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            requireBeliefValidationReady(idData);
+            validateIsmctsBeliefForest(
+                tokenData, input.particles, acceptedData, nullptr, nullptr, false);
+        }
+        return accepted;
+    }
+
+    void ismctsBeliefAcceptanceMaskInto(
+        py::array stateIds,
+        py::array completedMapTokens,
+        py::array acceptedOut)
+    {
+        IsmctsBeliefInput input = parseIsmctsBeliefInput(stateIds, completedMapTokens);
+        auto accepted = requireContiguousArray<uint8_t>(acceptedOut, "accepted_out");
+        if (accepted.ndim() != 1 || accepted.shape(0) != numEnvs_) {
+            throw std::invalid_argument("accepted_out must have shape [num_envs]");
+        }
+        if (!py::cast<bool>(accepted.attr("flags").attr("writeable"))) {
+            throw std::invalid_argument("accepted_out must be writable");
+        }
+        const std::array<std::pair<const char*, const py::array*>, 3> arrays{{
+            {"state_ids", &input.stateIds},
+            {"completed_map_tokens", &input.tokens},
+            {"accepted_out", &accepted},
+        }};
+        validateNonOverlappingBatchStorage(arrays);
+        const uint64_t* idData = input.stateIds.data();
+        const int32_t* tokenData = input.tokens.data();
+        uint8_t* acceptedData = accepted.mutable_data();
+        {
+            py::gil_scoped_release release;
+            std::lock_guard lock(apiMutex_);
+            requireBeliefValidationReady(idData);
+            validateIsmctsBeliefForest(
+                tokenData, input.particles, acceptedData, nullptr, nullptr, false);
+        }
+    }
+
+    // Heavy diagnostic formatter over the same validation result used by the
+    // acceptance mask and submitBeliefs.  It reports only the real public
+    // root action list and the caller's rejected belief/action data.
     py::list ismctsBeliefDiagnostics(py::array stateIds, py::array completedMapTokens) {
-        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
-        auto tokens = py::array_t<int32_t, py::array::c_style>::ensure(completedMapTokens);
-        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
-            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
-        }
-        if (!tokens || tokens.ndim() != 5 || tokens.shape(0) != numEnvs_ ||
-            tokens.shape(1) != playerCount_ || tokens.shape(2) <= 0 ||
-            tokens.shape(3) != static_cast<py::ssize_t>(tileCount()) ||
-            tokens.shape(4) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
-            throw std::invalid_argument(
-                "completed_map_tokens must be contiguous int32 with shape [num_envs, player_count, particles, tiles, 23]");
-        }
+        IsmctsBeliefInput input = parseIsmctsBeliefInput(stateIds, completedMapTokens);
+        const size_t players = static_cast<size_t>(playerCount_);
+        std::vector<uint8_t> accepted(envs_.size());
+        std::vector<IsmctsBeliefIssue> issues;
+        std::lock_guard lock(apiMutex_);
+        requireBeliefValidationReady(input.stateIds.data());
+        validateIsmctsBeliefForest(
+            input.tokens.data(), input.particles, accepted.data(), nullptr, &issues, true);
 
         const auto describe = [](const GameEnv& env, size_t actionId) {
             py::dict out = env.decodeAction(actionId);
@@ -6639,82 +6707,66 @@ public:
             }
             return out;
         };
+
         py::list result;
-        const uint64_t* idData = ids.data();
-        const int32_t* tokenData = tokens.data();
-        const size_t players = static_cast<size_t>(playerCount_);
-        const size_t particles = static_cast<size_t>(tokens.shape(2));
-        const size_t tokenStride = tileCount() * kMapTokenFeatureCount;
-        const size_t forestStride = players * particles * tokenStride;
-        std::lock_guard lock(apiMutex_);
-        if (searchActive_) {
-            throw std::logic_error("a belief forest is already active; step or reset before validating beliefs");
-        }
-        for (size_t i = 0; i < envs_.size(); ++i) {
-            if (idData[i] != stateIds_[i]) {
-                throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
-            }
-            const PlayerId active = envs_[i].currentPlayerNative();
+        for (size_t env = 0; env < envs_.size(); ++env) {
             for (size_t player = 0; player < players; ++player) {
-                for (size_t particle = 0; particle < particles; ++particle) {
+                for (size_t particle = 0; particle < input.particles; ++particle) {
+                    IsmctsBeliefIssue& issue =
+                        issues[ismctsBeliefIndex(env, player, particle, input.particles)];
+                    if (issue.failure == IsmctsBeliefFailure::None) continue;
                     py::dict row;
-                    row["env_id"] = static_cast<int>(i);
+                    row["env_id"] = static_cast<int>(env);
                     row["player"] = static_cast<int>(player);
                     row["particle"] = static_cast<int>(particle);
-                    try {
-                        GameEnv belief = envs_[i].makeBeliefEnvFromPlayerFlatTokens(
-                            static_cast<PlayerId>(player),
-                            tokenData + i * forestStride + (player * particles + particle) * tokenStride,
-                            tileCount(), kMapTokenFeatureCount,
-                            beliefValidationScratch_.data() + (i * players + player) * tokenStride);
-                        if (static_cast<PlayerId>(player) != active) continue;
-                        const auto& realIds = envs_[i].legalActionIdsRefNative();
-                        const auto& beliefIds = belief.legalActionIdsRefNative();
+                    py::list missing;
+                    py::list extra;
+                    if (issue.failure == IsmctsBeliefFailure::BuildError) {
+                        row["reason"] = "belief_build_error";
+                        row["error"] = issue.error;
+                    } else if (issue.failure == IsmctsBeliefFailure::FalseTerminal) {
+                        row["reason"] = "belief_terminal";
+                    } else {
+                        if (!issue.belief) {
+                            throw std::logic_error("legal-action diagnostic is missing its submitted belief");
+                        }
+                        const auto& realIds = envs_[env].legalActionIdsRefNative();
+                        const auto& beliefIds = issue.belief->legalActionIdsRefNative();
                         const std::unordered_set<size_t> realSet(realIds.begin(), realIds.end());
                         const std::unordered_set<size_t> beliefSet(beliefIds.begin(), beliefIds.end());
-                        py::list missing;
-                        py::list extra;
                         for (const size_t actionId : realIds) {
-                            if (beliefSet.find(actionId) == beliefSet.end()) missing.append(describe(envs_[i], actionId));
+                            if (beliefSet.find(actionId) == beliefSet.end()) {
+                                missing.append(describe(envs_[env], actionId));
+                            }
                         }
                         for (const size_t actionId : beliefIds) {
-                            if (realSet.find(actionId) == realSet.end()) extra.append(describe(belief, actionId));
-                        }
-                        const bool orderMismatch = realIds != beliefIds;
-                        if (orderMismatch) {
-                            size_t firstDifference = 0;
-                            const size_t shared = std::min(realIds.size(), beliefIds.size());
-                            while (firstDifference < shared && realIds[firstDifference] == beliefIds[firstDifference]) {
-                                ++firstDifference;
-                            }
-                            row["first_difference_index"] = firstDifference;
-                            if (firstDifference < realIds.size()) {
-                                row["real_action_at_difference"] = describe(envs_[i], realIds[firstDifference]);
-                            }
-                            if (firstDifference < beliefIds.size()) {
-                                row["belief_action_at_difference"] = describe(belief, beliefIds[firstDifference]);
+                            if (realSet.find(actionId) == realSet.end()) {
+                                extra.append(describe(*issue.belief, actionId));
                             }
                         }
-                        const bool terminalMismatch = !envs_[i].isTerminalNative() && belief.isTerminalNative();
-                        if (!orderMismatch && !terminalMismatch) continue;
-                        row["reason"] = terminalMismatch ? "belief_terminal" : (
-                            missing.empty() && extra.empty()
-                                ? "legal_action_order_mismatch" : "legal_action_mismatch");
+                        size_t firstDifference = 0;
+                        const size_t shared = std::min(realIds.size(), beliefIds.size());
+                        while (firstDifference < shared &&
+                               realIds[firstDifference] == beliefIds[firstDifference]) {
+                            ++firstDifference;
+                        }
+                        row["first_difference_index"] = firstDifference;
+                        if (firstDifference < realIds.size()) {
+                            row["real_action_at_difference"] =
+                                describe(envs_[env], realIds[firstDifference]);
+                        }
+                        if (firstDifference < beliefIds.size()) {
+                            row["belief_action_at_difference"] =
+                                describe(*issue.belief, beliefIds[firstDifference]);
+                        }
+                        row["reason"] = missing.empty() && extra.empty()
+                            ? "legal_action_order_mismatch"
+                            : "legal_action_mismatch";
                         row["real_action_count"] = realIds.size();
                         row["belief_action_count"] = beliefIds.size();
-                        row["missing_actions"] = std::move(missing);
-                        row["extra_actions"] = std::move(extra);
-                    } catch (const std::exception& error) {
-                        row["reason"] = "belief_build_error";
-                        row["error"] = error.what();
-                        row["missing_actions"] = py::list();
-                        row["extra_actions"] = py::list();
-                    } catch (...) {
-                        row["reason"] = "belief_build_error";
-                        row["error"] = "unknown belief construction error";
-                        row["missing_actions"] = py::list();
-                        row["extra_actions"] = py::list();
                     }
+                    row["missing_actions"] = std::move(missing);
+                    row["extra_actions"] = std::move(extra);
                     result.append(std::move(row));
                 }
             }
@@ -6762,16 +6814,16 @@ public:
     // Both forms are contiguous int32, validated atomically and never clone a
     // live hidden world into a search root.
     void submitBeliefs(py::array stateIds, py::array completedMapTokens) {
-        auto ids = py::array_t<uint64_t, py::array::c_style>::ensure(stateIds);
-        auto tokens = py::array_t<int32_t, py::array::c_style>::ensure(completedMapTokens);
-        if (!ids || ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
-            throw std::invalid_argument("state_ids must be a contiguous uint64 array with one entry per environment");
+        auto ids = requireContiguousArray<uint64_t>(stateIds, "state_ids");
+        auto tokens = requireContiguousArray<int32_t>(completedMapTokens, "completed_map_tokens");
+        if (ids.ndim() != 1 || ids.shape(0) != numEnvs_) {
+            throw std::invalid_argument("state_ids must have shape [num_envs]");
         }
-        const bool rootPerspective = tokens && tokens.ndim() == 3;
-        const bool singleParticleIsmcts = tokens && tokens.ndim() == 4;
-        const bool multiParticleIsmcts = tokens && tokens.ndim() == 5;
+        const bool rootPerspective = tokens.ndim() == 3;
+        const bool singleParticleIsmcts = tokens.ndim() == 4;
+        const bool multiParticleIsmcts = tokens.ndim() == 5;
         const bool fullIsmcts = singleParticleIsmcts || multiParticleIsmcts;
-        if (!tokens || (!rootPerspective && !fullIsmcts) || tokens.shape(0) != numEnvs_ ||
+        if ((!rootPerspective && !fullIsmcts) || tokens.shape(0) != numEnvs_ ||
             (rootPerspective && (tokens.shape(1) != static_cast<py::ssize_t>(tileCount()) ||
                                  tokens.shape(2) != static_cast<py::ssize_t>(kMapTokenFeatureCount))) ||
             (singleParticleIsmcts && (tokens.shape(1) != playerCount_ ||
@@ -6793,14 +6845,7 @@ public:
         {
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
-            if (searchActive_) {
-                throw std::logic_error("a belief forest is already active; step or reset before submitting new beliefs");
-            }
-            for (size_t i = 0; i < envs_.size(); ++i) {
-                if (idData[i] != stateIds_[i]) {
-                    throw std::invalid_argument("state_ids contains a stale or mismatched self-play position id");
-                }
-            }
+            requireBeliefValidationReady(idData);
 
             if (rootPerspective) {
                 // Keep completed roots in per-slot optionals so workers never
@@ -6838,38 +6883,34 @@ public:
                 const size_t players = static_cast<size_t>(playerCount_);
                 const size_t particles = multiParticleIsmcts
                     ? static_cast<size_t>(tokens.shape(2)) : 1;
-                const size_t forestStride = players * particles * tokenStride;
-                std::vector<std::vector<std::vector<std::optional<GameEnv>>>> built(
-                    envs_.size(), std::vector<std::vector<std::optional<GameEnv>>>(
-                        players, std::vector<std::optional<GameEnv>>(particles)));
-                pool_.parallelFor(envs_.size(), [&](size_t begin, size_t end) {
-                    for (size_t i = begin; i < end; ++i) {
-                        const PlayerId active = envs_[i].currentPlayerNative();
-                        for (size_t player = 0; player < players; ++player) {
-                            const size_t scratchOffset = (i * players + player) * tokenStride;
-                            for (size_t particle = 0; particle < particles; ++particle) {
-                                GameEnv belief = envs_[i].makeBeliefEnvFromPlayerFlatTokens(
-                                    static_cast<PlayerId>(player),
-                                    tokenData + i * forestStride +
-                                        (player * particles + particle) * tokenStride,
-                                    tiles, kMapTokenFeatureCount,
-                                    beliefValidationScratch_.data() + scratchOffset);
-                                // Only the active player has a legal action set at
-                                // this position. Its equality check is the hard
-                                // no-leak boundary; other rows are validated against
-                                // their own visible map and become future ISMCTS
-                                // re-determinizations.
-                                if (static_cast<PlayerId>(player) == active &&
-                                    (!envs_[i].hasSameCurrentLegalActions(belief) ||
-                                     (!envs_[i].isTerminalNative() && belief.isTerminalNative()))) {
-                                    throw std::invalid_argument(
-                                        "an active-player ISMCTS belief changes the legal action set");
-                                }
-                                built[i][player][particle].emplace(std::move(belief));
+                std::vector<std::optional<GameEnv>> built;
+                std::vector<IsmctsBeliefIssue> issues;
+                std::vector<uint8_t> accepted(envs_.size());
+                validateIsmctsBeliefForest(
+                    tokenData, particles, accepted.data(), &built, &issues, false);
+                for (size_t env = 0; env < envs_.size(); ++env) {
+                    if (accepted[env] != 0) continue;
+                    for (size_t player = 0; player < players; ++player) {
+                        for (size_t particle = 0; particle < particles; ++particle) {
+                            const IsmctsBeliefIssue& issue =
+                                issues[ismctsBeliefIndex(env, player, particle, particles)];
+                            if (issue.failure == IsmctsBeliefFailure::None) continue;
+                            std::string message =
+                                "full ISMCTS belief rejected at env=" + std::to_string(env) +
+                                " player=" + std::to_string(player) +
+                                " particle=" + std::to_string(particle) + ": ";
+                            if (issue.failure == IsmctsBeliefFailure::BuildError) {
+                                message += issue.error;
+                            } else if (issue.failure == IsmctsBeliefFailure::FalseTerminal) {
+                                message += "the submitted belief creates a false terminal";
+                            } else {
+                                message += "the active-player belief changes the ordered legal action list";
                             }
+                            throw std::invalid_argument(message);
                         }
                     }
-                });
+                    throw std::logic_error("rejected ISMCTS environment has no recorded validation issue");
+                }
 
                 std::vector<GameEnv> roots;
                 std::vector<std::vector<std::vector<GameEnv>>> forests;
@@ -6880,16 +6921,19 @@ public:
                     const size_t activeIndex = static_cast<size_t>(active);
                     const size_t rootParticle = static_cast<size_t>(stateIds_[env] % particles);
                     if (active == kNoPlayer || activeIndex >= players ||
-                        !built[env][activeIndex][rootParticle]) {
+                        !built[ismctsBeliefIndex(env, activeIndex, rootParticle, particles)]) {
                         throw std::logic_error("ISMCTS belief forest has no active-player root");
                     }
-                    roots.emplace_back(built[env][activeIndex][rootParticle]->cloneForMcts());
+                    roots.emplace_back(
+                        built[ismctsBeliefIndex(env, activeIndex, rootParticle, particles)]->cloneForMcts());
                     std::vector<std::vector<GameEnv>> forest;
                     forest.reserve(players);
-                    for (std::vector<std::optional<GameEnv>>& playerParticles : built[env]) {
+                    for (size_t player = 0; player < players; ++player) {
                         std::vector<GameEnv> playerForest;
                         playerForest.reserve(particles);
-                        for (std::optional<GameEnv>& belief : playerParticles) {
+                        for (size_t particle = 0; particle < particles; ++particle) {
+                            std::optional<GameEnv>& belief =
+                                built[ismctsBeliefIndex(env, player, particle, particles)];
                             if (!belief) throw std::logic_error("ISMCTS belief build completed without a player particle");
                             playerForest.emplace_back(std::move(*belief));
                         }
@@ -7381,6 +7425,170 @@ public:
     }
 
 private:
+    struct IsmctsBeliefInput {
+        py::array_t<uint64_t> stateIds;
+        py::array_t<int32_t> tokens;
+        size_t particles = 0;
+    };
+
+    enum class IsmctsBeliefFailure : uint8_t {
+        None,
+        BuildError,
+        LegalActionMismatch,
+        FalseTerminal,
+    };
+
+    struct IsmctsBeliefIssue {
+        IsmctsBeliefFailure failure = IsmctsBeliefFailure::None;
+        std::string error;
+        // Retained only for a rejected caller-supplied belief when diagnostics
+        // need to decode its own public action list.  It is never a live world.
+        std::unique_ptr<GameEnv> belief;
+    };
+
+    IsmctsBeliefInput parseIsmctsBeliefInput(
+        const py::array& stateIds,
+        const py::array& completedMapTokens) const
+    {
+        IsmctsBeliefInput input{
+            requireContiguousArray<uint64_t>(stateIds, "state_ids"),
+            requireContiguousArray<int32_t>(completedMapTokens, "completed_map_tokens"),
+            0,
+        };
+        if (input.stateIds.ndim() != 1 || input.stateIds.shape(0) != numEnvs_) {
+            throw std::invalid_argument(
+                "state_ids must have shape [num_envs]");
+        }
+        const bool singleParticle = input.tokens.ndim() == 4;
+        const bool multiParticle = input.tokens.ndim() == 5;
+        if ((!singleParticle && !multiParticle) || input.tokens.shape(0) != numEnvs_ ||
+            input.tokens.shape(1) != playerCount_ ||
+            (singleParticle &&
+                (input.tokens.shape(2) != static_cast<py::ssize_t>(tileCount()) ||
+                 input.tokens.shape(3) != static_cast<py::ssize_t>(kMapTokenFeatureCount))) ||
+            (multiParticle &&
+                (input.tokens.shape(2) <= 0 ||
+                 input.tokens.shape(3) != static_cast<py::ssize_t>(tileCount()) ||
+                 input.tokens.shape(4) != static_cast<py::ssize_t>(kMapTokenFeatureCount)))) {
+            throw std::invalid_argument(
+                "completed_map_tokens must have shape [num_envs, player_count, tiles, 23] "
+                "or [num_envs, player_count, particles, tiles, 23]");
+        }
+        input.particles = multiParticle
+            ? static_cast<size_t>(input.tokens.shape(2))
+            : 1;
+        return input;
+    }
+
+    void requireBeliefValidationReady(const uint64_t* stateIds) const {
+        if (searchActive_) {
+            throw std::logic_error(
+                "a belief forest is already active; step or reset before validating or submitting beliefs");
+        }
+        for (size_t env = 0; env < envs_.size(); ++env) {
+            if (stateIds[env] != stateIds_[env]) {
+                throw std::invalid_argument(
+                    "state_ids contains a stale or mismatched self-play position id");
+            }
+        }
+    }
+
+    size_t ismctsBeliefIndex(size_t env, size_t player, size_t particle, size_t particles) const {
+        return (env * static_cast<size_t>(playerCount_) + player) * particles + particle;
+    }
+
+    // The single source of truth for full-ISMCTS belief acceptance.  All
+    // caller-content failures are contained inside their environment row;
+    // structural/staleness/lifecycle checks happen before this function.
+    // builtOut is populated only for atomic submit, while issuesOut is used
+    // only by submit error reporting and the deliberately heavier diagnostics.
+    void validateIsmctsBeliefForest(
+        const int32_t* tokenData,
+        size_t particles,
+        uint8_t* acceptedOut,
+        std::vector<std::optional<GameEnv>>* builtOut,
+        std::vector<IsmctsBeliefIssue>* issuesOut,
+        bool collectAllFailures)
+    {
+        const size_t players = static_cast<size_t>(playerCount_);
+        const size_t tokenStride = tileCount() * kMapTokenFeatureCount;
+        const size_t forestStride = players * particles * tokenStride;
+        const size_t totalBeliefs = envs_.size() * players * particles;
+        std::fill_n(acceptedOut, envs_.size(), uint8_t{1});
+        if (builtOut) {
+            builtOut->clear();
+            builtOut->resize(totalBeliefs);
+        }
+        if (issuesOut) {
+            issuesOut->clear();
+            issuesOut->resize(totalBeliefs);
+        }
+
+        pool_.parallelFor(envs_.size(), [&](size_t begin, size_t end) {
+            for (size_t env = begin; env < end; ++env) {
+                const PlayerId active = envs_[env].currentPlayerNative();
+                bool stop = false;
+                for (size_t player = 0; player < players && !stop; ++player) {
+                    const size_t scratchOffset = (env * players + player) * tokenStride;
+                    for (size_t particle = 0; particle < particles; ++particle) {
+                        const size_t beliefIndex = ismctsBeliefIndex(env, player, particle, particles);
+                        bool rejected = false;
+                        try {
+                            GameEnv belief = envs_[env].makeBeliefEnvFromPlayerFlatTokens(
+                                static_cast<PlayerId>(player),
+                                tokenData + env * forestStride +
+                                    (player * particles + particle) * tokenStride,
+                                tileCount(), kMapTokenFeatureCount,
+                                beliefValidationScratch_.data() + scratchOffset);
+
+                            const bool falseTerminal =
+                                !envs_[env].isTerminalNative() && belief.isTerminalNative();
+                            const bool legalMismatch =
+                                !falseTerminal &&
+                                static_cast<PlayerId>(player) == active &&
+                                !envs_[env].hasSameCurrentLegalActions(belief);
+                            if (falseTerminal || legalMismatch) {
+                                rejected = true;
+                                acceptedOut[env] = 0;
+                                if (issuesOut) {
+                                    IsmctsBeliefIssue& issue = (*issuesOut)[beliefIndex];
+                                    issue.failure = falseTerminal
+                                        ? IsmctsBeliefFailure::FalseTerminal
+                                        : IsmctsBeliefFailure::LegalActionMismatch;
+                                    if (collectAllFailures) {
+                                        issue.belief = std::make_unique<GameEnv>(std::move(belief));
+                                    }
+                                }
+                            } else if (builtOut) {
+                                (*builtOut)[beliefIndex].emplace(std::move(belief));
+                            }
+                        } catch (const std::exception& error) {
+                            rejected = true;
+                            acceptedOut[env] = 0;
+                            if (issuesOut) {
+                                IsmctsBeliefIssue& issue = (*issuesOut)[beliefIndex];
+                                issue.failure = IsmctsBeliefFailure::BuildError;
+                                issue.error = error.what();
+                            }
+                        } catch (...) {
+                            rejected = true;
+                            acceptedOut[env] = 0;
+                            if (issuesOut) {
+                                IsmctsBeliefIssue& issue = (*issuesOut)[beliefIndex];
+                                issue.failure = IsmctsBeliefFailure::BuildError;
+                                issue.error = "unknown belief construction error";
+                            }
+                        }
+                        if (rejected && !collectAllFailures) {
+                            stop = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     struct ResetInputs {
         std::vector<uint32_t> seeds;
         std::vector<int32_t> agentIds;
@@ -8569,6 +8777,12 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("belief_acceptance_diagnostics", &SelfPlayPool::beliefAcceptanceDiagnostics,
             py::arg("state_ids"), py::arg("completed_map_tokens"),
             "Training-only public legal-action mismatch diagnostics for belief hypotheses.")
+        .def("ismcts_belief_acceptance_mask", &SelfPlayPool::ismctsBeliefAcceptanceMask,
+            py::arg("state_ids"), py::arg("completed_map_tokens"),
+            "Return uint8[B] acceptance for a complete 4-D/5-D ISMCTS belief forest.")
+        .def("ismcts_belief_acceptance_mask_into", &SelfPlayPool::ismctsBeliefAcceptanceMaskInto,
+            py::arg("state_ids"), py::arg("completed_map_tokens"), py::arg("accepted_out"),
+            "Validate a complete ISMCTS belief forest into caller-owned uint8[B] storage.")
         .def("ismcts_belief_diagnostics", &SelfPlayPool::ismctsBeliefDiagnostics,
             py::arg("state_ids"), py::arg("completed_map_tokens"),
             "Training-only full-ISMCTS belief submission diagnostics without source-map leakage.")
@@ -8577,7 +8791,7 @@ PYBIND11_MODULE(_game_engine, m) {
              "Training-only authoritative map-token labels; never consumed by native MCTS.")
         .def("submit_beliefs", &SelfPlayPool::submitBeliefs,
              py::arg("state_ids"), py::arg("completed_map_tokens"),
-             "Submit [B,T,23] roots or a [B,P,T,23] full-ISMCTS belief forest.")
+             "Submit [B,T,23] roots or a [B,P,T,23]/[B,P,K,T,23] full-ISMCTS belief forest.")
         .def("select_leaves", &SelfPlayPool::selectLeaves,
              py::arg("max_leaves") = 0,
              "Return a dense MCTS leaf batch for an external policy/value model.")

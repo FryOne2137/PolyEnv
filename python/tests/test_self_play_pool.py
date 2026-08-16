@@ -98,6 +98,30 @@ def _oracle_all_player_beliefs(
     return completed
 
 
+def _oracle_ismcts_particles(
+    pool: SelfPlayPool,
+    request: dict[str, np.ndarray],
+    particles: int,
+) -> np.ndarray:
+    """Test-only complete [B,P,K,T,23] hypotheses for the current states."""
+    assert particles > 0
+    state_ids = request["state_id"][:, 0]
+    full = pool.belief_targets_numpy(state_ids).astype(np.int32, copy=True)
+    num_envs, player_count, tiles, features = request["map_tokens"].shape
+    completed = np.empty(
+        (num_envs, player_count, particles, tiles, features), dtype=np.int32
+    )
+    for env in range(num_envs):
+        for player in range(player_count):
+            observed = request["map_tokens"][env, player]
+            hypothesis = full[env].copy()
+            visible = observed[:, 0] == 1
+            hypothesis[:, 0] = observed[:, 0]
+            hypothesis[visible] = observed[visible]
+            completed[env, player] = hypothesis
+    return completed
+
+
 def _advance_with_action(
     pool: SelfPlayPool,
     request: dict[str, np.ndarray],
@@ -284,6 +308,223 @@ def test_full_ismcts_uses_all_player_beliefs_and_redeterminizes_after_end_turn()
     invalid_root = invalid_pool.reset(seed=seed)
     with pytest.raises(ValueError, match="revealed tiles"):
         invalid_pool.submit_beliefs(invalid_root["state_id"], bad)
+
+
+def test_ismcts_acceptance_mask_recovers_only_rejected_multiplayer_slot() -> None:
+    players = (Bardur, Imperius, Oumaji)
+    pool = _pool(400, players=players)
+    root = pool.reset(seed=400)
+    request = pool.all_player_belief_requests()
+    particles = _oracle_ismcts_particles(pool, request, particles=3)
+
+    # The 4-D K=1 shorthand and the full 5-D form share the same validator.
+    single_particle = np.ascontiguousarray(particles[:, :, 0])
+    np.testing.assert_array_equal(
+        pool.ismcts_belief_acceptance_mask(root["state_id"], single_particle),
+        np.ones(2, dtype=np.uint8),
+    )
+    assert pool.ismcts_belief_diagnostics(root["state_id"], single_particle) == []
+
+    visible = int(np.flatnonzero(request["map_tokens"][1, 2, :, 0] == 1)[0])
+    particles[1, 2, 2, visible, 19] = (
+        int(particles[1, 2, 2, visible, 19]) + 1
+    ) % 5
+    accepted = pool.ismcts_belief_acceptance_mask(root["state_id"], particles)
+    assert accepted.dtype == np.uint8
+    np.testing.assert_array_equal(accepted, np.array([1, 0], dtype=np.uint8))
+
+    accepted_out = np.full(2, 9, dtype=np.uint8)
+    address = accepted_out.ctypes.data
+    assert (
+        pool.ismcts_belief_acceptance_mask_into(
+            root["state_id"], particles, accepted_out
+        )
+        is None
+    )
+    assert accepted_out.ctypes.data == address
+    np.testing.assert_array_equal(accepted_out, accepted)
+
+    diagnostics = pool.ismcts_belief_diagnostics(root["state_id"], particles)
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["env_id"] == 1
+    assert diagnostics[0]["player"] == 2
+    assert diagnostics[0]["particle"] == 2
+    assert diagnostics[0]["reason"] == "belief_build_error"
+
+    with pytest.raises(ValueError, match=r"env=1 player=2 particle=2") as error:
+        pool.submit_beliefs(root["state_id"], particles)
+    assert "native worker exception" not in str(error.value)
+    assert pool.search_active is False
+    assert pool.pending_count == 0
+
+    # Reset/resample only the rejected environment.  Slot 0 keeps its old
+    # state id and particles, then the complete batch passes one atomic submit.
+    buffers = _allocate_belief_buffers(pool)
+    pool.reset_slots_into(
+        np.array([1], dtype=np.int32),
+        np.array([9001], dtype=np.uint32),
+        np.array([[3, 4, 5]], dtype=np.int32),
+        buffers,
+    )
+    assert buffers["state_id"][0] == root["state_id"][0]
+    assert buffers["state_id"][1] != root["state_id"][1]
+    refreshed = pool.all_player_belief_requests()
+    replacement = _oracle_ismcts_particles(pool, refreshed, particles=3)
+    particles[1] = replacement[1]
+    np.testing.assert_array_equal(
+        pool.ismcts_belief_acceptance_mask(buffers["state_id"], particles),
+        np.ones(2, dtype=np.uint8),
+    )
+    pool.submit_beliefs(buffers["state_id"], particles)
+    assert pool.search_active is True
+
+
+def test_ismcts_acceptance_mask_rejects_one_active_player_particle() -> None:
+    pool = _pool(400)
+    root = pool.reset(seed=400)
+    request = pool.all_player_belief_requests()
+    particles = _oracle_ismcts_particles(pool, request, particles=2)
+
+    active = int(root["to_play"][0])
+    source = int(
+        np.flatnonzero(
+            (particles[0, active, 0, :, 3] == active)
+            & (particles[0, active, 0, :, 4] >= 0)
+        )[0]
+    )
+    hidden_empty_land = np.flatnonzero(
+        (request["map_tokens"][0, active, :, 0] == 0)
+        & (particles[0, active, 1, :, 4] < 0)
+        & np.isin(particles[0, active, 1, :, 19], (2, 3, 4))
+    )
+    assert len(hidden_empty_land) > 0
+    destination = int(hidden_empty_land[0])
+    unit_fields = [2, 3, 4, 5, 21, 22]
+    particles[0, active, 1, destination, unit_fields] = particles[
+        0, active, 1, source, unit_fields
+    ]
+
+    np.testing.assert_array_equal(
+        pool.ismcts_belief_acceptance_mask(root["state_id"], particles),
+        np.array([0, 1], dtype=np.uint8),
+    )
+    diagnostics = pool.ismcts_belief_diagnostics(root["state_id"], particles)
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["env_id"] == 0
+    assert diagnostics[0]["player"] == active
+    assert diagnostics[0]["particle"] == 1
+    assert diagnostics[0]["reason"] == "legal_action_mismatch"
+    assert diagnostics[0]["extra_actions"]
+
+    with pytest.raises(ValueError, match="ordered legal action list") as error:
+        pool.submit_beliefs(root["state_id"], particles)
+    assert "native worker exception" not in str(error.value)
+    assert pool.search_active is False
+    assert pool.pending_count == 0
+
+
+def test_ismcts_acceptance_mask_rejects_false_terminal_particle() -> None:
+    pool = _pool(400)
+    root = pool.reset(seed=400)
+    request = pool.all_player_belief_requests()
+    particles = _oracle_ismcts_particles(pool, request, particles=2)
+    active = int(root["to_play"][0])
+    perspective = 1 - active
+    belief = particles[0, perspective, 1]
+
+    opponent_units = np.flatnonzero(
+        (belief[:, 3] >= 0) & (belief[:, 3] != perspective)
+    )
+    belief[np.ix_(opponent_units, [2, 3, 4, 5, 21, 22])] = -1
+    opponent_centers = np.flatnonzero(
+        (belief[:, 14] == 2)
+        & (belief[:, 16] >= 0)
+        & (belief[:, 16] != perspective)
+    )
+    assert len(opponent_centers) > 0
+    opponent_city_ids = belief[opponent_centers, 15].copy()
+    for city_id in opponent_city_ids:
+        belief[belief[:, 6] == city_id, 6] = -1
+        belief[belief[:, 22] == city_id, 22] = -1
+    for center in opponent_centers:
+        belief[center, 9] = -1
+        belief[center, 10:14] = -1
+        belief[center, 14:18] = np.array([0, -1, -1, -1], dtype=np.int32)
+
+    np.testing.assert_array_equal(
+        pool.ismcts_belief_acceptance_mask(root["state_id"], particles),
+        np.array([0, 1], dtype=np.uint8),
+    )
+    diagnostics = pool.ismcts_belief_diagnostics(root["state_id"], particles)
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["env_id"] == 0
+    assert diagnostics[0]["player"] == perspective
+    assert diagnostics[0]["particle"] == 1
+    assert diagnostics[0]["reason"] == "belief_terminal"
+
+    with pytest.raises(ValueError, match="false terminal") as error:
+        pool.submit_beliefs(root["state_id"], particles)
+    assert "native worker exception" not in str(error.value)
+    assert pool.search_active is False
+    assert pool.pending_count == 0
+
+
+def test_ismcts_acceptance_mask_rejects_contract_staleness_and_active_search() -> None:
+    pool = _pool(400)
+    root = pool.reset(seed=400)
+    request = pool.all_player_belief_requests()
+    particles = _oracle_ismcts_particles(pool, request, particles=2)
+
+    stale = root["state_id"].copy()
+    stale[0] -= np.uint64(1)
+    accepted_out = np.full(2, 7, dtype=np.uint8)
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        pool.ismcts_belief_acceptance_mask(stale, particles)
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        pool.ismcts_belief_acceptance_mask_into(stale, particles, accepted_out)
+    np.testing.assert_array_equal(accepted_out, np.full(2, 7, dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="incorrect dtype"):
+        pool.ismcts_belief_acceptance_mask(
+            root["state_id"].astype(np.int64), particles
+        )
+    with pytest.raises(ValueError, match="incorrect dtype"):
+        pool.ismcts_belief_acceptance_mask(
+            root["state_id"], particles.astype(np.int64)
+        )
+    with pytest.raises(ValueError, match="C-contiguous"):
+        pool.ismcts_belief_acceptance_mask(root["state_id"], particles[..., ::-1])
+    strided_ids = np.empty(4, dtype=np.uint64)[::2]
+    strided_ids[:] = root["state_id"]
+    with pytest.raises(ValueError, match="C-contiguous"):
+        pool.ismcts_belief_acceptance_mask(strided_ids, particles)
+    with pytest.raises(ValueError, match="shape"):
+        pool.ismcts_belief_acceptance_mask(
+            root["state_id"], np.ascontiguousarray(particles[..., :-1, :])
+        )
+    with pytest.raises(ValueError, match="incorrect dtype"):
+        pool.ismcts_belief_acceptance_mask_into(
+            root["state_id"], particles, np.empty(2, dtype=np.int32)
+        )
+    with pytest.raises(ValueError, match="shape"):
+        pool.ismcts_belief_acceptance_mask_into(
+            root["state_id"], particles, np.empty(3, dtype=np.uint8)
+        )
+    noncontiguous_out = np.empty(4, dtype=np.uint8)[::2]
+    with pytest.raises(ValueError, match="C-contiguous"):
+        pool.ismcts_belief_acceptance_mask_into(
+            root["state_id"], particles, noncontiguous_out
+        )
+
+    pool.submit_beliefs(root["state_id"], particles)
+    with pytest.raises(RuntimeError, match="already active"):
+        pool.ismcts_belief_acceptance_mask(root["state_id"], particles)
+    accepted_out.fill(6)
+    with pytest.raises(RuntimeError, match="already active"):
+        pool.ismcts_belief_acceptance_mask_into(
+            root["state_id"], particles, accepted_out
+        )
+    np.testing.assert_array_equal(accepted_out, np.full(2, 6, dtype=np.uint8))
 
 
 def test_self_play_visible_action_history_is_compact_and_resets_per_episode() -> None:
