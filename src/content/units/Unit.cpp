@@ -25,7 +25,13 @@ void Unit::setPos(Pos p) { pos = p; }
 int Unit::getHealth() const { return health; }
 int Unit::getMaxHealth() const { return maxHealth; }
 void Unit::setHealth(int v) { health = v; }
-void Unit::setMaxHealth(int v) { maxHealth = v; }
+void Unit::setMaxHealth(int v) {
+    maxHealth = v < 0 ? 0 : v;
+    // Keep the runtime invariant consumed by model-map serialization and
+    // BeliefWorldBuilder.  Lowering a maximum must never leave health above
+    // it; increasing the maximum intentionally preserves current health.
+    if (health > maxHealth) health = maxHealth;
+}
 
 float Unit::getAttack() const { return attack; }
 float Unit::getDefense() const { return defense; }

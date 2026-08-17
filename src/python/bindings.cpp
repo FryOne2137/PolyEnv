@@ -6724,6 +6724,35 @@ public:
                     if (issue.failure == IsmctsBeliefFailure::BuildError) {
                         row["reason"] = "belief_build_error";
                         row["error"] = issue.error;
+                        // Report the first malformed unit row from the caller's
+                        // submitted hypothesis. This never reads the hidden
+                        // source map and makes deterministic build failures
+                        // actionable from a league SQLite record.
+                        const size_t tokenStride = tileCount() * kMapTokenFeatureCount;
+                        const size_t forestStride = players * input.particles * tokenStride;
+                        const int32_t* submitted = input.tokens.data()
+                            + env * forestStride
+                            + (player * input.particles + particle) * tokenStride;
+                        for (size_t tile = 0; tile < tileCount(); ++tile) {
+                            const int32_t* token = submitted + tile * kMapTokenFeatureCount;
+                            const bool hasUnit = token[4] != -1;
+                            const bool invalidUnit = hasUnit && (
+                                token[4] < 1 || token[4] > static_cast<int>(UnitType::GiantSuper) ||
+                                token[3] < 0 || token[3] >= playerCount_ || token[2] < 0 ||
+                                token[21] < token[2] || token[22] < -1);
+                            const bool staleUnitFields = !hasUnit && (
+                                token[2] != -1 || token[3] != -1 ||
+                                token[21] != -1 || token[22] != -1);
+                            if (!invalidUnit && !staleUnitFields) continue;
+                            row["invalid_unit_tile"] = static_cast<int>(tile);
+                            row["unit_health"] = token[2];
+                            row["unit_owner"] = token[3];
+                            row["unit_type"] = token[4];
+                            row["unit_max_health"] = token[21];
+                            row["unit_origin_city"] = token[22];
+                            row["unit_validation_code"] = invalidUnit ? 1 : 2;
+                            break;
+                        }
                     } else if (issue.failure == IsmctsBeliefFailure::FalseTerminal) {
                         row["reason"] = "belief_terminal";
                     } else {

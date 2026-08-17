@@ -544,8 +544,15 @@ bool MovementSystem::forceMove(Game& game, UnitId pushedUnit, Pos spawnPos) {
                     Unit nu = UnitFactory::create(original, UnitSystem::getOwnerId(game, pushedUnit), to);
                     nu.setId(pushedUnit);
 
-                    // Keep HP / status.
-                    nu.setHealth(UnitSystem::getHealth(game, pushedUnit));
+                    // Keep the complete HP pool. Veteran/ruin bonuses can make
+                    // the carried unit healthier than the base land template;
+                    // copying HP without max HP produced invalid public tokens
+                    // after a forced disembark.
+                    const int carriedMaxHp = std::max(0, UnitSystem::getMaxHealth(game, pushedUnit));
+                    const int carriedHp = std::clamp(
+                        UnitSystem::getHealth(game, pushedUnit), 0, carriedMaxHp);
+                    nu.setMaxHealth(carriedMaxHp);
+                    nu.setHealth(carriedHp);
                     nu.setVeteran(UnitSystem::isVeteran(game, pushedUnit));
                     nu.setPoisoned(UnitSystem::isPoisoned(game, pushedUnit));
                     nu.setAttackedThisTurn(UnitSystem::attackedThisTurn(game, pushedUnit));
@@ -1072,8 +1079,14 @@ bool MovementSystem::move(Game& game, UnitId unitId, Pos to) {
                 Unit nu = UnitFactory::create(original, UnitSystem::getOwnerId(game, unitId), to);
                 nu.setId(unitId);
 
-                // Keep HP / status.
-                nu.setHealth(UnitSystem::getHealth(game, unitId));
+                // Keep both HP and max HP.  The carrier inherited this pool
+                // while embarking, so restoring only HP can create hp>max_hp
+                // for veteran or otherwise boosted units.
+                const int carriedMaxHp = std::max(0, UnitSystem::getMaxHealth(game, unitId));
+                const int carriedHp = std::clamp(
+                    UnitSystem::getHealth(game, unitId), 0, carriedMaxHp);
+                nu.setMaxHealth(carriedMaxHp);
+                nu.setHealth(carriedHp);
                 nu.setVeteran(UnitSystem::isVeteran(game, unitId));
                 nu.setPoisoned(UnitSystem::isPoisoned(game, unitId));
                 nu.setAttackedThisTurn(UnitSystem::attackedThisTurn(game, unitId));

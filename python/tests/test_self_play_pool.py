@@ -379,6 +379,38 @@ def test_ismcts_acceptance_mask_recovers_only_rejected_multiplayer_slot() -> Non
     assert pool.search_active is True
 
 
+def test_ismcts_build_error_reports_the_invalid_unit_fields() -> None:
+    pool = _pool(407)
+    root = pool.reset(seed=407)
+    request = pool.all_player_belief_requests()
+    particles = _oracle_ismcts_particles(pool, request, particles=2)
+
+    active = int(root["to_play"][0])
+    tile = int(
+        np.flatnonzero(
+            (request["map_tokens"][0, active, :, 0] == 0)
+            & (particles[0, active, 1, :, 4] >= 0)
+        )[0]
+    )
+    particles[0, active, 1, tile, 2] = 15
+    particles[0, active, 1, tile, 21] = 10
+
+    np.testing.assert_array_equal(
+        pool.ismcts_belief_acceptance_mask(root["state_id"], particles),
+        np.array([0, 1], dtype=np.uint8),
+    )
+    diagnostics = pool.ismcts_belief_diagnostics(root["state_id"], particles)
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["env_id"] == 0
+    assert diagnostics[0]["player"] == active
+    assert diagnostics[0]["particle"] == 1
+    assert diagnostics[0]["reason"] == "belief_build_error"
+    assert diagnostics[0]["invalid_unit_tile"] == tile
+    assert diagnostics[0]["unit_health"] == 15
+    assert diagnostics[0]["unit_max_health"] == 10
+    assert diagnostics[0]["unit_validation_code"] == 1
+
+
 def test_ismcts_acceptance_mask_rejects_one_active_player_particle() -> None:
     pool = _pool(400)
     root = pool.reset(seed=400)
