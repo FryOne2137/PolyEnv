@@ -200,6 +200,14 @@ if(GAME_ENGINE_BUILD_TESTS)
     target_link_libraries(self_play_routing_tests PRIVATE game_engine_lib)
     target_compile_features(self_play_routing_tests PRIVATE cxx_std_20)
     add_test(NAME self_play_routing_tests COMMAND self_play_routing_tests)
+
+    add_executable(heal_legal_action_tests tests/HealLegalActionTests.cpp)
+    target_link_libraries(heal_legal_action_tests PRIVATE game_engine_lib)
+    target_compile_features(heal_legal_action_tests PRIVATE cxx_std_20)
+    target_compile_definitions(heal_legal_action_tests PRIVATE
+        GAME_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME heal_legal_action_tests COMMAND heal_legal_action_tests)
 endif()
 
 if(GAME_ENGINE_BUILD_APPS)

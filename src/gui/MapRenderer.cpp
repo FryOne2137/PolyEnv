@@ -627,6 +627,12 @@ bool MapRenderer::consumeAutoPlayToggleRequested() {
     return v;
 }
 
+bool MapRenderer::consumeReplayPreviousMoveRequested() {
+    const bool value = replayPreviousMoveRequested;
+    replayPreviousMoveRequested = false;
+    return value;
+}
+
 bool MapRenderer::consumeReplayNextMoveRequested() {
     const bool value = replayNextMoveRequested;
     replayNextMoveRequested = false;
@@ -655,6 +661,7 @@ void MapRenderer::setActionAppliedCallback(std::function<void(size_t)> callback)
 
 void MapRenderer::setReplayViewer(bool active) {
     replayViewer = active;
+    replayPreviousMoveRequested = false;
     replayNextMoveRequested = false;
     replayAutoPlayToggleRequested = false;
     replaySeekRequested.reset();
@@ -763,24 +770,42 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                 }
 
                 if (replayViewer) {
+                    if (btnReplayPrevious.contains(up)) {
+                        replayPreviousMoveRequested = true;
+                        replayIntervalInputActive = false;
+                        return;
+                    }
+                    if (btnReplayAuto.contains(up)) {
+                        replayAutoPlayToggleRequested = true;
+                        replayIntervalInputActive = false;
+                        return;
+                    }
+                    if (btnReplayNext.contains(up)) {
+                        replayNextMoveRequested = true;
+                        replayIntervalInputActive = false;
+                        return;
+                    }
+                    if (replayTimelineRect.contains(up)) {
+                        const float t = std::clamp(
+                            (up.x - replayTimelineRect.left) / replayTimelineRect.width,
+                            0.f,
+                            1.f
+                        );
+                        replaySeekRequested = static_cast<size_t>(std::lround(t * float(replayMoveCount)));
+                        replayIntervalInputActive = false;
+                        return;
+                    }
+                    if (replayIntervalRect.contains(up)) {
+                        replayIntervalInputActive = true;
+                        return;
+                    }
+                    replayIntervalInputActive = false;
+
                     if (!showOverview) {
-                        if (btnReplayNext.contains(up)) {
-                            replayNextMoveRequested = true;
-                        } else if (btnReplayAuto.contains(up)) {
-                            replayAutoPlayToggleRequested = true;
-                        } else if (replayTimelineRect.contains(up)) {
-                            const float t = std::clamp(
-                                (up.x - replayTimelineRect.left) / replayTimelineRect.width,
-                                0.f,
-                                1.f
-                            );
-                            replaySeekRequested = static_cast<size_t>(std::lround(t * float(replayMoveCount)));
-                        } else if (btnVisibleActions.contains(up)) {
+                        if (btnVisibleActions.contains(up)) {
                             showVisibleActions();
                         } else if (btnOverview.contains(up)) {
                             toggleOverviewRequested = true;
-                        } else {
-                            replayIntervalInputActive = replayIntervalRect.contains(up);
                         }
                         return;
                     }
@@ -3011,6 +3036,143 @@ if (!showOverview) {
     }
 }
 
+            // --- Replay player (bottom-left, available in every replay view) ---
+            if (replayViewer) {
+                const bool hasFont = ensureUIFontLoaded();
+                const float playerW = std::max(0.f, panelRect.left);
+                const float playerH = 90.f;
+                const sf::FloatRect playerRect(
+                    0.f,
+                    std::max(0.f, static_cast<float>(rtSzPanel.y) - playerH),
+                    playerW,
+                    playerH
+                );
+
+                sf::RectangleShape background({playerRect.width, playerRect.height});
+                background.setPosition({playerRect.left, playerRect.top});
+                background.setFillColor(sf::Color(18, 18, 20, 242));
+                background.setOutlineThickness(1.f);
+                background.setOutlineColor(sf::Color(82, 82, 88, 245));
+                rt.draw(background);
+
+                const float innerLeft = playerRect.left + 14.f;
+                const float innerWidth = playerRect.width - 28.f;
+                replayTimelineRect = sf::FloatRect(innerLeft, playerRect.top + 22.f, innerWidth, 18.f);
+                replayIntervalRect = sf::FloatRect(
+                    playerRect.left + playerRect.width - 78.f,
+                    playerRect.top + 3.f,
+                    64.f,
+                    18.f
+                );
+
+                const sf::FloatRect trackRect(
+                    replayTimelineRect.left,
+                    replayTimelineRect.top + 6.f,
+                    replayTimelineRect.width,
+                    6.f
+                );
+                sf::RectangleShape track({trackRect.width, trackRect.height});
+                track.setPosition({trackRect.left, trackRect.top});
+                track.setFillColor(sf::Color(62, 62, 68, 255));
+                rt.draw(track);
+
+                const float progress = replayMoveCount == 0
+                    ? 0.f
+                    : float(replayCurrentMove) / float(replayMoveCount);
+                sf::RectangleShape progressFill({trackRect.width * progress, trackRect.height});
+                progressFill.setPosition({trackRect.left, trackRect.top});
+                progressFill.setFillColor(sf::Color(88, 190, 122, 255));
+                rt.draw(progressFill);
+
+                constexpr float knobRadius = 6.f;
+                sf::CircleShape knob(knobRadius);
+                knob.setOrigin(knobRadius, knobRadius);
+                knob.setPosition(
+                    trackRect.left + trackRect.width * progress,
+                    trackRect.top + trackRect.height * 0.5f
+                );
+                knob.setFillColor(sf::Color(235, 245, 238));
+                knob.setOutlineThickness(2.f);
+                knob.setOutlineColor(sf::Color(65, 145, 90));
+                rt.draw(knob);
+
+                const float buttonY = playerRect.top + 47.f;
+                const float buttonH = 33.f;
+                const float sideW = 58.f;
+                const float centerW = 136.f;
+                const float buttonGap = 8.f;
+                const float controlsW = 2.f * sideW + centerW + 2.f * buttonGap;
+                const float controlsLeft = playerRect.left + (playerRect.width - controlsW) * 0.5f;
+                btnReplayPrevious = sf::FloatRect(controlsLeft, buttonY, sideW, buttonH);
+                btnReplayAuto = sf::FloatRect(controlsLeft + sideW + buttonGap, buttonY, centerW, buttonH);
+                btnReplayNext = sf::FloatRect(btnReplayAuto.left + centerW + buttonGap, buttonY, sideW, buttonH);
+
+                const auto drawReplayButton = [&](const sf::FloatRect& rect, bool enabled,
+                                                   bool active, const char* label) {
+                    sf::RectangleShape button({rect.width, rect.height});
+                    button.setPosition({rect.left, rect.top});
+                    if (!enabled) {
+                        button.setFillColor(sf::Color(31, 31, 34, 235));
+                    } else if (active) {
+                        button.setFillColor(sf::Color(125, 55, 55, 245));
+                    } else {
+                        button.setFillColor(sf::Color(43, 78, 56, 245));
+                    }
+                    button.setOutlineThickness(1.f);
+                    button.setOutlineColor(enabled ? sf::Color(115, 115, 120) : sf::Color(60, 60, 64));
+                    rt.draw(button);
+
+                    if (!hasFont) return;
+                    sf::Text text(label, uiFont, 15);
+                    text.setFillColor(enabled ? sf::Color(245, 245, 245) : sf::Color(110, 110, 115));
+                    const sf::FloatRect bounds = text.getLocalBounds();
+                    text.setPosition(
+                        rect.left + (rect.width - bounds.width) * 0.5f - bounds.left,
+                        rect.top + (rect.height - bounds.height) * 0.5f - bounds.top - 1.f
+                    );
+                    rt.draw(text);
+                };
+
+                drawReplayButton(btnReplayPrevious, replayCurrentMove > 0, false, "|<");
+                drawReplayButton(
+                    btnReplayAuto,
+                    true,
+                    replayAutoPlayActive,
+                    replayAutoPlayActive ? "Stop" : "Resume"
+                );
+                drawReplayButton(btnReplayNext, replayCurrentMove < replayMoveCount, false, ">|");
+
+                sf::RectangleShape speedInput({replayIntervalRect.width, replayIntervalRect.height});
+                speedInput.setPosition({replayIntervalRect.left, replayIntervalRect.top});
+                speedInput.setFillColor(sf::Color(29, 29, 32, 255));
+                speedInput.setOutlineThickness(replayIntervalInputActive ? 2.f : 1.f);
+                speedInput.setOutlineColor(
+                    replayIntervalInputActive ? sf::Color(120, 210, 140) : sf::Color(90, 90, 96)
+                );
+                rt.draw(speedInput);
+
+                if (hasFont) {
+                    sf::Text moveLabel(
+                        "Move " + std::to_string(replayCurrentMove) + " / " + std::to_string(replayMoveCount),
+                        uiFont,
+                        12
+                    );
+                    moveLabel.setFillColor(sf::Color(225, 225, 228));
+                    moveLabel.setPosition(innerLeft, playerRect.top + 3.f);
+                    rt.draw(moveLabel);
+
+                    sf::Text speedLabel("Speed", uiFont, 11);
+                    speedLabel.setFillColor(sf::Color(165, 165, 170));
+                    speedLabel.setPosition(replayIntervalRect.left - 43.f, playerRect.top + 4.f);
+                    rt.draw(speedLabel);
+
+                    sf::Text speedValue(replayIntervalText + " s", uiFont, 11);
+                    speedValue.setFillColor(sf::Color(235, 235, 238));
+                    speedValue.setPosition(replayIntervalRect.left + 6.f, replayIntervalRect.top + 1.f);
+                    rt.draw(speedValue);
+                }
+            }
+
             // --- Right-side info panel background (drawn last, on top) ---
             {
                 sf::RectangleShape panelBg;
@@ -3443,10 +3605,12 @@ if (!showOverview) {
                 g_techHitPos.clear();
                 // ================= FONTLESS UI =================
                 const bool hasFont = ensureUIFontLoaded();
-                // Buttons area (bottom of right panel)
+                // Gameplay controls or replay inspection buttons (bottom of right panel).
                 const float bw = panelRect.width - 2.f * panelPad;
                 const float bh = 40.f;
-                const float baseY = panelRect.top + panelRect.height - panelPad - (bh * 3.f + 20.f);
+                const float baseY = replayViewer
+                    ? panelRect.top + panelRect.height - panelPad - bh
+                    : panelRect.top + panelRect.height - panelPad - (bh * 3.f + 20.f);
 
                 auto addLine = [&](float& ty, const std::string& s, unsigned sz = 16) {
                     if (!hasFont) return;
@@ -3481,16 +3645,16 @@ if (!showOverview) {
 
                 float yAfterPlayers = panelPad + 30.f;
 
-                btnEndTurn  = sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
-                btnAutoPlay = sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
-                const float mapButtonY = baseY + 2.f * (bh + 10.f);
+                btnEndTurn = replayViewer
+                    ? sf::FloatRect()
+                    : sf::FloatRect(panelRect.left + panelPad, baseY, bw, bh);
+                btnAutoPlay = replayViewer
+                    ? sf::FloatRect()
+                    : sf::FloatRect(panelRect.left + panelPad, baseY + bh + 10.f, bw, bh);
+                const float mapButtonY = replayViewer ? baseY : baseY + 2.f * (bh + 10.f);
                 btnVisibleActions = sf::FloatRect(panelRect.left + panelPad, mapButtonY, bw * 0.5f - 3.f, bh);
                 btnOverview = sf::FloatRect(btnVisibleActions.left + btnVisibleActions.width + 6.f, mapButtonY, bw - btnVisibleActions.width - 6.f, bh);
                 btnBack     = btnOverview;
-                btnReplayNext = btnEndTurn;
-                btnReplayAuto = btnAutoPlay;
-                replayTimelineRect = sf::FloatRect(panelRect.left + panelPad, baseY - 58.f, bw, 12.f);
-                replayIntervalRect = sf::FloatRect(panelRect.left + panelPad, baseY - 38.f, 86.f, 24.f);
 
                 auto drawBtn = [&](const sf::FloatRect& r, bool active, const char* label) {
                     sf::RectangleShape b;
@@ -3517,61 +3681,13 @@ if (!showOverview) {
                     }
                 };
 
-                drawBtn(btnEndTurn, false, replayViewer ? "Next move" : "End Turn");
-                drawBtn(
-                    btnAutoPlay,
-                    replayViewer ? replayAutoPlayActive : autoPlayActive,
-                    replayViewer
-                        ? (replayAutoPlayActive ? "Auto replay: ON" : "Auto replay: OFF")
-                        : (autoPlayActive ? "Auto Random: ON" : "Auto Random: OFF")
-                );
+                if (!replayViewer) {
+                    drawBtn(btnEndTurn, false, "End Turn");
+                    drawBtn(btnAutoPlay, autoPlayActive,
+                        autoPlayActive ? "Auto Random: ON" : "Auto Random: OFF");
+                }
                 drawBtn(btnVisibleActions, false, "Visible actions");
                 drawBtn(btnOverview, false, "Map View");
-
-                if (replayViewer) {
-                    sf::RectangleShape track({replayTimelineRect.width, replayTimelineRect.height});
-                    track.setPosition({replayTimelineRect.left, replayTimelineRect.top});
-                    track.setFillColor(sf::Color(55, 55, 55, 255));
-                    track.setOutlineThickness(1.f);
-                    track.setOutlineColor(sf::Color(110, 110, 110, 255));
-                    rt.draw(track);
-
-                    const float progress = replayMoveCount == 0
-                        ? 0.f
-                        : float(replayCurrentMove) / float(replayMoveCount);
-                    sf::RectangleShape fill({replayTimelineRect.width * progress, replayTimelineRect.height});
-                    fill.setPosition({replayTimelineRect.left, replayTimelineRect.top});
-                    fill.setFillColor(sf::Color(90, 180, 110, 255));
-                    rt.draw(fill);
-
-                    sf::RectangleShape input({replayIntervalRect.width, replayIntervalRect.height});
-                    input.setPosition({replayIntervalRect.left, replayIntervalRect.top});
-                    input.setFillColor(sf::Color(30, 30, 30, 255));
-                    input.setOutlineThickness(replayIntervalInputActive ? 2.f : 1.f);
-                    input.setOutlineColor(replayIntervalInputActive ? sf::Color(120, 210, 140) : sf::Color(100, 100, 100));
-                    rt.draw(input);
-
-                    if (hasFont) {
-                        sf::Text label;
-                        label.setFont(uiFont);
-                        label.setCharacterSize(13);
-                        label.setFillColor(sf::Color(225, 225, 225));
-                        label.setString(
-                            "Move " + std::to_string(replayCurrentMove) + "/" + std::to_string(replayMoveCount) +
-                            "   interval"
-                        );
-                        label.setPosition(replayTimelineRect.left, replayTimelineRect.top - 19.f);
-                        rt.draw(label);
-
-                        sf::Text value;
-                        value.setFont(uiFont);
-                        value.setCharacterSize(13);
-                        value.setFillColor(sf::Color(240, 240, 240));
-                        value.setString(replayIntervalText + " s");
-                        value.setPosition(replayIntervalRect.left + 7.f, replayIntervalRect.top + 3.f);
-                        rt.draw(value);
-                    }
-                }
 
                 // Top indicators (turn + current player)
                 {

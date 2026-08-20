@@ -32,6 +32,10 @@ the player whose turn is shown at the selected point on the timeline. The event
 history is also rewound when seeking to an earlier move. On macOS, load and save
 use the system file picker.
 
+Replay controls are arranged like a video player at the bottom-left of the map:
+the timeline is above `Previous`, `Resume`/`Stop`, and `Next` controls. They stay
+available while inspecting `Map View`.
+
 ## Game Rules In The GUI
 
 The GUI shows legal actions from the engine. It blocks other actions while a

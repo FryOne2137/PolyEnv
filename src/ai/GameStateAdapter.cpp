@@ -80,7 +80,7 @@ void enumerateLegalActions(const Game& game, PlayerId pid, EmitFn&& emit) {
             emit(a);
         }
 
-        if (UnitSystem::hasSkill(game, uid, UnitSkill::Heal)) {
+        if (game.canHeal(pid, uid)) {
             Action a{};
             a.type = Action::Type::Heal;
             a.pid = pid;

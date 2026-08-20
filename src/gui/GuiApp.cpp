@@ -160,6 +160,9 @@ int GuiApp::run() {
                     mapRenderer->setAutoPlayActive(autoRandomEnabled);
                     autoRandomClock.restart();
                 }
+                if (mode == Mode::ReplayViewer && mapRenderer->consumeReplayPreviousMoveRequested()) {
+                    if (replayMove_ > 0) seekReplayMove(replayMove_ - 1);
+                }
                 if (mode == Mode::ReplayViewer && mapRenderer->consumeReplayNextMoveRequested()) {
                     advanceReplayMove();
                 }

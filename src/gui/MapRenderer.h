@@ -52,6 +52,7 @@ public:
     bool consumeEndTurnClicked();
     bool consumeToggleOverviewRequested();
     bool consumeAutoPlayToggleRequested();
+    bool consumeReplayPreviousMoveRequested();
     bool consumeReplayNextMoveRequested();
     bool consumeReplayAutoPlayToggleRequested();
     std::optional<size_t> consumeReplaySeekRequested();
@@ -117,6 +118,7 @@ private:
     std::function<void(size_t)> actionAppliedCallback;
 
     bool replayViewer = false;
+    bool replayPreviousMoveRequested = false;
     bool replayNextMoveRequested = false;
     bool replayAutoPlayToggleRequested = false;
     std::optional<size_t> replaySeekRequested;
@@ -142,6 +144,7 @@ private:
     sf::FloatRect btnVisibleActions{};
     sf::FloatRect btnBack{};
     sf::FloatRect visibleActionJsonCloseRect_{};
+    sf::FloatRect btnReplayPrevious{};
     sf::FloatRect btnReplayNext{};
     sf::FloatRect btnReplayAuto{};
     sf::FloatRect replayTimelineRect{};
