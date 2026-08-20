@@ -208,6 +208,14 @@ if(GAME_ENGINE_BUILD_TESTS)
         GAME_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME heal_legal_action_tests COMMAND heal_legal_action_tests)
+
+    add_executable(meeting_economy_tests tests/MeetingEconomyTests.cpp)
+    target_link_libraries(meeting_economy_tests PRIVATE game_engine_lib)
+    target_compile_features(meeting_economy_tests PRIVATE cxx_std_20)
+    target_compile_definitions(meeting_economy_tests PRIVATE
+        GAME_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME meeting_economy_tests COMMAND meeting_economy_tests)
 endif()
 
 if(GAME_ENGINE_BUILD_APPS)

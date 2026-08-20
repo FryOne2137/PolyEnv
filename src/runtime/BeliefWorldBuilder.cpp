@@ -189,6 +189,12 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
         if (static_cast<PlayerId>(i) == perspective) {
             belief.players.back().addStars(sourcePlayer.getStars());
             for (TechId tech : sourcePlayer.getTechs()) belief.players.back().addTech(tech);
+            for (size_t other = 0; other < observedSource.players.size(); ++other) {
+                const PlayerId otherId = static_cast<PlayerId>(other);
+                if (sourcePlayer.hasMet(otherId)) {
+                    (void)belief.players.back().markMet(otherId);
+                }
+            }
             // A monument's earned/placed state belongs to its owner and is
             // therefore known to this belief perspective.  It controls the
             // public legal build actions on already-visible tiles; omitting it

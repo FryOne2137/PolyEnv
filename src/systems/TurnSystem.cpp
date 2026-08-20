@@ -15,6 +15,7 @@
 #include "systems/MonumentSystem.h"
 #include "systems/UnitSystem.h"
 #include "systems/StarsSystem.h"
+#include "systems/VisionSystem.h"
 
 int TurnSystem::calcIncomeForPlayer(const Game& game, PlayerId pid) {
     return StarsSystem::calcIncomeForPlayer(game, pid);
@@ -24,6 +25,7 @@ int TurnSystem::calcIncomeForPlayer(const Game& game, PlayerId pid) {
 void TurnSystem::startTurn(Game& game) {
     const PlayerId pid = game.getCurrentPlayerId();
 
+    VisionSystem::resolveCurrentMeetingsFor(game, pid);
 
     if (game.getTurnNumber()!=0) {
         applyIncomeForCurrentPlayer(game,pid);

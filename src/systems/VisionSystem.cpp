@@ -22,6 +22,65 @@
 #include "terrain/BaseTerrainEnum.h"
 #include "terrain/VisibilityEnum.h"
 
+namespace {
+
+void awardMeetingIfFirst(Game& game, PlayerId observer, PlayerId discovered) {
+    if (observer == kNoPlayer || discovered == kNoPlayer || observer == discovered) return;
+    if (!PlayerSystem::playerExists(game, observer) ||
+        !PlayerSystem::playerExists(game, discovered)) return;
+    if (!PlayerSystem::markMet(game, observer, discovered)) return;
+
+    const int discoveredScore = ScoreSystem::getScore(game, discovered);
+    PlayerSystem::addStars(game, observer, VisionSystem::meetingReward(discoveredScore));
+}
+
+bool unitHasActivatedHide(const Game& game, UnitId unitId) {
+    if (!UnitSystem::unitExists(game, unitId)) return false;
+    if (!UnitSystem::hasSkill(game, unitId, UnitSkill::Hide)) return false;
+    const Pos lastMove = UnitSystem::getLastMoveDir(game, unitId);
+    return lastMove.x != 0 || lastMove.y != 0;
+}
+
+void discoverPlayerAtTile(Game& game, PlayerId observer, Pos pos) {
+    const Map& map = game.getMap();
+    if (!map.inBounds(pos)) return;
+
+    const Tile& tile = map.at(pos);
+    const UnitId unitId = map.unitOn(pos);
+    if (unitId != Map::kNoUnit && UnitSystem::unitExists(game, unitId) &&
+        !unitHasActivatedHide(game, unitId)) {
+        awardMeetingIfFirst(game, observer, UnitSystem::getOwnerId(game, unitId));
+    }
+
+    if (tile.getSettlementType() != SettlementTypeEnum::City) return;
+    const CityId cityId = CitySystem::resolveCityIdForTile(game, tile);
+    if (!CitySystem::cityExists(game, cityId)) return;
+    awardMeetingIfFirst(
+        game, observer, static_cast<PlayerId>(CitySystem::getCityOwner(game, cityId)));
+}
+
+bool playerIsCurrentlyVisibleTo(const Game& game, PlayerId observer, PlayerId target) {
+    for (UnitId targetUnit : PlayerSystem::getUnits(game, target)) {
+        if (!UnitSystem::unitExists(game, targetUnit)) continue;
+        if (UnitSystem::getHealth(game, targetUnit) <= 0) continue;
+        if (unitHasActivatedHide(game, targetUnit)) continue;
+        if (game.isTileVisibleForPlayer(observer, UnitSystem::getPos(game, targetUnit))) {
+            return true;
+        }
+    }
+
+    for (CityId targetCity : PlayerSystem::getCities(game, target)) {
+        if (!CitySystem::cityExists(game, targetCity)) continue;
+        if (game.isTileVisibleForPlayer(observer, CitySystem::getCityPos(game, targetCity))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
 // Local helper for explorer fog checks
 bool VisionSystem::isFogForPlayer(const Tile& t, PlayerIndex idx) {
     return !isRevealed(t.getVisibility(), idx);
@@ -87,6 +146,14 @@ void VisionSystem::revealArea(
             t.setVisibility(v);
             game.noteTileVisible(pid, p);
 
+            // Meeting discovery is about seeing an opponent now, not about
+            // whether the terrain tile itself was revealed for the first time.
+            // Only the active player discovers opponents during their actions;
+            // reciprocal discovery is resolved from live vision at end of turn.
+            if (source != RevealSource::Initial && pid == game.getCurrentPlayerId()) {
+                discoverPlayerAtTile(game, pid, p);
+            }
+
             if (!wasFog) continue;
 
             // 🔒 BLOKADA: start gry nic nie odpala
@@ -96,34 +163,34 @@ void VisionSystem::revealArea(
             // ✅ UNIT + EXPLORER
             LighthouseSystem::onTileRevealed(game, pid, p);
 
-            //Player& me = game.getPlayer(pid);
-
-            // ---- WROGA JEDNOSTKA ----
-            const UnitId uid = map.unitOn(p);
-            if (uid != Map::kNoUnit && UnitSystem::unitExists(game, uid)) {
-                const PlayerId enemyOwner = UnitSystem::getOwnerId(game, uid);
-                if (enemyOwner != pid) {
-                    if (PlayerSystem::markMet(game, pid, enemyOwner)) {
-                        const int enemyScore = ScoreSystem::getScore(game, enemyOwner);
-                        PlayerSystem::addStars(game, pid, meetingReward(enemyScore));
-                    }
-                }
-            }
-
-            // ---- WROGIE MIASTO ----
-            if (t.getSettlementType() == SettlementTypeEnum::City) {
-                const City* c = CitySystem::getCityBySettlementId(game, t.getSettlementId());
-                const CityId cid = c ? c->getCityId() : kNoCity;
-                const uint8_t owner = (cid == kNoCity) ? 0 : CitySystem::getCityOwner(game, cid);
-
-                if (cid != kNoCity && owner != pid) {
-                    if (PlayerSystem::markMet(game, pid, owner)) {
-                        const int enemyScore = ScoreSystem::getScore(game, owner);
-                        PlayerSystem::addStars(game, pid, meetingReward(enemyScore));
-                    }
-                }
-            }
         }
+    }
+}
+
+void VisionSystem::resolveCurrentMeetingsFor(Game& game, PlayerId observer) {
+    if (!PlayerSystem::playerExists(game, observer)) return;
+
+    const size_t playerCount = game.getPlayers().size();
+    for (size_t targetIndex = 0; targetIndex < playerCount; ++targetIndex) {
+        const PlayerId target = static_cast<PlayerId>(targetIndex);
+        if (target == observer || PlayerSystem::hasMet(game, observer, target)) continue;
+        if (!playerIsCurrentlyVisibleTo(game, observer, target)) continue;
+        awardMeetingIfFirst(game, observer, target);
+    }
+}
+
+void VisionSystem::resolveEndTurnMeetings(Game& game, PlayerId activePlayer) {
+    if (!PlayerSystem::playerExists(game, activePlayer)) return;
+
+    // Covers opponents that became visible without revealing new terrain.
+    resolveCurrentMeetingsFor(game, activePlayer);
+
+    const size_t playerCount = game.getPlayers().size();
+    for (size_t observerIndex = 0; observerIndex < playerCount; ++observerIndex) {
+        const PlayerId observer = static_cast<PlayerId>(observerIndex);
+        if (observer == activePlayer || PlayerSystem::hasMet(game, observer, activePlayer)) continue;
+        if (!playerIsCurrentlyVisibleTo(game, observer, activePlayer)) continue;
+        awardMeetingIfFirst(game, observer, activePlayer);
     }
 }
 

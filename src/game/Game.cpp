@@ -304,6 +304,9 @@ void Game::resetVisibilityCache(size_t playerCount) {
 
 void Game::newGame(const NewGameConfig& cfg) {
     citiesConnectionRuntime = {};
+    currentPlayer = 0;
+    turnNumber = 0;
+    winner = kNoPlayer;
 
     // Load static game data (unit templates) before any units are spawned.
     if (!GameDataSystem::isUnitsLoaded()) {
@@ -433,10 +436,6 @@ void Game::newGame(const NewGameConfig& cfg) {
         VisionSystem::revealForPlayerFromUnits(*this, static_cast<PlayerId>(i));
     }
 
-    currentPlayer = 0;
-    turnNumber = 0;
-    winner = kNoPlayer;
-
     // 5) start tury gracza 0
     TurnSystem::startTurn(*this);
     updateWinnerByCapitals();
@@ -460,6 +459,7 @@ bool Game::endTurn(PlayerId pid) {
     if (hasPendingCityUpgrade(pid)) return false;
 
     TurnSystem::endTurn(*this);
+    VisionSystem::resolveEndTurnMeetings(*this, pid);
 
     currentPlayer = static_cast<PlayerId>((currentPlayer + 1) % players.size());
     if (currentPlayer == 0) {

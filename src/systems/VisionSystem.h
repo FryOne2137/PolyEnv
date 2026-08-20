@@ -36,6 +36,13 @@ public:
     static int countRevealedTiles(const Game& game, PlayerId playerId);
     static int meetingReward(int enemyScore);
 
+    // Resolves one-way meetings visible to `observer` in the current board state.
+    static void resolveCurrentMeetingsFor(Game& game, PlayerId observer);
+
+    // At the end of `activePlayer`'s turn, rewards opponents that can still see
+    // one of that player's units or cities.
+    static void resolveEndTurnMeetings(Game& game, PlayerId activePlayer);
+
 
 
     // Reveal a square/chebyshev disk centered at `center` with radius `range`.
