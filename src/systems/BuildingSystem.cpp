@@ -151,6 +151,7 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
 
     if (tile.getBuildingType() != BuildingTypeEnum::None) return false;
     if (tile.getSettlementType() == SettlementTypeEnum::City) return false;
+    if (type == BuildingTypeEnum::Port && tile.getRoadBridge() == RoadBridgeEnum::Bridge) return false;
     const UnitId occupant = map.unitOn(pos);
     if (occupant != kNoUnit && UnitSystem::unitExists(game, occupant)) {
         const PlayerId occupantOwner = UnitSystem::getOwnerId(game, occupant);

@@ -366,6 +366,7 @@ bool TileActionSystem::canBuildBridge(const Game& game, PlayerId pid, Pos pos) {
     if (game.getMap().unitOn(pos) != Map::kNoUnit) return false;
 
     if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
+    if (t.getBuildingType() == BuildingTypeEnum::Port) return false;
 
     auto isLandish = [&](Pos p) -> bool {
         if (!game.getMap().inBounds(p)) return false;
