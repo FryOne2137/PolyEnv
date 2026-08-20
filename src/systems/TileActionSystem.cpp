@@ -13,6 +13,7 @@
 #include <cstdint>
 
 #include "CitySystem.h"
+#include "BuildingSystem.h"
 #include "MonumentSystem.h"
 #include "CitiesConnectionSystem.h"
 #include "UnitSystem.h"
@@ -320,6 +321,13 @@ bool TileActionSystem::destroy(Game& game, PlayerId pid, Pos pos) {
     const bool hasBuilding = (t.getBuildingType() != BuildingTypeEnum::None);
     const bool hasBridge = (t.getRoadBridge() == RoadBridgeEnum::Bridge);
     const bool canDestroyFullTile = requireTech(game, pid, TechId::Chivalry);
+
+    if (canDestroyFullTile && hasBuilding) {
+        // This must run before clearing the tile because adjacency levels are
+        // derived from the current map state.
+        BuildingSystem::removePopulationProvidedByBuilding(
+            game, pid, pos, t.getBuildingType());
+    }
 
     if (canDestroyFullTile && hasAnyRes) t.setResource(ResourcesEnum::None);
     if (canDestroyFullTile && hasBuilding) t.setBuildingType(BuildingTypeEnum::None);

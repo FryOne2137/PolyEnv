@@ -146,7 +146,7 @@ int ScoreSystem::superUnits(int count) {
 
 int ScoreSystem::cityLevel(int level, int population) {
     const int lvl = std::max(1, level);
-    const int pop = std::max(0, population);
+    const int pop = population;
 
     int score = 100;
 
@@ -155,7 +155,9 @@ int ScoreSystem::cityLevel(int level, int population) {
         score += (k * 5) + (50 - 5 * k);
     }
 
-    // ✅ Bieżąca populacja (progress) liczona natychmiast, tylko raz
+    // Current population is worth 5 points per point. Negative population
+    // removes the points previously supplied by destroyed improvements while
+    // preserving permanent city-level bonuses.
     score += pop * 5;
 
     return score;

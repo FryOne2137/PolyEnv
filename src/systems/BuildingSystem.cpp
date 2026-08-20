@@ -269,6 +269,59 @@ bool BuildingSystem::build(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum t
     return true;
 }
 
+void BuildingSystem::removePopulationProvidedByBuilding(
+    Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type) {
+    const Map& map = game.getMap();
+    if (!map.inBounds(pos) || !BuildingDB::isDefined(type)) return;
+
+    const Tile& tile = map.at(pos);
+    const CityId sourceCity = tile.getTerritoryCityId();
+    if (!sameOwnerCityTerritory(game, pid, sourceCity)) return;
+
+    auto subtractFromCity = [&](CityId cityId, int amount) {
+        if (amount <= 0 || !sameOwnerCityTerritory(game, pid, cityId)) return;
+        const int current = static_cast<int>(CitySystem::getCityPopulation(game, cityId));
+        const int next = std::clamp(current - amount, -32768, 32767);
+        (void)CitySystem::setCityPopulation(game, cityId, static_cast<int16_t>(next));
+    };
+
+    int sourceLoss = static_cast<int>(BuildingDB::info(type).populationGain);
+    if (type == BuildingTypeEnum::Forge ||
+        type == BuildingTypeEnum::Sawmill ||
+        type == BuildingTypeEnum::Windmill) {
+        sourceLoss += polytopiaPopGainForBuilding(game, pid, pos, type);
+    }
+    subtractFromCity(sourceCity, sourceLoss);
+
+    // Resource buildings can support an adjacency building across a border
+    // between two cities owned by the same player. Remove that contribution
+    // from the adjacency building's city, not necessarily from sourceCity.
+    if (type != BuildingTypeEnum::Mine &&
+        type != BuildingTypeEnum::Farm &&
+        type != BuildingTypeEnum::LumberHut) {
+        return;
+    }
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const Pos adjacent{pos.x + dx, pos.y + dy};
+            if (!map.inBounds(adjacent)) continue;
+
+            const Tile& adjacentTile = map.at(adjacent);
+            const CityId adjacentCity = adjacentTile.getTerritoryCityId();
+            if (!sameOwnerCityTerritory(game, pid, adjacentCity)) continue;
+
+            const BuildingTypeEnum adjacentBuilding = adjacentTile.getBuildingType();
+            int dependentLoss = 0;
+            if (type == BuildingTypeEnum::Mine && adjacentBuilding == BuildingTypeEnum::Forge) dependentLoss = 2;
+            if (type == BuildingTypeEnum::Farm && adjacentBuilding == BuildingTypeEnum::Windmill) dependentLoss = 1;
+            if (type == BuildingTypeEnum::LumberHut && adjacentBuilding == BuildingTypeEnum::Sawmill) dependentLoss = 1;
+            subtractFromCity(adjacentCity, dependentLoss);
+        }
+    }
+}
+
 bool BuildingSystem::buildMonument(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum type) {
     // Kept for explicit monument calls; logic lives in build()/canBuild().
     return build(game, pid, pos, type);

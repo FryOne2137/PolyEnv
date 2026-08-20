@@ -60,6 +60,10 @@ uint8_t City::getStarsPerRound() const {
         perRound += 1;
     }
     perRound += static_cast<int>(parkCount);
+
+    // Every point of negative population removes one star from normal city
+    // income. Separate sources such as Markets are calculated elsewhere.
+    perRound += std::min(0, static_cast<int>(getPopulation()));
     return static_cast<uint8_t>(std::clamp(perRound, 0, 255));
 }
 
