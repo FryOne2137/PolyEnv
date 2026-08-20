@@ -128,16 +128,18 @@ bool InfiltrationSystem::infiltrateCity(Game& game, UnitId cloakId, CityId cityI
     if (defender == kNoPlayer) return false;
     if (attacker == defender) return false;
 
-    // Blockade 1: cannot infiltrate a city that is under siege (enemy unit on city center).
+    // Blockade 1: cannot infiltrate a city that is under siege (a unit hostile
+    // to the city owner on the city center).
     // IMPORTANT: when infiltration is triggered by MOVING onto the city tile, the infiltrator itself
     // temporarily occupies the city center. That should NOT count as "siege" for this infiltration.
     {
         const UnitId occ = map.unitOn(CitySystem::getCityPos(game, cityId));
         if (occ != Map::kNoUnit && UnitSystem::unitExists(game, occ)) {
-            // If the occupant belongs to the defender, the city is under siege.
-            // If the occupant is some other attacker unit (not this cloak), also treat as siege.
             const PlayerId occOwner = UnitSystem::getOwnerId(game, occ);
-            if (occOwner == defender || (occOwner != kNoPlayer && occOwner != defender && occ != cloakId)) {
+            // A defending unit is a valid infiltration target and will take
+            // the Cloak's fixed 2 damage below. Only another hostile unit means
+            // the city is already under siege.
+            if (occ != cloakId && occOwner != kNoPlayer && occOwner != defender) {
                 return false;
             }
         }

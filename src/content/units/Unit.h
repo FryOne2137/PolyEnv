@@ -106,8 +106,8 @@ public:
     UnitType getType() const;
     void setType(UnitType v);
 
-    // Immutable provenance: the city that originally trained/rewarded this
-    // unit. Units originating outside a city keep kNoCity.
+    // Home city used for population support. It is normally the city that
+    // created the unit, but conversion and city capture may reassign it.
     CityId getOriginCityId() const;
     void setOriginCityId(CityId v);
 

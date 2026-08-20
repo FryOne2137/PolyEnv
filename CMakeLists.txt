@@ -216,6 +216,14 @@ if(GAME_ENGINE_BUILD_TESTS)
         GAME_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME meeting_economy_tests COMMAND meeting_economy_tests)
+
+    add_executable(special_combat_mechanics_tests tests/SpecialCombatMechanicsTests.cpp)
+    target_link_libraries(special_combat_mechanics_tests PRIVATE game_engine_lib)
+    target_compile_features(special_combat_mechanics_tests PRIVATE cxx_std_20)
+    target_compile_definitions(special_combat_mechanics_tests PRIVATE
+        GAME_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(NAME special_combat_mechanics_tests COMMAND special_combat_mechanics_tests)
 endif()
 
 if(GAME_ENGINE_BUILD_APPS)

@@ -11,6 +11,7 @@
 #include "systems/UnitSpawnSystem.h"
 #include "systems/MonumentSystem.h"
 #include "systems/InfiltrationSystem.h"
+#include "systems/VisionSystem.h"
 #include "../game/Game.h"
 #include "terrain/SettlementTypeEnum.h"
 #include "City.h"
@@ -30,6 +31,60 @@ static inline bool unitHasActivatedHide(const Game& game, UnitId uid) {
     if (!UnitSystem::hasSkill(game, uid, UnitSkill::Hide)) return false;
     const Pos d = UnitSystem::getLastMoveDir(game, uid);
     return !(d.x == 0 && d.y == 0);
+}
+
+static inline bool canBeConverted(const Game& game, UnitId uid) {
+    if (!UnitSystem::unitExists(game, uid)) return false;
+    const UnitType type = UnitSystem::getType(game, uid);
+    return type != UnitType::Bunny && type != UnitType::Bunta;
+}
+
+static bool convertUnit(Game& game, UnitId converterId, UnitId targetId) {
+    if (!UnitSystem::unitExists(game, converterId) ||
+        !UnitSystem::unitExists(game, targetId) ||
+        !canBeConverted(game, targetId)) {
+        return false;
+    }
+
+    const PlayerId newOwner = UnitSystem::getOwnerId(game, converterId);
+    const PlayerId oldOwner = UnitSystem::getOwnerId(game, targetId);
+    if (newOwner == kNoPlayer || oldOwner == kNoPlayer || newOwner == oldOwner) return false;
+    if (!PlayerSystem::playerExists(game, newOwner) || !PlayerSystem::playerExists(game, oldOwner)) return false;
+
+    const bool independent = UnitSystem::hasSkill(game, targetId, UnitSkill::Independent);
+
+    // Conversion keeps the unit itself (HP, veteran status, kills, poison and
+    // embarked state), changing only ownership and population bookkeeping.
+    PlayerSystem::removeUnit(game, oldOwner, targetId);
+    CitySystem::removeUnitFromAnyCity(game, targetId);
+    (void)UnitSystem::setOwnerId(game, targetId, newOwner);
+    PlayerSystem::addUnit(game, newOwner, targetId);
+
+    (void)UnitSystem::setOriginCityId(game, targetId, kNoCity);
+    if (!independent) {
+        const CityId cityId = CitySystem::pickCityForConvertedUnit(game, newOwner);
+        if (cityId != kNoCity) {
+            // Converted units are allowed to put a city over its unit limit.
+            (void)CitySystem::addUnitToCity(game, targetId, cityId, false);
+        }
+    }
+
+    // The converted unit becomes usable on its new owner's next turn. The
+    // engine refreshes the current player's units at the end of that turn.
+    (void)UnitSystem::setMovedThisTurn(game, targetId, true);
+    (void)UnitSystem::setAttackedThisTurn(game, targetId, true);
+    (void)UnitSystem::setAttackedThisTurn(game, converterId, true);
+
+    const Pos from = UnitSystem::getPos(game, converterId);
+    const Pos to = UnitSystem::getPos(game, targetId);
+    (void)UnitSystem::setLastAttackDir(game, converterId, Pos{to.x - from.x, to.y - from.y});
+
+    // A converted unit immediately contributes its vision to the new owner.
+    VisionSystem::revealFromUnit(game, targetId);
+
+    // Convert is an attack for the Pacifist task, despite dealing no damage.
+    PlayerSystem::setAttackedThisTurn(game, newOwner, true);
+    return true;
 }
 
 int CombatSystem::chebyshevDistance(Pos a, Pos b) {
@@ -208,6 +263,7 @@ std::vector<Pos> CombatSystem::attackable(const Game& game, UnitId attackerId) {
             // Only enemy units.
             if (UnitSystem::getOwnerId(game, uid) == attackerOwner) continue;
             if (unitHasActivatedHide(game, uid)) continue; // hidden cloak-like units are not targetable
+            if (UnitSystem::hasSkill(game, attackerId, UnitSkill::Convert) && !canBeConverted(game, uid)) continue;
 
             out.push_back(p);
         }
@@ -253,6 +309,12 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     // Can only attack other players
     if (UnitSystem::getOwnerId(game, defenderId) == UnitSystem::getOwnerId(game, attackerId)) return false;
     if (unitHasActivatedHide(game, defenderId)) return false;
+
+    // Convert replaces the normal damage formula and never causes retaliation.
+    if (UnitSystem::hasSkill(game, attackerId, UnitSkill::Convert)) {
+        return convertUnit(game, attackerId, defenderId);
+    }
+
     // --- Polytopia damage formula ---
     const double aAtk = static_cast<double>(UnitSystem::getAttack(game, attackerId));
     const double dDef = static_cast<double>(UnitSystem::getDefense(game, defenderId));
@@ -311,10 +373,10 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     // We set attackedThisTurn at the END of this function.
     // This lets a melee unit advance into the killed unit's tile using MovementSystem::move
     // without being blocked by the post-attack flag.
-    bool attackedThisTurnFinal = true;
 
     // If defender died, no retaliation
     if (UnitSystem::getHealth(game, defenderId) <= 0) {
+        bool attackedThisTurnFinal = true;
         UnitSystem::addKill(game, attackerId);
         awardKillToPlayer(game, UnitSystem::getOwnerId(game, attackerId), attackerId);
 
@@ -365,8 +427,11 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     const int defenderRange = UnitSystem::getRange(game, defenderId);
     const int backDist = chebyshevDistance(UnitSystem::getPos(game, defenderId), attackerPos);
 
-    // Retaliation is blocked if defender has the Stiff skill
-    if (defenceResult > 0 && backDist <= defenderRange && !UnitSystem::hasSkill(game, defenderId, UnitSkill::Stiff)) {
+    // Surprise belongs to the attacker and prevents the defender from
+    // retaliating. Stiff belongs to the defender and also blocks retaliation.
+    if (defenceResult > 0 && backDist <= defenderRange &&
+        !UnitSystem::hasSkill(game, attackerId, UnitSkill::Surprise) &&
+        !UnitSystem::hasSkill(game, defenderId, UnitSkill::Stiff)) {
         UnitSystem::setHealth(game, attackerId, std::max(0, UnitSystem::getHealth(game, attackerId) - defenceResult));
         if (UnitSystem::getHealth(game, attackerId) <= 0) {
             UnitSystem::addKill(game, defenderId);

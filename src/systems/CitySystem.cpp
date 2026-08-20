@@ -210,9 +210,9 @@ bool CitySystem::addUnitToCity(Game& game, UnitId unitId, CityId cityId,bool che
     }
 
     city->addUnit(unitId);
-    // City membership is also the authoritative moment at which a spawned
-    // unit receives its immutable origin city.  Units from ruins and other
-    // non-city sources are never registered here and therefore remain kNoCity.
+    // City membership is also the authoritative moment at which a spawned or
+    // reassigned unit receives its home city. Units from non-city sources stay
+    // at kNoCity unless another mechanic explicitly assigns them later.
     if (UnitSystem::getOriginCityId(game, unitId) == kNoCity) {
         (void)UnitSystem::setOriginCityId(game, unitId, cityId);
     }
@@ -275,42 +275,30 @@ CityId CitySystem::pickCityForConvertedUnit(const Game& game, PlayerId owner) {
 
     const CityId capital = PlayerSystem::getCapitalId(game, owner);
 
-    // Rule: if we actively own our capital, assign ONLY to the capital (ignore capacity).
+    // Converted units belong to the new owner's capital and may exceed its
+    // unit capacity.
     if (capital != kNoCity &&
         CitySystem::cityExists(game, capital) &&
         static_cast<PlayerId>(CitySystem::getCityOwner(game, capital)) == owner) {
         return capital;
     }
 
-    auto hasCapacity = [&](CityId cid) -> bool {
-        if (cid == kNoCity) return false;
-        if (!CitySystem::cityExists(game, cid)) return false;
-        if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != owner) return false;
-        return CitySystem::getCityUnitsCount(game, cid) < CitySystem::getCityMaxUnitCapacity(game, cid);
-    };
-
-    // Exception: if there is NO capital, pick any owned city with capacity from SOUTH to NORTH.
+    // Without an owned capital, choose the southernmost owned city. Use one
+    // linear scan and deterministic x ordering instead of allocating/sorting.
     const auto& owned = PlayerSystem::getCities(game, owner);
-    if (owned.empty()) return kNoCity;
-
-    std::vector<CityId> candidates;
-    candidates.reserve(owned.size());
+    CityId best = kNoCity;
+    Pos bestPos{-9999, -9999};
     for (CityId cid : owned) {
-        if (!hasCapacity(cid)) continue;
-        candidates.push_back(cid);
+        if (cid == kNoCity || !CitySystem::cityExists(game, cid)) continue;
+        if (static_cast<PlayerId>(CitySystem::getCityOwner(game, cid)) != owner) continue;
+
+        const Pos pos = CitySystem::getCityPos(game, cid);
+        if (best == kNoCity || pos.y > bestPos.y || (pos.y == bestPos.y && pos.x < bestPos.x)) {
+            best = cid;
+            bestPos = pos;
+        }
     }
-
-    if (candidates.empty()) return kNoCity;
-
-    // SOUTH first: larger y, tie-break x ascending.
-    std::sort(candidates.begin(), candidates.end(), [&](CityId a, CityId b) {
-        const Pos pa = CitySystem::getCityPos(game, a);
-        const Pos pb = CitySystem::getCityPos(game, b);
-        if (pa.y != pb.y) return pa.y > pb.y;
-        return pa.x < pb.x;
-    });
-
-    return candidates.front();
+    return best;
 }
 
 
