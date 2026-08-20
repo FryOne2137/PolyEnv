@@ -390,6 +390,7 @@ bool TileActionSystem::buildBridge(Game& game, PlayerId pid, Pos pos) {
 
     Tile& t = game.getMap().at(pos);
     t.setRoadBridge(RoadBridgeEnum::Bridge);
+    t.setResource(ResourcesEnum::None);
 
     CitiesConnectionSystem::update(game);
     return true;
