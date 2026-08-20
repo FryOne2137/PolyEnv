@@ -666,13 +666,7 @@ json observationAsJson(const Game& game, PlayerId perspective,
         ownUnits   = static_cast<int>(p.getUnits().size());
         ownCities  = static_cast<int>(p.getCities().size());
 
-        for (CityId cid : p.getCities()) {
-            if (!CitySystem::cityExists(game, cid)) continue;
-            if (CitySystem::isCityUnderSiege(game, cid)) continue;
-            if (CitySystem::getCityIsInfiltrated(game, cid)) continue;
-            nextIncome += static_cast<int>(CitySystem::getCityStarsPerRound(game, cid));
-            nextIncome += StarsSystem::marketIncomeForCity(game, perspective, cid);
-        }
+        nextIncome = StarsSystem::calcIncomeForPlayer(game, perspective);
     }
 
     obs["player_stars"]         = perspStars;

@@ -87,8 +87,9 @@ static inline int countAdjacentAnyBuildingsOwned(const Game& game, PlayerId pid,
 }
 
 static inline uint8_t clampBuildingLevel(int lvl) {
-    // In Polytopia, these "adjacency buildings" are effectively capped (UI shows up to 8).
-    return static_cast<uint8_t>(std::clamp(lvl, 1, 8));
+    // Production buildings and Markets may fall to level 0 when their
+    // supporting buildings are destroyed. Markets are capped at level 8.
+    return static_cast<uint8_t>(std::clamp(lvl, 0, 8));
 }
 
 static inline bool cityAlreadyHasBuilding(const Game& game, CityId cid, BuildingTypeEnum bt) {
@@ -334,17 +335,17 @@ uint8_t BuildingSystem::getBuildingLevelForTypeAt(const Game& game, PlayerId pid
         case BuildingTypeEnum::Sawmill: {
             // Level depends on adjacent friendly Lumber Huts.
             const int adj = countAdjacentBuildingsOwned(game, pid, pos, BuildingTypeEnum::LumberHut);
-            return clampBuildingLevel(std::max(1, adj));
+            return clampBuildingLevel(adj);
         }
         case BuildingTypeEnum::Windmill: {
             // Level depends on adjacent friendly Farms.
             const int adj = countAdjacentBuildingsOwned(game, pid, pos, BuildingTypeEnum::Farm);
-            return clampBuildingLevel(std::max(1, adj));
+            return clampBuildingLevel(adj);
         }
         case BuildingTypeEnum::Forge: {
             // Level depends on adjacent friendly Mines.
             const int adj = countAdjacentBuildingsOwned(game, pid, pos, BuildingTypeEnum::Mine);
-            return clampBuildingLevel(std::max(1, adj));
+            return clampBuildingLevel(adj);
         }
         case BuildingTypeEnum::Market: {
             // Polytopia: Market level is the SUM of levels of adjacent (owned) Sawmill/Windmill/Forge.
@@ -367,8 +368,7 @@ uint8_t BuildingSystem::getBuildingLevelForTypeAt(const Game& game, PlayerId pid
                 }
             }
 
-            // Market placement requires at least one adjacent booster, so sum should be >= 1.
-            return clampBuildingLevel(std::max(1, sum));
+            return clampBuildingLevel(sum);
         }
 
         default:

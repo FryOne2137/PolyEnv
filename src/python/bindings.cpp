@@ -1628,13 +1628,7 @@ public:
         int nextTurnStarIncome = 0;
         if (perspective >= 0 && static_cast<size_t>(perspective) < g.getPlayers().size()) {
             const PlayerId pid = static_cast<PlayerId>(perspective);
-            for (CityId cid : g.getPlayer(pid).getCities()) {
-                if (!CitySystem::cityExists(g, cid)) continue;
-                if (CitySystem::isCityUnderSiege(g, cid)) continue;
-                if (CitySystem::getCityIsInfiltrated(g, cid)) continue;
-                nextTurnStarIncome += static_cast<int>(CitySystem::getCityStarsPerRound(g, cid));
-                nextTurnStarIncome += StarsSystem::marketIncomeForCity(g, pid, cid);
-            }
+            nextTurnStarIncome = StarsSystem::calcIncomeForPlayer(g, pid);
         }
         obs["next_turn_star_income"] = std::max(0, nextTurnStarIncome);
         const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(g.getCurrentPlayerId());
@@ -3023,13 +3017,7 @@ private:
         const Player& player = g.getPlayer(pid);
 
         int nextTurnStarIncome = 0;
-        for (CityId cid : player.getCities()) {
-            if (!CitySystem::cityExists(g, cid)) continue;
-            if (CitySystem::isCityUnderSiege(g, cid)) continue;
-            if (CitySystem::getCityIsInfiltrated(g, cid)) continue;
-            nextTurnStarIncome += static_cast<int>(CitySystem::getCityStarsPerRound(g, cid));
-            nextTurnStarIncome += StarsSystem::marketIncomeForCity(g, pid, cid);
-        }
+        nextTurnStarIncome = StarsSystem::calcIncomeForPlayer(g, pid);
 
         const Game::PendingCityUpgrade* pending = g.peekPendingCityUpgrade(pid);
         out[0] = g.getTurnNumber();
