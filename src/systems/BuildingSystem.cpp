@@ -212,23 +212,7 @@ bool BuildingSystem::build(Game& game, PlayerId pid, Pos pos, BuildingTypeEnum t
     if (!PlayerSystem::spendStars(game, pid, cost)) return false;
 
     tile.setBuildingType(type);
-
-    // Polytopia resource consumption rules when building on a tile.
-
-    // Buildings consume Fruit.
-    if (tile.hasResourceFlag(ResourcesEnum::Fruit)) {
-        tile.removeResourceFlag(ResourcesEnum::Fruit);
-    }
-
-    // Port consumes Fish on the tile.
-    if (type == BuildingTypeEnum::Port && tile.hasResourceFlag(ResourcesEnum::Fish)) {
-        tile.removeResourceFlag(ResourcesEnum::Fish);
-    }
-
-    // Sawmill consumes Animal on the tile.
-    if (type == BuildingTypeEnum::Sawmill && tile.hasResourceFlag(ResourcesEnum::Animal)) {
-        tile.removeResourceFlag(ResourcesEnum::Animal);
-    }
+    tile.setResource(ResourcesEnum::None);
 
     // Ports affect city connections.
     if (type == BuildingTypeEnum::Port) {
