@@ -153,9 +153,9 @@ bool BuildingSystem::canBuild(const Game& game, PlayerId pid, Pos pos, BuildingT
     if (tile.getSettlementType() == SettlementTypeEnum::City) return false;
     if (type == BuildingTypeEnum::Port && tile.getRoadBridge() == RoadBridgeEnum::Bridge) return false;
     const UnitId occupant = map.unitOn(pos);
-    if (occupant != kNoUnit && UnitSystem::unitExists(game, occupant)) {
-        const PlayerId occupantOwner = UnitSystem::getOwnerId(game, occupant);
-        if (occupantOwner != kNoPlayer && occupantOwner != pid) return false;
+    if (occupant != kNoUnit) {
+        if (!UnitSystem::unitExists(game, occupant)) return false;
+        if (UnitSystem::getOwnerId(game, occupant) != pid) return false;
     }
 
     // --- Polytopia special placement rules ---

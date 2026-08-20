@@ -15,6 +15,7 @@
 #include "CitySystem.h"
 #include "MonumentSystem.h"
 #include "CitiesConnectionSystem.h"
+#include "UnitSystem.h"
 
 namespace {
 
@@ -66,6 +67,13 @@ inline bool ensureOwnTerritory(const Game& game, PlayerId pid, Pos pos, CityId& 
     return true;
 }
 
+inline bool hasNoForeignUnit(const Game& game, PlayerId pid, Pos pos) {
+    const UnitId occupant = game.getMap().unitOn(pos);
+    if (occupant == Map::kNoUnit) return true;
+    if (!UnitSystem::unitExists(game, occupant)) return false;
+    return UnitSystem::getOwnerId(game, occupant) == pid;
+}
+
 } // namespace
 
 bool TileActionSystem::canHunt(const Game& game, PlayerId pid, Pos pos) {
@@ -74,6 +82,7 @@ bool TileActionSystem::canHunt(const Game& game, PlayerId pid, Pos pos) {
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
+    if (!hasNoForeignUnit(game, pid, pos)) return false;
     if (!requireTech(game, pid, kTech)) return false;
     if (!canSpendStars(game, pid, kCost)) return false;
 
@@ -108,6 +117,7 @@ bool TileActionSystem::canOrganization(const Game& game, PlayerId pid, Pos pos) 
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
+    if (!hasNoForeignUnit(game, pid, pos)) return false;
     if (!requireTech(game, pid, kTech)) return false;
     if (!canSpendStars(game, pid, kCost)) return false;
 
@@ -141,6 +151,7 @@ bool TileActionSystem::canFishing(const Game& game, PlayerId pid, Pos pos) {
 
     CityId cid = kNoCity;
     if (!ensureOwnTerritory(game, pid, pos, cid)) return false;
+    if (!hasNoForeignUnit(game, pid, pos)) return false;
     if (!requireTech(game, pid, kTech)) return false;
 
     const Tile& t = game.getMap().at(pos);
@@ -329,7 +340,7 @@ bool TileActionSystem::canBuildRoad(const Game& game, PlayerId pid, Pos pos) {
     const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Land &&
         t.getBaseTerrain() != BaseTerrainEnum::Forest) return false;
-    if (game.getMap().unitOn(pos) != Map::kNoUnit) return false;
+    if (!hasNoForeignUnit(game, pid, pos)) return false;
 
     const CityId cid = t.getTerritoryCityId();
     if (cid != kNoCity) {
@@ -363,7 +374,7 @@ bool TileActionSystem::canBuildBridge(const Game& game, PlayerId pid, Pos pos) {
 
     const Tile& t = game.getMap().at(pos);
     if (t.getBaseTerrain() != BaseTerrainEnum::Water) return false;
-    if (game.getMap().unitOn(pos) != Map::kNoUnit) return false;
+    if (!hasNoForeignUnit(game, pid, pos)) return false;
 
     if (t.getRoadBridge() != RoadBridgeEnum::None) return false;
     if (t.getBuildingType() == BuildingTypeEnum::Port) return false;
