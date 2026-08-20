@@ -179,6 +179,7 @@ int GuiApp::run() {
                     autoRandomEnabled = false;
                     replayAutoPlayEnabled_ = false;
                     replayFrames_.clear();
+                    replayEventHistory_.reset(0);
                     playerIsBot_.clear();
                     modelClient_.reset();
                     mode = Mode::SelectTribes;
@@ -276,6 +277,8 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
     session = std::make_unique<GameSession>(std::move(game));
     currentGameConfig_ = cfg;
     replayRecorder_.clear();
+    replayFrames_.clear();
+    replayEventHistory_.reset(0);
     const auto t1 = clock::now();
     std::cerr << "[mapgen] generation took "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
@@ -368,12 +371,13 @@ bool GuiApp::loadReplayFile(const std::string& path) {
         }
         Game reconstructed;
         reconstructed.newGame(cfg);
+        GameSession replaySession(std::move(reconstructed));
         std::vector<Game> frames;
         frames.reserve(actionIds.size() + 1);
-        frames.push_back(reconstructed);
+        frames.push_back(replaySession.game());
 
         for (size_t index = 0; index < actionIds.size(); ++index) {
-            GameStateAdapter adapter(reconstructed);
+            GameStateAdapter& adapter = replaySession.state;
             const PlayerId pid = adapter.currentPlayer();
             const std::optional<Action> action = adapter.decodeActionId(pid, actionIds[index]);
             if (!action) throw std::runtime_error("invalid action id at move " + std::to_string(index));
@@ -381,14 +385,15 @@ bool GuiApp::loadReplayFile(const std::string& path) {
             if (actionIds[index] >= legal.size() || !legal[actionIds[index]]) {
                 throw std::runtime_error("illegal action at move " + std::to_string(index));
             }
-            adapter.apply(*action);
-            reconstructed = adapter.getGame();
-            frames.push_back(reconstructed);
+            replaySession.apply(*action, actionIds[index]);
+            frames.push_back(replaySession.game());
         }
 
         replayFrames_ = std::move(frames);
+        replayEventHistory_ = std::move(replaySession.events);
         replayMove_ = 0;
         session = std::make_unique<GameSession>(replayFrames_.front());
+        restoreReplayEventsThroughCurrentMove();
         replayRecorder_.replace(actionIds);
         currentGameConfig_ = cfg;
         autoRandomEnabled = false;
@@ -415,11 +420,29 @@ void GuiApp::seekReplayMove(size_t move) {
     if (replayFrames_.empty()) return;
     replayMove_ = std::min(move, replayFrames_.size() - 1);
     session = std::make_unique<GameSession>(replayFrames_[replayMove_]);
+    restoreReplayEventsThroughCurrentMove();
     if (mapRenderer) {
         mapRenderer->setSession(session.get());
         mapRenderer->clearSelection();
         mapRenderer->notifyGameStateChanged();
         mapRenderer->setReplayProgress(replayMove_, replayFrames_.size() - 1);
+    }
+}
+
+void GuiApp::restoreReplayEventsThroughCurrentMove() {
+    if (!session) return;
+
+    const size_t playerCount = session->game().getPlayers().size();
+    session->events.reset(playerCount);
+    for (size_t player = 0; player < playerCount; ++player) {
+        const auto* history = replayEventHistory_.stream(player);
+        if (!history) continue;
+        for (const auto& event : history->events) {
+            // Frame N is the state after actions [0, N), so it must not reveal
+            // events belonging to a later point on the replay timeline.
+            if (event.actionSequence >= replayMove_) break;
+            session->events.append(player, event);
+        }
     }
 }
 

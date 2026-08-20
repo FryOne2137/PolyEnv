@@ -27,8 +27,10 @@ In a normal game, select `Save .polygame` from the File menu. Select
 `Load .polygame` to open a replay viewer.
 
 The viewer is read-only and provides a timeline, `Next move`, automatic replay,
-and an adjustable playback interval. On macOS, load and save use the system
-file picker.
+an adjustable playback interval, `Map View`, and the visible-action history for
+the player whose turn is shown at the selected point on the timeline. The event
+history is also rewound when seeking to an earlier move. On macOS, load and save
+use the system file picker.
 
 ## Game Rules In The GUI
 

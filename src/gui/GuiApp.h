@@ -38,6 +38,7 @@ private:
     bool saveReplayFile(const std::string& path);
     bool advanceReplayMove();
     void seekReplayMove(size_t move);
+    void restoreReplayEventsThroughCurrentMove();
     void recordActionId(size_t actionId);
     void configureRenderer(bool replayViewer);
     bool handleFileUiEvent(const sf::Event& ev);
@@ -66,6 +67,7 @@ private:
     ReplayRecorder replayRecorder_;
 
     std::vector<Game> replayFrames_;
+    ObservedEventJournal replayEventHistory_;
     size_t replayMove_ = 0;
     bool replayAutoPlayEnabled_ = false;
     sf::Clock replayClock_;

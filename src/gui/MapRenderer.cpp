@@ -763,19 +763,52 @@ void MapRenderer::handleEvent(const sf::Event& ev) {
                 }
 
                 if (replayViewer) {
-                    if (btnReplayNext.contains(up)) {
-                        replayNextMoveRequested = true;
-                    } else if (btnReplayAuto.contains(up)) {
-                        replayAutoPlayToggleRequested = true;
-                    } else if (replayTimelineRect.contains(up)) {
-                        const float t = std::clamp(
-                            (up.x - replayTimelineRect.left) / replayTimelineRect.width,
-                            0.f,
-                            1.f
-                        );
-                        replaySeekRequested = static_cast<size_t>(std::lround(t * float(replayMoveCount)));
-                    } else {
-                        replayIntervalInputActive = replayIntervalRect.contains(up);
+                    if (!showOverview) {
+                        if (btnReplayNext.contains(up)) {
+                            replayNextMoveRequested = true;
+                        } else if (btnReplayAuto.contains(up)) {
+                            replayAutoPlayToggleRequested = true;
+                        } else if (replayTimelineRect.contains(up)) {
+                            const float t = std::clamp(
+                                (up.x - replayTimelineRect.left) / replayTimelineRect.width,
+                                0.f,
+                                1.f
+                            );
+                            replaySeekRequested = static_cast<size_t>(std::lround(t * float(replayMoveCount)));
+                        } else if (btnVisibleActions.contains(up)) {
+                            showVisibleActions();
+                        } else if (btnOverview.contains(up)) {
+                            toggleOverviewRequested = true;
+                        } else {
+                            replayIntervalInputActive = replayIntervalRect.contains(up);
+                        }
+                        return;
+                    }
+
+                    if (btnBack.contains(up)) {
+                        toggleOverviewRequested = true;
+                        return;
+                    }
+                    if (showVisibleActionsPanel) {
+                        for (size_t i = 0; i < visibleActionRows_.size(); ++i) {
+                            if (!visibleActionRows_[i].contains(up)) continue;
+                            const int next = static_cast<int>(visibleActionRowIndices_[i]);
+                            showVisibleActionJsonModal_ = selectedVisibleAction_ == next;
+                            if (showVisibleActionJsonModal_) visibleActionJsonScrollLines_ = 0;
+                            selectedVisibleAction_ = next;
+                            return;
+                        }
+                    }
+
+                    // Replay inspection is read-only, but Map View should
+                    // still allow selecting a tile and reading its details.
+                    Pos hit;
+                    if (screenToTile(up, hit)) {
+                        selectedPos = hit;
+                        selectedValid = true;
+                        g_moveSelectedUnit = kNoUnit;
+                        clearUnitOverlays();
+                        invalidateContextActionCache();
                     }
                     return;
                 }
