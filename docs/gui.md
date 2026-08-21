@@ -30,7 +30,10 @@ The viewer is read-only and provides a timeline, `Next move`, automatic replay,
 an adjustable playback interval, `Map View`, and the visible-action history for
 the player whose turn is shown at the selected point on the timeline. The event
 history is also rewound when seeking to an earlier move. On macOS, load and save
-use the system file picker.
+use the system file picker. Windows uses the native file picker. On Linux, the
+GUI uses Zenity or KDialog when either is available; otherwise it opens its own
+path-entry dialog, so loading and saving remain available without an additional
+desktop package.
 
 Replay controls are arranged like a video player at the bottom-left of the map:
 the timeline is above `Previous`, `Resume`/`Stop`, and `Next` controls. They stay

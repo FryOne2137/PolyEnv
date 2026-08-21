@@ -289,6 +289,10 @@ if(GAME_ENGINE_BUILD_GUI)
             sfml-system
     )
 
+    if(WIN32)
+        target_link_libraries(game_engine_gui PRIVATE comdlg32)
+    endif()
+
     if(GAME_ENGINE_HAS_ZMQ)
         target_include_directories(game_engine_gui PRIVATE ${LIBZMQ_INCLUDE})
         target_link_libraries(game_engine_gui PRIVATE ${LIBZMQ_LIB})

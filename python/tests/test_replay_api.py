@@ -80,6 +80,16 @@ def test_replay_preserves_drylands_map_type(tmp_path) -> None:
     assert np.array_equal(restored.full_map_numpy(), original.full_map_numpy())
 
 
+def test_replay_supports_unicode_file_paths(tmp_path) -> None:
+    original = GameEnv(seed=1234, map_size=11, players=(Bardur, Imperius))
+    replay_path = original.save(tmp_path / "zażółć-gęślą.polygame")
+
+    restored = GameEnv(seed=7, map_size=11, players=(Kickoo, Bardur))
+    restored.load(replay_path)
+
+    assert np.array_equal(restored.full_map_numpy(), original.full_map_numpy())
+
+
 def test_replay_uses_effective_seed_when_initial_seed_is_random(tmp_path) -> None:
     original = GameEnv(seed=0, map_size=11, players=(Bardur, Imperius))
     _play_actions(original, count=3)

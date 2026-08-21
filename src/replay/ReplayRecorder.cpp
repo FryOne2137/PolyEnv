@@ -2,6 +2,7 @@
 
 #include "core/Version.h"
 
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -10,6 +11,15 @@ namespace {
 constexpr const char* kReplayFormat = "polyenv-game";
 constexpr int kReplayFormatVersion = 3;
 constexpr const char* kReplayRuleset = "polyenv-2026-07";
+
+std::filesystem::path replayPath(const std::string& utf8Path) {
+#ifdef _WIN32
+    const auto* begin = reinterpret_cast<const char8_t*>(utf8Path.data());
+    return std::filesystem::path(std::u8string(begin, begin + utf8Path.size()));
+#else
+    return std::filesystem::path(utf8Path);
+#endif
+}
 
 bool validTribeId(int tribeId) {
     return tribeId >= 1 && tribeId <= 12;
@@ -50,7 +60,7 @@ bool ReplayRecorder::save(
             {"map_type", metadata.mapType},
         };
 
-        std::ofstream out(path);
+        std::ofstream out{replayPath(path)};
         if (!out) {
             error = "cannot open replay for writing";
             return false;
@@ -70,7 +80,7 @@ bool ReplayRecorder::load(
     std::string& error
 ) {
     try {
-        std::ifstream in(path);
+        std::ifstream in{replayPath(path)};
         if (!in) {
             error = "cannot open replay";
             return false;

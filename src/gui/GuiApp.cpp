@@ -2,6 +2,12 @@
 // Created by Fryderyk Niedzwiecki on 15/01/2026.
 //
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 #include "GuiApp.h"
 
 #include <iostream>
@@ -12,15 +18,35 @@
 #include <array>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <sstream>
 #include <SFML/Graphics/Image.hpp>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#elif defined(__linux__)
+#include <cstdlib>
+#include <sys/wait.h>
+#endif
 
 #include "MapRenderer.h"
 #include "ai/GameStateAdapter.h"
 #include "ai/ModelClient.h"
 
 namespace {
+enum class FileDialogOutcome {
+    Selected,
+    Cancelled,
+    Unavailable,
+};
+
+struct FileDialogResult {
+    FileDialogOutcome outcome = FileDialogOutcome::Unavailable;
+    std::string path;
+};
+
 std::string trimTrailingWhitespace(std::string value) {
     while (!value.empty() && (value.back() == '\n' || value.back() == '\r' || value.back() == ' ')) {
         value.pop_back();
@@ -28,41 +54,155 @@ std::string trimTrailingWhitespace(std::string value) {
     return value;
 }
 
-std::optional<std::string> openReplayFileDialog() {
 #ifdef __APPLE__
-    const char* command =
-        "osascript -e 'POSIX path of (choose file with prompt \"Load .polygame replay\" "
-        "of type {\"polygame\", \"public.json\"})' 2>/dev/null";
+FileDialogResult runMacFileDialog(const char* command) {
     FILE* pipe = popen(command, "r");
-    if (!pipe) return std::nullopt;
+    if (!pipe) return {};
     std::string path;
     char buffer[512];
     while (fgets(buffer, sizeof(buffer), pipe)) path += buffer;
     const int status = pclose(pipe);
     path = trimTrailingWhitespace(std::move(path));
-    if (status != 0 || path.empty()) return std::nullopt;
-    return path;
+    if (status != 0 || path.empty()) return {FileDialogOutcome::Cancelled, {}};
+    return {FileDialogOutcome::Selected, std::move(path)};
+}
+#endif
+
+#ifdef _WIN32
+std::optional<std::string> utf8FromWide(const wchar_t* value) {
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return std::nullopt;
+
+    std::string result(static_cast<size_t>(size), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8,
+            WC_ERR_INVALID_CHARS,
+            value,
+            -1,
+            result.data(),
+            size,
+            nullptr,
+            nullptr
+        ) != size) {
+        return std::nullopt;
+    }
+    result.pop_back();
+    return result;
+}
+
+FileDialogResult runWindowsFileDialog(bool save, sf::WindowHandle owner) {
+    std::array<wchar_t, 32768> pathBuffer{};
+    if (save) {
+        constexpr wchar_t defaultName[] = L"match.polygame";
+        std::copy(std::begin(defaultName), std::end(defaultName), pathBuffer.begin());
+    }
+
+    constexpr wchar_t filter[] =
+        L"PolyEnv replay (*.polygame)\0*.polygame\0All files (*.*)\0*.*\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = reinterpret_cast<HWND>(owner);
+    dialog.lpstrFile = pathBuffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(pathBuffer.size());
+    dialog.lpstrFilter = filter;
+    dialog.nFilterIndex = 1;
+    dialog.lpstrDefExt = L"polygame";
+    dialog.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
+    dialog.Flags |= save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST;
+
+    const BOOL selected = save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog);
+    if (!selected) {
+        return {
+            CommDlgExtendedError() == 0 ? FileDialogOutcome::Cancelled : FileDialogOutcome::Unavailable,
+            {},
+        };
+    }
+
+    const auto path = utf8FromWide(pathBuffer.data());
+    if (!path) return {};
+    return {FileDialogOutcome::Selected, *path};
+}
+#endif
+
+#ifdef __linux__
+bool linuxCommandAvailable(const char* command) {
+    const std::string check = "command -v " + std::string(command) + " >/dev/null 2>&1";
+    return std::system(check.c_str()) == 0;
+}
+
+FileDialogResult runLinuxFileDialog(const char* command) {
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return {};
+    std::string path;
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), pipe)) path += buffer;
+    const int status = pclose(pipe);
+    path = trimTrailingWhitespace(std::move(path));
+    if (status == 0 && !path.empty()) return {FileDialogOutcome::Selected, std::move(path)};
+
+    if (status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 1) {
+        return {FileDialogOutcome::Cancelled, {}};
+    }
+    return {};
+}
+
+FileDialogResult runAvailableLinuxFileDialog(bool save) {
+    if (linuxCommandAvailable("zenity")) {
+        const char* command = save
+            ? "zenity --file-selection --save --confirm-overwrite "
+              "--title='Save .polygame replay' --filename='match.polygame' "
+              "--file-filter='PolyEnv replays | *.polygame' --file-filter='All files | *' 2>/dev/null"
+            : "zenity --file-selection --title='Load .polygame replay' "
+              "--file-filter='PolyEnv replays | *.polygame' --file-filter='All files | *' 2>/dev/null";
+        const FileDialogResult result = runLinuxFileDialog(command);
+        if (result.outcome != FileDialogOutcome::Unavailable) return result;
+    }
+
+    if (linuxCommandAvailable("kdialog")) {
+        const char* command = save
+            ? "kdialog --title 'Save .polygame replay' --getsavefilename 'match.polygame' "
+              "'*.polygame|PolyEnv replays' 2>/dev/null"
+            : "kdialog --title 'Load .polygame replay' --getopenfilename . "
+              "'*.polygame|PolyEnv replays' 2>/dev/null";
+        return runLinuxFileDialog(command);
+    }
+    return {};
+}
+#endif
+
+FileDialogResult openReplayFileDialog(sf::WindowHandle owner) {
+#ifdef __APPLE__
+    (void)owner;
+    return runMacFileDialog(
+        "osascript -e 'POSIX path of (choose file with prompt \"Load .polygame replay\" "
+        "of type {\"polygame\", \"public.json\"})' 2>/dev/null"
+    );
+#elif defined(_WIN32)
+    return runWindowsFileDialog(false, owner);
+#elif defined(__linux__)
+    (void)owner;
+    return runAvailableLinuxFileDialog(false);
 #else
-    return std::nullopt;
+    (void)owner;
+    return {};
 #endif
 }
 
-std::optional<std::string> saveReplayFileDialog() {
+FileDialogResult saveReplayFileDialog(sf::WindowHandle owner) {
 #ifdef __APPLE__
-    const char* command =
+    (void)owner;
+    return runMacFileDialog(
         "osascript -e 'POSIX path of (choose file name with prompt \"Save .polygame replay\" "
-        "default name \"match.polygame\")' 2>/dev/null";
-    FILE* pipe = popen(command, "r");
-    if (!pipe) return std::nullopt;
-    std::string path;
-    char buffer[512];
-    while (fgets(buffer, sizeof(buffer), pipe)) path += buffer;
-    const int status = pclose(pipe);
-    path = trimTrailingWhitespace(std::move(path));
-    if (status != 0 || path.empty()) return std::nullopt;
-    return path;
+        "default name \"match.polygame\")' 2>/dev/null"
+    );
+#elif defined(_WIN32)
+    return runWindowsFileDialog(true, owner);
+#elif defined(__linux__)
+    (void)owner;
+    return runAvailableLinuxFileDialog(true);
 #else
-    return std::nullopt;
+    (void)owner;
+    return {};
 #endif
 }
 } // namespace
@@ -494,19 +634,29 @@ bool GuiApp::handleFileUiEvent(const sf::Event& ev) {
     }
     if (fileMenuOpen_ && fileLoadRect_.contains(p)) {
         fileMenuOpen_ = false;
-        if (const auto path = openReplayFileDialog()) {
-            loadReplayFile(*path);
-        } else {
+        const FileDialogResult result = openReplayFileDialog(window.getSystemHandle());
+        if (result.outcome == FileDialogOutcome::Selected) {
+            loadReplayFile(result.path);
+        } else if (result.outcome == FileDialogOutcome::Cancelled) {
             fileStatus_ = "Load cancelled";
+        } else {
+            fileDialogMode_ = FileDialogMode::LoadReplay;
+            filePathBuffer_.clear();
+            fileStatus_ = "System file picker unavailable; enter a replay path";
         }
         return true;
     }
     if (fileMenuOpen_ && mode == Mode::InGame && fileSaveRect_.contains(p)) {
         fileMenuOpen_ = false;
-        if (const auto path = saveReplayFileDialog()) {
-            saveReplayFile(*path);
-        } else {
+        const FileDialogResult result = saveReplayFileDialog(window.getSystemHandle());
+        if (result.outcome == FileDialogOutcome::Selected) {
+            saveReplayFile(result.path);
+        } else if (result.outcome == FileDialogOutcome::Cancelled) {
             fileStatus_ = "Save cancelled";
+        } else {
+            fileDialogMode_ = FileDialogMode::SaveReplay;
+            filePathBuffer_ = "match.polygame";
+            fileStatus_ = "System file picker unavailable; enter a replay path";
         }
         return true;
     }
