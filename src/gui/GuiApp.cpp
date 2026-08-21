@@ -254,7 +254,7 @@ static bool loadAnyWindowIcon(sf::Image& img) {
 }
 
 int GuiApp::run() {
-    window.create(sf::VideoMode(1280, 720), "Polytopia Debug GUI (SFML)");
+    window.create(sf::VideoMode(1280, 720), "PolyEnv Debug GUI");
     {
         sf::Image icon;
         if (loadAnyWindowIcon(icon)) {

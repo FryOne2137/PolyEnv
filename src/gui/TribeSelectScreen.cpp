@@ -67,8 +67,7 @@ TribeSelectScreen::TribeSelectScreen() {
     allTribes = {
         TribeType::XinXi, TribeType::Imperius, TribeType::Bardur, TribeType::Oumaji,
         TribeType::Kickoo, TribeType::Hoodrick, TribeType::Luxidoor, TribeType::Vengir,
-        TribeType::Zebasi, TribeType::AiMo, TribeType::Quetzali, TribeType::Yadakk,
-        TribeType::Aquarion, TribeType::Elyrion, TribeType::Polaris, TribeType::Cymanti
+        TribeType::Zebasi, TribeType::AiMo, TribeType::Quetzali, TribeType::Yadakk
     };
 
     startBtn = { sf::FloatRect(40, 600, 240, 50), "Start" };
