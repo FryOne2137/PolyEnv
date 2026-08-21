@@ -61,6 +61,21 @@ static CityId ownedCapitalForRuinReward(const Game& game, PlayerId pid) {
     return capitalId;
 }
 
+static bool hasHiddenTileInRuinArea(const Game& game, PlayerId pid, Pos center) {
+    if (pid == kNoPlayer || pid >= 16) return false;
+
+    const Map& map = game.getMap();
+    const PlayerIndex player = static_cast<PlayerIndex>(pid);
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            const Pos pos{center.x + dx, center.y + dy};
+            if (!map.inBounds(pos)) continue;
+            if (!isRevealed(map.at(pos).getVisibility(), player)) return true;
+        }
+    }
+    return false;
+}
+
 
 void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
     if (!UnitSystem::unitExists(game, unitId)) return;
@@ -257,9 +272,11 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
         }
     }
 
-    // explorer jeśli coś nieodkryte w 5x5
-
-    pool.push_back(RuinReward::Explorer);
+    // Explorer is useful only if at least one in-bounds tile in the 5x5 area
+    // centered on the ruin is still hidden from this player.
+    if (hasHiddenTileInRuinArea(game, pid, ruinPos)) {
+        pool.push_back(RuinReward::Explorer);
+    }
 
 
     // jednostka (zawsze jako opcja)

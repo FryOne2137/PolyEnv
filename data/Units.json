@@ -248,8 +248,10 @@
         "WaterOnly",
         "Carry",
         "Hide",
-        "Creep",
         "Infiltrate",
+        "Dash",
+        "Scout",
+        "StaticSkill",
         "Stiff"
       ],
       "veteranEligible": false

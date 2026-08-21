@@ -233,6 +233,12 @@ bool UnitUpgradeSystem::upgradeRaftToRammer(Game& game, UnitId unitId) {
     const int kills = UnitSystem::getKillCounter(game, unitId);
     const bool wasEmbarked = UnitSystem::isEmbarked(game, unitId);
     const UnitType baseType = UnitSystem::getEmbarkedBaseType(game, unitId);
+    const bool hasMoved = UnitSystem::movedThisTurn(game, unitId);
+    bool hasAttackedThisTurn = UnitSystem::attackedThisTurn(game, unitId);
+
+    if (hasMoved) {
+        hasAttackedThisTurn = true;
+    }
 
     const Pos pos = UnitSystem::getPos(game, unitId);
 
@@ -249,6 +255,8 @@ bool UnitUpgradeSystem::upgradeRaftToRammer(Game& game, UnitId unitId) {
     upgraded.setVeteran(veteran);
     upgraded.setPoisoned(poisoned);
     upgraded.setKillCounter(kills);
+    upgraded.setAttackedThisTurn(hasAttackedThisTurn);
+    upgraded.setMovedThisTurn(hasMoved);
     if (wasEmbarked) {
         upgraded.setEmbarkedBaseType(baseType);
     }
@@ -286,6 +294,12 @@ bool UnitUpgradeSystem::upgradeRaftToBomber(Game& game, UnitId unitId) {
     const int kills = UnitSystem::getKillCounter(game, unitId);
     const bool wasEmbarked = UnitSystem::isEmbarked(game, unitId);
     const UnitType baseType = UnitSystem::getEmbarkedBaseType(game, unitId);
+    const bool hasMoved = UnitSystem::movedThisTurn(game, unitId);
+    bool hasAttackedThisTurn = UnitSystem::attackedThisTurn(game, unitId);
+
+    if (hasMoved) {
+        hasAttackedThisTurn = true;
+    }
 
     const Pos pos = UnitSystem::getPos(game, unitId);
 
@@ -302,6 +316,8 @@ bool UnitUpgradeSystem::upgradeRaftToBomber(Game& game, UnitId unitId) {
     upgraded.setVeteran(veteran);
     upgraded.setPoisoned(poisoned);
     upgraded.setKillCounter(kills);
+    upgraded.setAttackedThisTurn(hasAttackedThisTurn);
+    upgraded.setMovedThisTurn(hasMoved);
     if (wasEmbarked) {
         upgraded.setEmbarkedBaseType(baseType);
     }
