@@ -872,12 +872,7 @@ bool Game::upgradeCity(PlayerId pid, CityId cityId, CityUpgradeChoice choice) {
     if (front.pid != pid) return false;
     if (front.cityId != cityId) return false;
 
-    if (choice != front.opts.a && choice != front.opts.b) return false;
-
-    if (!CityRewardSystem::tryUpgrade(*this, cityId, choice)) return false;
-
-    pendingCityUpgrades.pop_front();
-    return true;
+    return resolvePendingCityUpgrade(pid, choice);
 }
 
 
@@ -984,6 +979,14 @@ bool Game::hasPendingCityUpgrade(PlayerId pid) const {
     return false;
 }
 
+bool Game::hasPendingCityUpgradeForCity(CityId cityId) const {
+    if (cityId == kNoCity) return false;
+    for (const auto& pending : pendingCityUpgrades) {
+        if (pending.cityId == cityId) return true;
+    }
+    return false;
+}
+
 const Game::PendingCityUpgrade* Game::peekPendingCityUpgrade(PlayerId pid) const {
     for (const auto& p : pendingCityUpgrades) {
         if (p.pid == pid) return &p;
@@ -992,10 +995,7 @@ const Game::PendingCityUpgrade* Game::peekPendingCityUpgrade(PlayerId pid) const
 }
 
 bool Game::enqueuePendingCityUpgrade(PlayerId pid, CityId cityId) {
-    // Prevent duplicates for the same (pid, cityId)
-    for (const auto& p : pendingCityUpgrades) {
-        if (p.pid == pid && p.cityId == cityId) return false;
-    }
+    if (hasPendingCityUpgradeForCity(cityId)) return false;
 
     // Level-up is performed in CitySystem/City; we only enqueue the reward choice.
     pendingCityUpgrades.push_back(PendingCityUpgrade{
@@ -1010,7 +1010,7 @@ bool Game::enqueuePendingCityUpgrade(PlayerId pid, CityId cityId) {
 bool Game::resolvePendingCityUpgrade(PlayerId pid, CityUpgradeChoice choice) {
     if (pendingCityUpgrades.empty()) return false;
 
-    const PendingCityUpgrade& front = pendingCityUpgrades.front();
+    const PendingCityUpgrade front = pendingCityUpgrades.front();
     if (front.pid != pid) return false;
 
     if (choice != front.opts.a && choice != front.opts.b) return false;
@@ -1018,6 +1018,11 @@ bool Game::resolvePendingCityUpgrade(PlayerId pid, CityUpgradeChoice choice) {
     if (!CityRewardSystem::tryUpgrade(*this, front.cityId, choice)) return false;
 
     pendingCityUpgrades.pop_front();
+
+    // Population accumulated while this reward was pending may already be
+    // sufficient for the next level. Process exactly one next level now; if
+    // reached, it creates a fresh reward entry for this city.
+    (void)CitySystem::addPopulation(*this, front.cityId, 0);
     return true;
 }
 

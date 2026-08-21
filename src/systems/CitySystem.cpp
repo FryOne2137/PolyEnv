@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 // Resolve the CityId for a city-center tile.
 // Uses territoryCityId first (always set by claimFreeTerritoryRadius for every city center),
@@ -94,6 +95,18 @@ bool CitySystem::addPopulation(Game& game, CityId cityId, uint16_t amount) {
     if (cityId == kNoCity) return false;
     City* c = game.getCity(cityId);
     if (!c) return false;
+
+    // Keep accepting population while the reward modal is open, but do not
+    // let this same city cross another level threshold yet. The surplus is
+    // processed immediately after the current reward is resolved.
+    if (game.hasPendingCityUpgradeForCity(cityId)) {
+        const int next = std::clamp(
+            static_cast<int>(c->getPopulation()) + static_cast<int>(amount),
+            static_cast<int>(std::numeric_limits<int16_t>::min()),
+            static_cast<int>(std::numeric_limits<int16_t>::max()));
+        c->setPopulation(static_cast<int16_t>(next));
+        return true;
+    }
 
     const uint8_t oldLevel = c->getLevel();
 

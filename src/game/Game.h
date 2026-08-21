@@ -64,6 +64,10 @@ public:
     // Returns true if this player must resolve a city upgrade reward before doing anything else
     bool hasPendingCityUpgrade(PlayerId pid) const;
 
+    // A city may have at most one unresolved level reward at a time. Excess
+    // population is kept until that reward has been selected.
+    bool hasPendingCityUpgradeForCity(CityId cityId) const;
+
     // Returns the next pending upgrade for this player (nullptr if none)
     const PendingCityUpgrade* peekPendingCityUpgrade(PlayerId pid) const;
 
