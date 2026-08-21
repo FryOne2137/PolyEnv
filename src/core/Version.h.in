@@ -1,0 +1,7 @@
+#pragma once
+
+#include <string_view>
+
+namespace PolyEnvVersion {
+inline constexpr std::string_view Engine = "@POLYENV_VERSION@";
+}
