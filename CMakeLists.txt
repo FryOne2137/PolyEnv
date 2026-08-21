@@ -1,5 +1,34 @@
 cmake_minimum_required(VERSION 3.20)
-project(game_engine VERSION 0.1.0 LANGUAGES CXX)
+
+# Keep pyproject.toml as the single source of truth for the public version.
+# scikit-build-core supplies SKBUILD_PROJECT_VERSION when building a Python
+# package; direct CMake builds read the same static version from pyproject.toml.
+if(DEFINED SKBUILD_PROJECT_VERSION AND NOT SKBUILD_PROJECT_VERSION STREQUAL "")
+    set(POLYENV_VERSION "${SKBUILD_PROJECT_VERSION}")
+else()
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml"
+        _polyenv_version_line
+        REGEX "^version[ \t]*=[ \t]*\"[^\"]+\""
+        LIMIT_COUNT 1
+    )
+    if(NOT _polyenv_version_line)
+        message(FATAL_ERROR "Could not read [project].version from pyproject.toml")
+    endif()
+    string(REGEX REPLACE
+        "^version[ \t]*=[ \t]*\"([^\"]+)\".*$"
+        "\\1"
+        POLYENV_VERSION
+        "${_polyenv_version_line}"
+    )
+endif()
+
+project(game_engine VERSION "${POLYENV_VERSION}" LANGUAGES CXX)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/Version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/core/Version.h"
+    @ONLY
+)
 
 # ---- C++ standard ----
 set(CMAKE_CXX_STANDARD 20)
@@ -184,6 +213,7 @@ target_link_libraries(game_engine_lib PUBLIC nlohmann_json::nlohmann_json)
 target_compile_features(game_engine_lib PUBLIC cxx_std_20)
 
 target_include_directories(game_engine_lib PUBLIC
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${CMAKE_CURRENT_SOURCE_DIR}/assets
         ${CMAKE_CURRENT_SOURCE_DIR}/assets/skills
         ${CMAKE_CURRENT_SOURCE_DIR}/assets/units

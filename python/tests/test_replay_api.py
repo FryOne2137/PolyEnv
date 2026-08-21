@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from PolyEnv import Bardur, Drylands, GameEnv, Imperius, Kickoo
+
+
+def _project_version() -> str:
+    pyproject = Path(__file__).parents[2] / "pyproject.toml"
+    match = re.search(
+        r'^version\s*=\s*"([^"]+)"',
+        pyproject.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    return match.group(1)
 
 
 def _play_actions(env: GameEnv, count: int = 8) -> list[int]:
@@ -31,6 +44,7 @@ def test_save_and_load_reconstructs_final_state(tmp_path) -> None:
     payload = json.loads(replay_path.read_text(encoding="utf-8"))
     assert payload["format"] == "polyenv-game"
     assert payload["format_version"] == 3
+    assert payload["engine_version"] == _project_version()
     assert payload["ruleset"] == "polyenv-2026-07"
     assert payload["seed"] == 1234
     assert payload["map_size"] == 11

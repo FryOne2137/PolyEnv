@@ -1,5 +1,7 @@
 #include "ReplayRecorder.h"
 
+#include "core/Version.h"
+
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -38,7 +40,7 @@ bool ReplayRecorder::save(
         nlohmann::json replay;
         replay["format"] = kReplayFormat;
         replay["format_version"] = kReplayFormatVersion;
-        replay["engine_version"] = "0.2.0";
+        replay["engine_version"] = PolyEnvVersion::Engine;
         replay["ruleset"] = kReplayRuleset;
         replay["seed"] = metadata.seed;
         replay["map_size"] = metadata.mapSize;
