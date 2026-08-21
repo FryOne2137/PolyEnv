@@ -41,10 +41,21 @@ public:
 
     void removeResourceFlag(ResourcesEnum flag);
     void setBaseTerrain(BaseTerrainEnum v) { baseTerrain = v; }
-    void setSettlement(SettlementTypeEnum t, SettlementId id) { settlementType = t; settlementId = id; }
+    void setSettlement(SettlementTypeEnum t, SettlementId id) {
+        settlementType = t;
+        settlementId = id;
+        if (t == SettlementTypeEnum::City || t == SettlementTypeEnum::Village) {
+            roadBridge = RoadBridgeEnum::Road;
+        }
+    }
     void clearSettlement() { settlementType = SettlementTypeEnum::None; settlementId = kNoSettlement; }
     void setBuildingType(BuildingTypeEnum v) { buildingType = v; }
-    void setRoadBridge(RoadBridgeEnum v) { roadBridge = v; }
+    void setRoadBridge(RoadBridgeEnum v) {
+        roadBridge = settlementType == SettlementTypeEnum::City ||
+                     settlementType == SettlementTypeEnum::Village
+                         ? RoadBridgeEnum::Road
+                         : v;
+    }
     void setVisibility(VisibilityEnum v) { visibility = v; }
     void setTribe(TribeType v) { tribe = v; }
     void setTerritoryCityId(CityId v) { territoryCityId = v; }

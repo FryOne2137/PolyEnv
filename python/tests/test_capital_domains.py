@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from PolyEnv import GameEnv
+from PolyEnv import Drylands, GameEnv, Lakes
 
 _FEAT_CAPITAL_LAYER = 9
+_FEAT_ROAD_BRIDGE = 7
+_FEAT_SETTLEMENT_TYPE = 14
 _FEAT_RESOURCE = 18
 _FEAT_BASE_TERRAIN = 19
 _FEAT_TRIBE = 20
@@ -17,6 +19,10 @@ _RESOURCE_ANIMAL = 5
 _TERRAIN_WATER = 1
 _TERRAIN_LAND = 2
 _TERRAIN_FOREST = 4
+
+_ROAD = 1
+_SETTLEMENT_VILLAGE = 1
+_SETTLEMENT_CITY = 2
 
 
 def _capital_positions(player_count: int, seed: int) -> list[tuple[int, int]]:
@@ -74,6 +80,25 @@ def test_capitals_use_distinct_quadrant_domains(
 
 def test_capital_domain_assignment_is_seed_deterministic() -> None:
     assert _capital_positions(10, seed=9876) == _capital_positions(10, seed=9876)
+
+
+@pytest.mark.parametrize("map_type", [Lakes, Drylands])
+@pytest.mark.parametrize("seed", [1, 1234, 9876])
+def test_every_village_and_city_has_a_road(map_type: int, seed: int) -> None:
+    env = GameEnv(
+        seed=seed,
+        map_size=16,
+        players=(1, 2, 3, 4),
+        map_type=map_type,
+    )
+    settlements = [
+        tile
+        for tile in env.full_map()
+        if tile[_FEAT_SETTLEMENT_TYPE] in (_SETTLEMENT_VILLAGE, _SETTLEMENT_CITY)
+    ]
+
+    assert settlements
+    assert all(tile[_FEAT_ROAD_BRIDGE] == _ROAD for tile in settlements)
 
 
 @pytest.mark.parametrize(

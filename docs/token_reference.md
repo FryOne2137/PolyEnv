@@ -123,6 +123,8 @@ Used by `map_tokens[*][7]`.
 | 2 | Bridge |
 | 3 | WaterConnection |
 
+Every city and village tile always has `road_bridge = 1` (`Road`).
+
 ## Buildings
 
 Used by `map_tokens[*][8]` and action field `building`.

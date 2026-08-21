@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "PolyEnv"
-version = "1.0.0"
+version = "1.0.1"
 description = "Polytopia-like game engine Python bindings"
 readme = "README.md"
 requires-python = ">=3.10"
