@@ -50,6 +50,17 @@ static constexpr int kRuinStarsReward = 10;
 static constexpr int kVeteranBonusHp = 5;
 static constexpr int kRuinRammerHp = 15;
 
+static CityId ownedCapitalForRuinReward(const Game& game, PlayerId pid) {
+    const CityId capitalId = PlayerSystem::getCapitalId(game, pid);
+    if (capitalId == kNoCity || !CitySystem::cityExists(game, capitalId)) {
+        return kNoCity;
+    }
+    if (static_cast<PlayerId>(CitySystem::getCityOwner(game, capitalId)) != pid) {
+        return kNoCity;
+    }
+    return capitalId;
+}
+
 
 void InteractionSystem::onUnitEnteredTile(Game& game, UnitId unitId, Pos pos) {
     if (!UnitSystem::unitExists(game, unitId)) return;
@@ -131,10 +142,8 @@ void InteractionSystem::handleRuin(Game& game, UnitId unitId, Pos pos) {
         }
 
         case RuinReward::Population: {
-            const CityId capId = PlayerSystem::getCapitalId(game, pid);
-            if (capId != kNoCity &&
-                CitySystem::cityExists(game, capId) &&
-                static_cast<PlayerId>(CitySystem::getCityOwner(game, capId)) == pid) {
+            const CityId capId = ownedCapitalForRuinReward(game, pid);
+            if (capId != kNoCity) {
                 const uint8_t oldLevel = CitySystem::getCityLevel(game, capId);
 
                 (void)CitySystem::addPopulation(game, capId, 3);
@@ -242,10 +251,8 @@ InteractionSystem::RuinReward InteractionSystem::rollRuinReward(Game& game, Play
 
     // population jeśli gracz aktualnie posiada swoją stałą stolicę
     {
-        const CityId capId = PlayerSystem::getCapitalId(game, pid);
-        if (capId != kNoCity &&
-            CitySystem::cityExists(game, capId) &&
-            static_cast<PlayerId>(CitySystem::getCityOwner(game, capId)) == pid) {
+        const CityId capId = ownedCapitalForRuinReward(game, pid);
+        if (capId != kNoCity) {
             pool.push_back(RuinReward::Population);
         }
     }

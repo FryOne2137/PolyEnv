@@ -34,6 +34,7 @@ int ScoreSystem::getScore(const Game& game, const PlayerId pid) {
         CitySystem::cityExists(game,cid);
 
         score += cityLevel(CitySystem::getCityLevel(game,cid), CitySystem::getCityPopulation(game,cid));
+        score += parks(CitySystem::getCityParkCount(game, cid));
 
         int territoryCount = 0;
         int monumentsCount = 0;
