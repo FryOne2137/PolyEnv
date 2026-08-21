@@ -3,6 +3,31 @@
 The SFML GUI is a debugging and replay-inspection tool. It uses the same game
 engine and replay format as Python.
 
+## GUI Tour
+
+### Game Setup
+
+The start screen configures tribes and player order, human or bot control, map
+type, map size, seed, and the bot server port.
+
+![PolyEnv GUI game setup and tribe selection](images/gui/tribe-selection.png)
+
+### Manual Game And Debugging
+
+The normal game view supports manual play and debugging. It shows the map,
+player state, monument progress, technology tree, legal actions, and map-view
+controls in one window.
+
+![PolyEnv manual game and debugging view](images/gui/manual-game.png)
+
+### Replay Viewer
+
+Loading a saved game opens the replay viewer. Its timeline and playback
+controls can inspect any move while keeping the map, player state, technology
+tree, and visible history available.
+
+![PolyEnv saved-game replay viewer](images/gui/replay-viewer.png)
+
 ## Build And Run
 
 ```bash
