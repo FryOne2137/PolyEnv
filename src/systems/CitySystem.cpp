@@ -262,6 +262,11 @@ void CitySystem::reassignUnitToCity(Game& game, UnitId uid, CityId newCityId, bo
         (void)CitySystem::removeUnitFromCity(game, uid, cid);
     }
 
+    // List membership and originCityId describe the same support relation.
+    // Clear both before assigning a new city so migration never leaves the
+    // unit pointing at its previous city.
+    (void)UnitSystem::setOriginCityId(game, uid, kNoCity);
+
     // If no target city, stop here (unit remains unassigned to any city).
     if (newCityId == kNoCity) return;
 
@@ -509,18 +514,35 @@ bool CitySystem::captureCityAt(Game& game, PlayerId newOwner, Pos pos) {
     const CityId cid = resolveCityIdForTile(game, tile);
     const PlayerId oldOwner = static_cast<PlayerId>(CitySystem::getCityOwner(game, cid));
 
+    const UnitId unitOnCity = map.unitOn(pos);
+    const UnitId capturer =
+        unitOnCity != Map::kNoUnit &&
+        UnitSystem::unitExists(game, unitOnCity) &&
+        UnitSystem::getOwnerId(game, unitOnCity) == newOwner
+            ? unitOnCity
+            : Map::kNoUnit;
+
+    // Units supported by a captured city survive, but permanently lose that
+    // city as their origin. Removing every unit from the city's support list
+    // also releases all of its capacity before the capturer migrates in.
+    for (const Unit& unit : game.getUnits()) {
+        const UnitId uid = unit.getId();
+        (void)CitySystem::removeUnitFromCity(game, uid, cid);
+        if (UnitSystem::getOriginCityId(game, uid) == cid) {
+            (void)UnitSystem::setOriginCityId(game, uid, kNoCity);
+        }
+    }
+
     (void)CitySystem::setCityOwner(game, cid, static_cast<uint8_t>(newOwner));
     (void)CitySystem::setCityPos(game, cid, pos);
 
     PlayerSystem::removeCity(game, oldOwner, cid);
     PlayerSystem::addCity(game, newOwner, cid);
 
-    {
-        const UnitId uOn = map.unitOn(pos);
-        if (uOn != Map::kNoUnit) {
-            // Keep default behavior: respect capacity when capturing.
-            CitySystem::reassignUnitToCity(game, uOn, cid, true);
-        }
+    if (capturer != Map::kNoUnit) {
+        // The unit that takes the city migrates from its previous origin to
+        // the newly captured city and becomes its first supported unit.
+        CitySystem::reassignUnitToCity(game, capturer, cid, true);
     }
 
     tile.setSettlement(SettlementTypeEnum::City, tile.getSettlementId());
