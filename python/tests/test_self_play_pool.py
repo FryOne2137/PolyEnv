@@ -324,6 +324,7 @@ def test_ismcts_acceptance_mask_recovers_only_rejected_multiplayer_slot() -> Non
         np.ones(2, dtype=np.uint8),
     )
     assert pool.ismcts_belief_diagnostics(root["state_id"], single_particle) == []
+    assert pool.ismcts_belief_action_differences(root["state_id"], single_particle) == []
 
     visible = int(np.flatnonzero(request["map_tokens"][1, 2, :, 0] == 1)[0])
     particles[1, 2, 2, visible, 19] = (
@@ -435,6 +436,15 @@ def test_ismcts_acceptance_mask_rejects_one_active_player_particle() -> None:
     particles[0, active, 1, destination, unit_fields] = particles[
         0, active, 1, source, unit_fields
     ]
+
+    differences = pool.ismcts_belief_action_differences(root["state_id"], particles)
+    assert len(differences) == 1
+    difference = differences[0]
+    assert difference["env_id"] == 0
+    assert difference["player"] == active
+    assert difference["particle"] == 1
+    assert difference["missing_actions"] == []
+    assert difference["extra_actions"]
 
     np.testing.assert_array_equal(
         pool.ismcts_belief_acceptance_mask(root["state_id"], particles),

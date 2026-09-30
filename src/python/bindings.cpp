@@ -6791,6 +6791,79 @@ public:
         return result;
     }
 
+    // Return only actionable legal-action set differences for complete
+    // ISMCTS belief particles.  Unlike ismctsBeliefDiagnostics this is not a
+    // submission validator: malformed or terminal particles have no action
+    // set to compare and are therefore omitted from the result.
+    py::list ismctsBeliefActionDifferences(py::array stateIds, py::array completedMapTokens) {
+        IsmctsBeliefInput input = parseIsmctsBeliefInput(stateIds, completedMapTokens);
+        const size_t players = static_cast<size_t>(playerCount_);
+        const size_t tokenStride = tileCount() * kMapTokenFeatureCount;
+        const size_t forestStride = players * input.particles * tokenStride;
+
+        const auto describe = [](const GameEnv& env, size_t actionId) {
+            py::dict out = env.decodeAction(actionId);
+            if (out.empty()) {
+                out["action_id"] = actionId;
+                out["type_fullname"] = "unknown";
+                out["source_index"] = -1;
+                out["target_index"] = -1;
+            }
+            return out;
+        };
+
+        py::list result;
+        std::lock_guard lock(apiMutex_);
+        requireBeliefValidationReady(input.stateIds.data());
+        for (size_t env = 0; env < envs_.size(); ++env) {
+            const PlayerId active = envs_[env].currentPlayerNative();
+            const auto& realIds = envs_[env].legalActionIdsRefNative();
+            const size_t scratchOffset = (env * players + static_cast<size_t>(active)) * tokenStride;
+            for (size_t particle = 0; particle < input.particles; ++particle) {
+                try {
+                    GameEnv belief = envs_[env].makeBeliefEnvFromPlayerFlatTokens(
+                        active,
+                        input.tokens.data() + env * forestStride +
+                            (static_cast<size_t>(active) * input.particles + particle) * tokenStride,
+                        tileCount(), kMapTokenFeatureCount,
+                        beliefValidationScratch_.data() + scratchOffset);
+                    const auto& beliefIds = belief.legalActionIdsRefNative();
+                    const std::unordered_set<size_t> realSet(realIds.begin(), realIds.end());
+                    const std::unordered_set<size_t> beliefSet(beliefIds.begin(), beliefIds.end());
+                    py::list missing;
+                    py::list extra;
+                    for (const size_t actionId : realIds) {
+                        if (beliefSet.find(actionId) == beliefSet.end()) {
+                            missing.append(describe(envs_[env], actionId));
+                        }
+                    }
+                    for (const size_t actionId : beliefIds) {
+                        if (realSet.find(actionId) == realSet.end()) {
+                            extra.append(describe(belief, actionId));
+                        }
+                    }
+                    // Preserve the acceptance validator's exact list
+                    // comparison: an order-only difference is still a
+                    // difference record, with both set-difference lists
+                    // empty.
+                    if (realIds == beliefIds) continue;
+                    py::dict row;
+                    row["env_id"] = static_cast<int>(env);
+                    row["player"] = static_cast<int>(active);
+                    row["particle"] = static_cast<int>(particle);
+                    row["missing_actions"] = std::move(missing);
+                    row["extra_actions"] = std::move(extra);
+                    result.append(std::move(row));
+                } catch (...) {
+                    // This endpoint intentionally reports legal-action set
+                    // differences only.  Construction errors belong to
+                    // ismcts_belief_diagnostics().
+                }
+            }
+        }
+        return result;
+    }
+
     // Explicitly training-only full-map targets. They are paired with state
     // ids so an external trainer cannot accidentally label a later position.
     // SelfPlayPool never consumes this data in submitBeliefs or MCTS.
@@ -8803,6 +8876,9 @@ PYBIND11_MODULE(_game_engine, m) {
         .def("ismcts_belief_diagnostics", &SelfPlayPool::ismctsBeliefDiagnostics,
             py::arg("state_ids"), py::arg("completed_map_tokens"),
             "Training-only full-ISMCTS belief submission diagnostics without source-map leakage.")
+        .def("ismcts_belief_action_differences", &SelfPlayPool::ismctsBeliefActionDifferences,
+            py::arg("state_ids"), py::arg("particles"),
+            "Return missing and extra legal actions for mismatching active-player ISMCTS particles.")
         .def("belief_targets_numpy", &SelfPlayPool::beliefTargetsNumpy,
              py::arg("state_ids"),
              "Training-only authoritative map-token labels; never consumed by native MCTS.")

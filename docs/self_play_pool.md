@@ -255,6 +255,28 @@ non-contiguous storage raise. The diagnostic method is intentionally reserved
 for explaining rejected caller beliefs and may return the public root action
 list; neither mask exposes hidden live-world data.
 
+`ismcts_belief_action_differences(state_ids, particles)` accepts the same
+contiguous `int32` 4-D/5-D ISMCTS particle layouts and `uint64[B]` state ids as
+the acceptance-mask API. It returns one dictionary for each active-player
+particle whose ordered legal-action list differs from the true current
+observation:
+
+```python
+{
+    "env_id": int,
+    "player": int,
+    "particle": int,
+    "missing_actions": [...],
+    "extra_actions": [...],
+}
+```
+
+`missing_actions` preserve the true engine action order and `extra_actions`
+preserve the reconstructed particle's order. An order-only mismatch has both
+lists empty. This endpoint compares only legal actions: malformed or terminal
+particles are omitted; use
+`ismcts_belief_diagnostics()` to explain those validation failures.
+
 For pinned, reusable host storage use
 `all_player_belief_batch_spec()` with
 `all_player_belief_requests_into(buffers)`. This packet is emitted once per
