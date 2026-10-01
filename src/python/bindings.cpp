@@ -4499,6 +4499,59 @@ public:
         }
     }
 
+    // SelfPlayPool supplies a validated per-live-slot mask here.  Keeping the
+    // filtering beside native tree selection means excluded trees are never
+    // traversed, reserved, or given virtual loss.
+    py::dict selectLeavesMasked(const uint8_t* searchMask, int maxLeaves = 0) {
+        const size_t limit = leafCapacity(maxLeaves);
+        std::unique_lock lock(apiMutex_, std::defer_lock);
+        std::vector<Selection> selections;
+        try {
+            {
+                py::gil_scoped_release release;
+                lock.lock();
+                selections = selectPendingLeaves(limit, searchMask);
+            }
+
+            LeafBatch out(selections.size(), tileCount(), static_cast<size_t>(maxActions_));
+            {
+                py::gil_scoped_release release;
+                writeLeafBatch(out, selections);
+            }
+            py::dict result = out.intoDict();
+            lock.unlock();
+            return result;
+        } catch (...) {
+            if (lock.owns_lock()) cancelSelections(selections);
+            throw;
+        }
+    }
+
+    int selectLeavesMaskedInto(
+        const py::dict& buffers, const uint8_t* searchMask, int maxLeaves = 0)
+    {
+        const size_t capacity = leafCapacity(maxLeaves);
+        LeafBatch out(buffers, capacity, tileCount(), static_cast<size_t>(maxActions_));
+        std::unique_lock lock(apiMutex_, std::defer_lock);
+        std::vector<Selection> selections;
+        try {
+            {
+                py::gil_scoped_release release;
+                lock.lock();
+                selections = selectPendingLeaves(capacity, searchMask);
+            }
+            {
+                py::gil_scoped_release release;
+                writeLeafBatch(out, selections);
+            }
+            lock.unlock();
+            return static_cast<int>(selections.size());
+        } catch (...) {
+            if (lock.owns_lock()) cancelSelections(selections);
+            throw;
+        }
+    }
+
     void expandAndBackup(py::array leafIds, py::array policyLogits, py::array values) {
         auto ids = py::array_t<uint64_t, py::array::c_style | py::array::forcecast>::ensure(leafIds);
         auto logits = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(policyLogits);
@@ -5655,7 +5708,7 @@ private:
         return (node->pending || node->budgetBlocked) ? nullptr : node;
     }
 
-    std::vector<Selection> selectPendingLeaves(size_t limit) {
+    std::vector<Selection> selectPendingLeaves(size_t limit, const uint8_t* searchMask = nullptr) {
         std::vector<Selection> selections;
         selections.reserve(limit);
         if (limit == 0) return selections;
@@ -5678,7 +5731,8 @@ private:
                      offset < treeCount && candidates.size() < limit - selections.size();
                      ++offset) {
                     const size_t treeIndex = (nextTree_ + offset) % treeCount;
-                    if (trees_[treeIndex].pendingCount < maxPendingLeavesPerTree_) {
+                    if ((searchMask == nullptr || searchMask[treeIndex] != 0) &&
+                        trees_[treeIndex].pendingCount < maxPendingLeavesPerTree_) {
                         candidates.push_back(treeIndex);
                     }
                 }
@@ -7096,6 +7150,70 @@ public:
         return count;
     }
 
+    // Select from only the requested live slots.  The mask is fully checked
+    // before MCTS is entered, so a bad caller tensor cannot leave a tree
+    // pending.  Slots set to zero are not traversed or mutated.
+    py::dict selectLeavesMasked(py::array searchMask, py::object maxLeaves = py::none()) {
+        const auto mask = parseSearchMask(searchMask);
+        const int limit = parseOptionalMaxLeaves(maxLeaves);
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        py::dict out = mcts_->selectLeavesMasked(mask.data(), limit);
+        auto leafIds = py::array_t<uint64_t, py::array::c_style>::ensure(out["leaf_id"]);
+        if (!leafIds || leafIds.ndim() != 1) {
+            throw std::logic_error("MCTS returned an invalid leaf_id batch");
+        }
+        const size_t rows = static_cast<size_t>(leafIds.shape(0));
+        try {
+            VisibleActionHistoryBatch history(rows, static_cast<size_t>(visibleActionHistory_));
+            {
+                py::gil_scoped_release release;
+                mcts_->writePendingLeafVisibleActionHistory(
+                    leafIds.data(), rows, history.features.mutable_data(), history.mask.mutable_data(),
+                    history.length.mutable_data(), static_cast<size_t>(visibleActionHistory_));
+            }
+            attachLeafPositionMetadata(out);
+            out["visible_action_history"] = std::move(history.features);
+            out["visible_action_history_mask"] = std::move(history.mask);
+            out["visible_action_history_length"] = std::move(history.length);
+        } catch (...) {
+            mcts_->cancelPendingLeafIds(leafIds.data(), rows);
+            throw;
+        }
+        return out;
+    }
+
+    int selectLeavesMaskedInto(
+        const py::dict& buffers, py::array searchMask, py::object maxLeaves = py::none())
+    {
+        const auto mask = parseSearchMask(searchMask);
+        const int limit = parseOptionalMaxLeaves(maxLeaves);
+        const size_t capacity = leafCapacity(limit);
+        MctsPool::LeafBatch leaf(buffers, capacity, tileCount(), static_cast<size_t>(maxActions_));
+        LeafPositionBatch position(buffers, capacity);
+        VisibleActionHistoryBatch history(
+            buffers, capacity, static_cast<size_t>(visibleActionHistory_));
+        validateLeafBatchStorage(leaf, position, history);
+
+        std::lock_guard lock(apiMutex_);
+        requireActiveSearch();
+        const int count = mcts_->selectLeavesMaskedInto(buffers, mask.data(), limit);
+        try {
+            attachLeafPositionMetadata(leaf, position, static_cast<size_t>(count));
+            {
+                py::gil_scoped_release release;
+                mcts_->writePendingLeafVisibleActionHistory(
+                    leaf.leafId.data(), static_cast<size_t>(count), history.features.mutable_data(),
+                    history.mask.mutable_data(), history.length.mutable_data(),
+                    static_cast<size_t>(visibleActionHistory_));
+            }
+        } catch (...) {
+            mcts_->cancelPendingLeafIds(leaf.leafId.data(), static_cast<size_t>(count));
+            throw;
+        }
+        return count;
+    }
+
     void expandAndBackup(py::array leafIds, py::array policyLogits, py::array values) {
         std::lock_guard lock(apiMutex_);
         requireActiveSearch();
@@ -8189,6 +8307,34 @@ private:
         return std::min(capacity, static_cast<size_t>(maxLeaves));
     }
 
+    std::vector<uint8_t> parseSearchMask(const py::array& searchMask) const {
+        const auto mask = requireContiguousArray<uint8_t>(searchMask, "search_mask");
+        if (mask.ndim() != 1 || mask.shape(0) != numEnvs_) {
+            throw std::invalid_argument("search_mask must have shape [num_envs]");
+        }
+        const uint8_t* data = mask.data();
+        std::vector<uint8_t> validated(static_cast<size_t>(numEnvs_));
+        for (size_t env = 0; env < static_cast<size_t>(numEnvs_); ++env) {
+            if (data[env] > 1) {
+                throw std::invalid_argument("search_mask values must be 0 or 1");
+            }
+            validated[env] = data[env];
+        }
+        return validated;
+    }
+
+    static int parseOptionalMaxLeaves(const py::object& maxLeaves) {
+        if (maxLeaves.is_none()) return 0;
+        if (!py::isinstance<py::int_>(maxLeaves)) {
+            throw std::invalid_argument("max_leaves must be an integer or None");
+        }
+        try {
+            return py::cast<int>(maxLeaves);
+        } catch (const py::cast_error&) {
+            throw std::invalid_argument("max_leaves must be an integer or None");
+        }
+    }
+
     uint32_t seedFor(size_t envIndex) const {
         if (baseSeed_ == 0) return 0;
         return baseSeed_ + static_cast<uint32_t>(envIndex) +
@@ -8889,8 +9035,14 @@ PYBIND11_MODULE(_game_engine, m) {
              py::arg("max_leaves") = 0,
              "Return a dense MCTS leaf batch for an external policy/value model.")
         .def("select_leaves_into", &SelfPlayPool::selectLeavesInto,
-             py::arg("buffers"), py::arg("max_leaves") = 0,
-             "Fill caller-owned MCTS leaf buffers and return the valid prefix length.")
+            py::arg("buffers"), py::arg("max_leaves") = 0,
+            "Fill caller-owned MCTS leaf buffers and return the valid prefix length.")
+        .def("select_leaves_masked", &SelfPlayPool::selectLeavesMasked,
+            py::arg("search_mask"), py::arg("max_leaves") = py::none(),
+            "Return MCTS leaves only for live slots selected by a uint8 [num_envs] mask.")
+        .def("select_leaves_masked_into", &SelfPlayPool::selectLeavesMaskedInto,
+            py::arg("buffers"), py::arg("search_mask"), py::arg("max_leaves") = py::none(),
+            "Fill caller-owned MCTS leaf buffers for selected live slots and return the valid prefix length.")
         .def("expand_and_backup", &SelfPlayPool::expandAndBackup,
              py::arg("leaf_ids"), py::arg("policy_logits"), py::arg("values"),
              "Expand pending leaves and back up external policy/value results.")

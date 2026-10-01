@@ -1124,6 +1124,149 @@ def test_self_play_pool_reuses_external_mcts_leaf_and_root_buffers() -> None:
     assert {name: array.ctypes.data for name, array in root_buffers.items()} == root_addresses
 
 
+def test_self_play_masked_leaf_selection_filters_slots_and_preserves_all_ones() -> None:
+    seed = 1013
+    pool = _pool(seed)
+    request = pool.reset(seed=seed)
+    pool.submit_beliefs(request["state_id"], _completed_beliefs(seed, request))
+
+    mask = np.array([1, 0], dtype=np.uint8)
+    leaves = pool.select_leaves_masked(mask, max_leaves=None)
+    assert len(leaves["leaf_id"]) == 1
+    assert np.array_equal(leaves["env_id"], np.array([0], dtype=np.int32))
+    assert pool.pending_count == 1
+    assert np.array_equal(
+        pool.search_stats()["tree_pending_count"], np.array([1, 0], dtype=np.int32)
+    )
+    assert pool.cancel_leaves(leaves["leaf_id"]) == 1
+
+    before_stats = pool.search_stats()
+    before_root = pool.root_policy()
+    buffers = _allocate_buffers(pool.leaf_batch_spec())
+    assert pool.select_leaves_masked_into(buffers, np.zeros(2, dtype=np.uint8)) == 0
+    assert pool.pending_count == 0
+    after_stats = pool.search_stats()
+    after_root = pool.root_policy()
+    for key, value in before_stats.items():
+        if isinstance(value, np.ndarray):
+            np.testing.assert_array_equal(after_stats[key], value, err_msg=key)
+        else:
+            assert after_stats[key] == value
+    for key, value in before_root.items():
+        np.testing.assert_array_equal(after_root[key], value, err_msg=key)
+
+    # A zero-masked slot can take its direct-policy action through the usual
+    # checked live-game boundary once the independent selected leaf is gone.
+    next_buffers = _allocate_belief_buffers(pool)
+    pool.step_into_checked(request["action_id"][:, 0], request["state_id"], next_buffers)
+    assert next_buffers["action_valid"][1] == 1
+    assert next_buffers["state_id"][1] != request["state_id"][1]
+
+    reference = _pool(seed)
+    reference_request = reference.reset(seed=seed)
+    reference.submit_beliefs(
+        reference_request["state_id"], _completed_beliefs(seed, reference_request)
+    )
+    masked = _pool(seed)
+    masked_request = masked.reset(seed=seed)
+    masked.submit_beliefs(masked_request["state_id"], _completed_beliefs(seed, masked_request))
+    masked_buffers = _allocate_buffers(masked.leaf_batch_spec())
+    count = masked.select_leaves_masked_into(
+        masked_buffers, np.ones(2, dtype=np.uint8)
+    )
+    expected = reference.select_leaves()
+    assert count == len(expected["leaf_id"])
+    for key, value in expected.items():
+        np.testing.assert_array_equal(masked_buffers[key][:count], value, err_msg=key)
+
+
+def test_self_play_masked_selection_preserves_pending_lifecycle_per_environment() -> None:
+    seed = 1021
+    pool = SelfPlayPool(
+        num_envs=2,
+        seed=seed,
+        map_size=11,
+        players=(Bardur, Imperius),
+        num_threads=2,
+        max_actions=128,
+        auto_reset=False,
+        max_pending_leaves_per_tree=2,
+        virtual_loss=1.0,
+    )
+    request = pool.reset(seed=seed)
+    pool.submit_beliefs(request["state_id"], _completed_beliefs(seed, request))
+    buffers = _allocate_buffers(pool.leaf_batch_spec())
+
+    first_count = pool.select_leaves_masked_into(
+        buffers, np.array([1, 0], dtype=np.uint8)
+    )
+    assert first_count == 1
+    assert buffers["env_id"][0] == 0
+    pool.expand_and_backup(
+        buffers["leaf_id"][:first_count],
+        np.zeros((first_count, pool.max_actions), dtype=np.float32),
+        np.zeros(first_count, dtype=np.float32),
+    )
+
+    own_count = pool.select_leaves_masked_into(buffers, np.array([1, 0], dtype=np.uint8))
+    assert own_count == 2
+    assert np.all(buffers["env_id"][:own_count] == 0)
+    own_ids = buffers["leaf_id"][:own_count].copy()
+
+    other_count = pool.select_leaves_masked_into(buffers, np.array([0, 1], dtype=np.uint8))
+    assert other_count == 1
+    assert buffers["env_id"][0] == 1
+    other_id = buffers["leaf_id"][:other_count].copy()
+    np.testing.assert_array_equal(
+        pool.search_stats()["tree_pending_count"], np.array([2, 1], dtype=np.int32)
+    )
+
+    assert pool.cancel_leaves(own_ids) == 2
+    pool.expand_and_backup(
+        other_id,
+        np.zeros((other_count, pool.max_actions), dtype=np.float32),
+        np.zeros(other_count, dtype=np.float32),
+    )
+    assert pool.pending_count == 0
+    np.testing.assert_array_equal(
+        pool.search_stats()["tree_pending_count"], np.array([0, 0], dtype=np.int32)
+    )
+    np.testing.assert_array_equal(
+        pool.root_policy()["root_visit_count"], np.array([1, 1], dtype=np.int32)
+    )
+
+
+def test_self_play_masked_selection_validates_masks_before_mutating_mcts() -> None:
+    seed = 1031
+    pool = _pool(seed)
+    request = pool.reset(seed=seed)
+    pool.submit_beliefs(request["state_id"], _completed_beliefs(seed, request))
+    buffers = _allocate_buffers(pool.leaf_batch_spec())
+    before_stats = pool.search_stats()
+    before_root = pool.root_policy()
+
+    invalid_masks = (
+        np.ones(2, dtype=np.int32),
+        np.ones((1, 2), dtype=np.uint8),
+        np.ones(4, dtype=np.uint8)[::2],
+        np.array([1, 2], dtype=np.uint8),
+    )
+    for mask in invalid_masks:
+        with pytest.raises(ValueError):
+            pool.select_leaves_masked_into(buffers, mask)
+        assert pool.pending_count == 0
+
+    after_stats = pool.search_stats()
+    after_root = pool.root_policy()
+    for key, value in before_stats.items():
+        if isinstance(value, np.ndarray):
+            np.testing.assert_array_equal(after_stats[key], value, err_msg=key)
+        else:
+            assert after_stats[key] == value
+    for key, value in before_root.items():
+        np.testing.assert_array_equal(after_root[key], value, err_msg=key)
+
+
 def test_self_play_external_leaf_buffer_metadata_is_validated_before_selection() -> None:
     seed = 1009
     pool = _pool(seed)

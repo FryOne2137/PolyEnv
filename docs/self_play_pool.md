@@ -457,6 +457,50 @@ must use the same capacity. Without `max_leaves`, capacity is
 the tail is not cleared. This includes `env_id`, `state_id`, and `episode_id`,
 so a model or scheduler must slice all leaf fields consistently.
 
+## Selective MCTS
+
+For each live move, an external scheduler can send strategic or uncertain
+positions through MCTS and handle the remaining positions with its own direct
+policy. `search_mask` is a C-contiguous `np.uint8` array of shape
+`[pool.num_envs]`: `1` selects a live slot for the current MCTS leaf wave and
+`0` skips it. Values other than `0` and `1`, a wrong dtype, rank, length, or
+non-contiguous mask raise before any tree is selected.
+
+```python
+import numpy as np
+
+leaf_buffers = allocate(pool.leaf_batch_spec(max_leaves=128))
+
+# Select only positions that the external scheduler marked as uncertain.
+search_mask = np.array([1, 0, 1, 0], dtype=np.uint8)
+leaf_count = pool.select_leaves_masked_into(
+    leaf_buffers, search_mask, max_leaves=128
+)
+if leaf_count:
+    logits, values = policy_value_model_prefix(leaf_buffers, leaf_count)
+    pool.expand_and_backup(
+        leaf_buffers["leaf_id"][:leaf_count], logits, values
+    )
+
+# Slots 1 and 3 have no MCTS leaf from this wave; the external caller chooses
+# their direct-policy actions and later supplies the normal checked step batch.
+```
+
+`select_leaves_masked(search_mask, max_leaves=None)` is the allocating form;
+the `*_into` variant returns the valid prefix length. A mask of all ones has
+the same selection semantics as `select_leaves()` / `select_leaves_into()`.
+An all-zero mask returns zero and leaves every tree, pending count, virtual
+loss, visit count, and live game unchanged. Only returned rows have
+`env_id` values for selected slots.
+
+Masking is not cancellation. Existing pending leaves retain their normal
+`expand_and_backup()`, `cancel_leaves()`, and `abort_search()` lifecycle; a
+zero mask simply prevents a new leaf for that slot in that call. As with the
+ordinary API, `step_into_checked()` still requires the active forest to have
+no pending leaves before the batch advances. This feature does not expose a
+full map, truth state, hidden seed, or any new fog-of-war data, and it does
+not change ISMCTS belief-particle validation or legal-action checks.
+
 Every output array is validated before live state or MCTS pending state
 changes: it must have the exact dtype and shape from its spec, be writable,
 aligned and C-contiguous, and not overlap any other batch field.

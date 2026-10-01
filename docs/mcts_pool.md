@@ -182,6 +182,18 @@ before leaf selection, so a malformed buffer cannot leave a tree pending.
 The engine holds strong references only during the synchronous call and never
 retains an output pointer afterward.
 
+## Selective Self-Play MCTS
+
+`SelfPlayPool` uses this same native scheduler and additionally provides
+`select_leaves_masked_into()` and `select_leaves_masked()`. They select only
+the live-game slots flagged by a `uint8[B]` mask; direct-policy slots are kept
+outside PolyEnv. The mask is a scheduling filter, not a model or game-state
+operation: it does not alter MCTS rules, belief validation, or fog-of-war
+visibility.
+
+See [Selective MCTS in SelfPlayPool](self_play_pool.md#selective-mcts) for the
+live-slot contract and a preallocated-buffer example.
+
 The arrays may be NumPy views of pinned PyTorch host tensors. Pin the actual
 model inputs (`map_tokens`, `state`, action features and masks), transfer them
 on a copy stream with `non_blocking=True`, and keep at least two buffer slots
