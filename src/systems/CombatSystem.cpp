@@ -120,21 +120,22 @@ static double computeDefenceBonus(const Game& game, UnitId defenderId) {
     }
 
     // --- City / Fortify / Wall defence bonus rules ---
-    // Unit must stand in a CITY tile
+    // A unit only benefits from a city it owns. An invader occupying an
+    // opponent's city cannot use that city's Fortify or City Wall defence.
     double cityBonus = 1.0;
     if (t.getSettlementType() == SettlementTypeEnum::City) {
-        // Units without Fortify get NO city defence bonus
-        if (UnitSystem::hasSkill(game, defenderId, UnitSkill::Fortify)) {
+        const CityId cityId = CitySystem::resolveCityIdForTile(game, t);
+        const City* city = (cityId != kNoCity) ? game.getCity(cityId) : nullptr;
+
+        // Units without Fortify, or units in an opponent's city, get no city
+        // defence bonus.
+        if (city && static_cast<PlayerId>(city->getOwnerId()) == owner &&
+            UnitSystem::hasSkill(game, defenderId, UnitSkill::Fortify)) {
             cityBonus = 1.5;
 
             // City wall adds +2.5 => total 4.0
-            {
-                const CityId wallCid = CitySystem::resolveCityIdForTile(game, t);
-                if (const City* c = (wallCid != kNoCity) ? game.getCity(wallCid) : nullptr) {
-                    if (c->hasCityWallEnabled()) {
-                        cityBonus += 2.5; // 1.5 + 2.5 = 4.0
-                    }
-                }
+            if (city->hasCityWallEnabled()) {
+                cityBonus += 2.5; // 1.5 + 2.5 = 4.0
             }
         }
     }
@@ -329,11 +330,16 @@ bool CombatSystem::attack(Game& game, UnitId attackerId, Pos targetPos) {
     const double attackForce = aAtk * (aHp / aMaxHp);
     const double defenceBonus = computeDefenceBonus(game, defenderId);
     const double defenceForce = dDef * (dHp / dMaxHp) * defenceBonus;
+    const double retaliationForce = dDef * (dHp / dMaxHp);
 
     const double total = std::max(1e-9, attackForce + defenceForce);
+    const double retaliationTotal = std::max(1e-9, attackForce + retaliationForce);
 
     const int attackResult = std::max(0, iround((attackForce / total) * aAtk * 4.5));
-    const int defenceResult = std::max(0, iround((defenceForce / total) * dDef * 4.5));
+    // Defensive bonuses only reduce damage received. They never make a
+    // defender's retaliation stronger.
+    const int defenceResult = std::max(0, iround(
+        (retaliationForce / retaliationTotal) * dDef * 4.5));
 
     // Apply damage to defender
     UnitSystem::setHealth(game, defenderId, std::max(0, UnitSystem::getHealth(game, defenderId) - attackResult));
