@@ -410,7 +410,9 @@ void GuiApp::startGameWithTribes(const std::vector<TribeType>& tribes) {
     cfg.mapType     = selectScreen.getMapType();
     cfg.seed        = static_cast<uint32_t>(selectScreen.getMapSeed());
 
-    std::cerr << "[mapgen] mapType=" << (cfg.mapType == MapType::Lakes ? "Lakes" : "Drylands")
+    const char* mapTypeName = cfg.mapType == MapType::Lakes ? "Lakes" :
+        cfg.mapType == MapType::Drylands ? "Drylands" : "Water World";
+    std::cerr << "[mapgen] mapType=" << mapTypeName
               << " seed=" << cfg.seed << "\n";
 
     using clock = std::chrono::high_resolution_clock;

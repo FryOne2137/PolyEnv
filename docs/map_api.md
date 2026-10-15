@@ -47,7 +47,9 @@ policy input unless the experiment is intentionally omniscient.
 
 Games with the same engine ruleset, seed, map size, tribe order, and map
 type are deterministic. `env.observation()["map_type"]` reports the active
-map type as `"lakes"` or `"drylands"`. Starting capitals are placed in
+map type as `"lakes"`, `"drylands"`, or `"water_world"`. Water World targets
+85% water, smooths the random field twice, omits capital suburbs, and retains
+safe land around every starting capital. Starting capitals are placed in
 separate domains:
 
 | Players | Domain grid |

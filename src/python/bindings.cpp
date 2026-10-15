@@ -1663,7 +1663,8 @@ public:
             obs["lighthouse_discovered_by_players"] = std::move(knownPlayers);
         }
         obs["map_size"] = w;
-        obs["map_type"] = mapType_ == MapType::Lakes ? "lakes" : "drylands";
+        obs["map_type"] = mapType_ == MapType::Lakes ? "lakes" :
+            mapType_ == MapType::Drylands ? "drylands" : "water_world";
         obs["tokenized_map"] = std::move(tokenized);
         obs["techs"] = getTechs(playerId);
         obs["seen_lighthouses"] = seenLighthouses(playerId);
@@ -8738,6 +8739,7 @@ PYBIND11_MODULE(_game_engine, m) {
     py::enum_<MapType>(m, "MapType")
         .value("Lakes", MapType::Lakes)
         .value("Drylands", MapType::Drylands)
+        .value("WaterWorld", MapType::WaterWorld)
         .export_values();
 
     py::class_<GameEnv>(m, "GameEnv")

@@ -1,5 +1,5 @@
 //
-// Polytopia-like Lakes map generation.
+// Polytopia-like map generation.
 //
 
 #include "MapGenerator.h"
@@ -21,6 +21,13 @@ constexpr bool kLakesDryMapEdges = true;
 constexpr float kLakesDryEdgeValue = 1.0f;
 constexpr float kLakesMinWaterFraction = 0.25f;
 constexpr float kLakesMaxBaseWaterFraction = 0.28f;
+
+// Water World follows the reference preset: high water coverage, two passes
+// of local smoothing, no suburbs, and fewer villages before terrain is set.
+constexpr int kWaterWorldSmoothingPasses = 2;
+constexpr float kWaterWorldOutsideNoiseValue = 0.5f;
+constexpr float kWaterWorldFraction = 0.85f;
+constexpr float kWaterWorldPreTerrainVillageDensity = 0.10f;
 
 // The documented 50% fish rate applies only to shallow water.  Ocean fish
 // are allowed near a city's territory (and its immediate outer ring), but at
@@ -148,6 +155,8 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
 
     const int players = static_cast<int>(tribes.size());
     const bool lakes = params.mapType == MapType::Lakes;
+    const bool drylands = params.mapType == MapType::Drylands;
+    const bool waterWorld = params.mapType == MapType::WaterWorld;
     const int domainsPerAxis = players <= 4 ? 2 : players <= 9 ? 3 : 4;
     std::vector<int> domains(domainsPerAxis * domainsPerAxis);
     std::iota(domains.begin(), domains.end(), 0);
@@ -166,7 +175,7 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
         const int y1 = ((dy + 1) * size) / domainsPerAxis;
         const int centerX = (x0 + x1 - 1) / 2;
         const int centerY = (y0 + y1 - 1) / 2;
-        // Capitals in Lakes are domain-based starts.  Select them from the
+        // Capitals are domain-based starts. Select them from the
         // middle of the domain, rather than anywhere inside it, so each spawn
         // is visibly centred in its assigned quadrant.
         const int centerRadius = std::max(1, std::min(x1 - x0, y1 - y0) / 4);
@@ -203,7 +212,8 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
         reservedGround[static_cast<size_t>(capital)] = 1;
     }
 
-    // 2. Lakes has suburbs and pre-terrain villages; Drylands does not.
+    // 2. Lakes has suburbs; Water World and Drylands do not. Water World
+    // still retains its reference preset's sparse pre-terrain villages.
     std::vector<int> reservedCities = capitals;
     std::vector<int> suburbs;
     auto isFarFromCities = [&](int cell) {
@@ -235,8 +245,10 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
     const int gridSlots = (size / 3) * (size / 3);
     const int availablePreTerrainVillageSlots = std::max(0, gridSlots -
         static_cast<int>(capitals.size()) - static_cast<int>(suburbs.size()));
-    const int preTerrainTarget = lakes ? static_cast<int>(std::floor(
-        availablePreTerrainVillageSlots * kPreTerrainVillageDensity)) : 0;
+    const float preTerrainVillageDensity = lakes ? kPreTerrainVillageDensity :
+        waterWorld ? kWaterWorldPreTerrainVillageDensity : 0.0f;
+    const int preTerrainTarget = static_cast<int>(std::floor(
+        availablePreTerrainVillageSlots * preTerrainVillageDensity));
     std::vector<int> preTerrainVillages;
     for (int i = 0; i < preTerrainTarget; ++i) {
         std::vector<int> candidates;
@@ -251,8 +263,8 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
         reservedGround[static_cast<size_t>(cell)] = 1;
     }
 
-    // 3. Lakes starts as a random floating-point field. After local smoothing,
-    // its lowest values become the binary water mask.
+    // 3. Water-bearing map types start as a random floating-point field.
+    // After local smoothing, the lowest values become the binary water mask.
     std::vector<uint8_t> ground(static_cast<size_t>(tileCount), 1);
     if (lakes) {
         const int minWaterTiles = static_cast<int>(std::ceil(tileCount * kLakesMinWaterFraction));
@@ -307,6 +319,52 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
         }
         for (int cell = 0; cell < tileCount; ++cell) {
             ground[static_cast<size_t>(cell)] = !waterMask[static_cast<size_t>(cell)];
+        }
+    } else if (waterWorld) {
+        std::vector<uint8_t> lockedLand = reservedGround;
+        for (int capital : capitals) for (int neighbour : plusSign(capital, size)) {
+            lockedLand[static_cast<size_t>(neighbour)] = 1;
+        }
+
+        std::vector<float> waterField(static_cast<size_t>(tileCount));
+        for (int cell = 0; cell < tileCount; ++cell) {
+            waterField[static_cast<size_t>(cell)] = lockedLand[static_cast<size_t>(cell)]
+                ? 1.0f : rand01(rng);
+        }
+        for (int pass = 0; pass < kWaterWorldSmoothingPasses; ++pass) {
+            std::vector<float> next(static_cast<size_t>(tileCount));
+            for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
+                const int cell = y * size + x;
+                if (lockedLand[static_cast<size_t>(cell)]) {
+                    next[static_cast<size_t>(cell)] = waterField[static_cast<size_t>(cell)];
+                    continue;
+                }
+                float sum = 0.0f;
+                for (int oy = -1; oy <= 1; ++oy) for (int ox = -1; ox <= 1; ++ox) {
+                    const int nx = x + ox;
+                    const int ny = y + oy;
+                    sum += (nx < 0 || ny < 0 || nx >= size || ny >= size)
+                        ? kWaterWorldOutsideNoiseValue
+                        : waterField[static_cast<size_t>(ny * size + nx)];
+                }
+                next[static_cast<size_t>(cell)] = sum / 9.0f;
+            }
+            waterField.swap(next);
+        }
+
+        std::vector<int> waterCandidates;
+        waterCandidates.reserve(static_cast<size_t>(tileCount));
+        for (int cell = 0; cell < tileCount; ++cell) {
+            if (!lockedLand[static_cast<size_t>(cell)]) waterCandidates.push_back(cell);
+        }
+        std::sort(waterCandidates.begin(), waterCandidates.end(), [&](int left, int right) {
+            return waterField[static_cast<size_t>(left)] < waterField[static_cast<size_t>(right)];
+        });
+        const int targetWaterTiles = std::min(
+            static_cast<int>(std::floor(tileCount * kWaterWorldFraction)),
+            static_cast<int>(waterCandidates.size()));
+        for (int index = 0; index < targetWaterTiles; ++index) {
+            ground[static_cast<size_t>(waterCandidates[static_cast<size_t>(index)])] = 0;
         }
     }
     for (int cell = 0; cell < tileCount; ++cell) if (reservedGround[static_cast<size_t>(cell)]) {
@@ -529,7 +587,7 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
     }
     // Drylands is land-only except for the two fish tiles guaranteed next to
     // Kickoo and Aquarion capitals.
-    if (!lakes) {
+    if (drylands) {
         for (int player = 0; player < players; ++player) {
             if (tribes[static_cast<size_t>(player)] == TribeType::Aquarion) {
                 ensureCapitalResource(player, ResourcesEnum::Fish, BaseTerrainEnum::Water, 2);
@@ -575,15 +633,17 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
         if (!adjacent) { tiles[static_cast<size_t>(cell)].setSettlement(SettlementTypeEnum::Starfish, nextSettlement++); ++starfish; }
     }
 
-    // Lakes keeps the four corners as empty ground.  This final invariant also
-    // protects them from late passes such as guaranteed start resources.
-    for (int corner : {0, size - 1, size * (size - 1), size * size - 1}) {
-        Tile& tile = tiles[static_cast<size_t>(corner)];
-        tile.setBaseTerrain(BaseTerrainEnum::Land);
-        tile.setResource(ResourcesEnum::None);
-        tile.clearSettlement();
-        tile.setBuildingType(BuildingTypeEnum::None);
-        tile.setRoadBridge(RoadBridgeEnum::None);
+    // Existing map types keep the four corners as empty ground. Water World
+    // intentionally leaves them to its terrain mask.
+    if (!waterWorld) {
+        for (int corner : {0, size - 1, size * (size - 1), size * size - 1}) {
+            Tile& tile = tiles[static_cast<size_t>(corner)];
+            tile.setBaseTerrain(BaseTerrainEnum::Land);
+            tile.setResource(ResourcesEnum::None);
+            tile.clearSettlement();
+            tile.setBuildingType(BuildingTypeEnum::None);
+            tile.setRoadBridge(RoadBridgeEnum::None);
+        }
     }
 
     std::vector<Pos> capitalPositions;

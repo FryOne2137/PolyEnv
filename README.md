@@ -41,3 +41,5 @@ The complete API, tensor layouts, legal-action format, replay support, and optim
 ## Map generation
 
 Map generation is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and was modified for PolyEnv.
+`Lakes`, `Drylands`, and `WaterWorld` are available; Water World uses an 85%
+water target with smoothed island formation.

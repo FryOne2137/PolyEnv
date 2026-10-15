@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from PolyEnv import Bardur, Drylands, GameEnv, Imperius, Kickoo
+from PolyEnv import Bardur, Drylands, GameEnv, Imperius, Kickoo, WaterWorld
 
 
 def _project_version() -> str:
@@ -77,6 +77,19 @@ def test_replay_preserves_drylands_map_type(tmp_path) -> None:
     restored = GameEnv(seed=7, map_size=16, players=(Kickoo, Bardur))
     observation = restored.load(replay_path)
     assert observation["map_type"] == "drylands"
+    assert np.array_equal(restored.full_map_numpy(), original.full_map_numpy())
+
+
+def test_replay_preserves_water_world_map_type(tmp_path) -> None:
+    original = GameEnv(seed=654, map_size=11, players=(Bardur, Imperius), map_type=WaterWorld)
+    replay_path = original.save(tmp_path / "water-world.polygame")
+
+    payload = json.loads(replay_path.read_text(encoding="utf-8"))
+    assert payload["map_generation"]["map_type"] == 2
+
+    restored = GameEnv(seed=7, map_size=16, players=(Kickoo, Bardur))
+    observation = restored.load(replay_path)
+    assert observation["map_type"] == "water_world"
     assert np.array_equal(restored.full_map_numpy(), original.full_map_numpy())
 
 

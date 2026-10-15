@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from PolyEnv import Drylands, GameEnv, Lakes
+from PolyEnv import Drylands, GameEnv, Lakes, WaterWorld
 
 _FEAT_CAPITAL_LAYER = 9
 _FEAT_ROAD_BRIDGE = 7
@@ -82,7 +82,7 @@ def test_capital_domain_assignment_is_seed_deterministic() -> None:
     assert _capital_positions(10, seed=9876) == _capital_positions(10, seed=9876)
 
 
-@pytest.mark.parametrize("map_type", [Lakes, Drylands])
+@pytest.mark.parametrize("map_type", [Lakes, Drylands, WaterWorld])
 @pytest.mark.parametrize("seed", [1, 1234, 9876])
 def test_every_village_and_city_has_a_road(map_type: int, seed: int) -> None:
     env = GameEnv(
@@ -99,6 +99,21 @@ def test_every_village_and_city_has_a_road(map_type: int, seed: int) -> None:
 
     assert settlements
     assert all(tile[_FEAT_ROAD_BRIDGE] == _ROAD for tile in settlements)
+
+
+def test_water_world_has_deterministic_high_water_coverage() -> None:
+    first = GameEnv(seed=1234, map_size=16, players=(1, 2, 3, 4), map_type=WaterWorld)
+    second = GameEnv(seed=1234, map_size=16, players=(1, 2, 3, 4), map_type="water_world")
+
+    assert first.observation()["map_type"] == "water_world"
+    assert first.full_map() == second.full_map()
+
+    water_tiles = sum(
+        tile[_FEAT_BASE_TERRAIN] in (0, _TERRAIN_WATER)
+        for tile in first.full_map()
+    )
+    water_fraction = water_tiles / (16 * 16)
+    assert 0.82 <= water_fraction <= 0.88
 
 
 @pytest.mark.parametrize(

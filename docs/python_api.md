@@ -90,18 +90,25 @@ leaf and root `*_into()` APIs follow the same contracts as `MctsPool`.
 
 ## Map Type
 
-The supported map types are `Lakes` and `Drylands`. Pass either the exported
-constant or its lower-case string form:
+The supported map types are `Lakes`, `Drylands`, and `WaterWorld`. Pass either
+the exported constant or a lower-case string form:
 
 ```python
 from PolyEnv import Drylands, GameEnv
 
 dry_game = GameEnv(map_type=Drylands)
 same_game = GameEnv(map_type="drylands")
+
+from PolyEnv import WaterWorld
+
+water_game = GameEnv(map_type=WaterWorld)
+same_water_game = GameEnv(map_type="water_world")
 ```
 
-`reset()` accepts the same `map_type` argument. Every observation contains a
-`map_type` field whose value is either `"lakes"` or `"drylands"`.
+`WaterWorld` uses an 85% water target, two smoothing passes, no capital
+suburbs, and sparse pre-terrain villages. `reset()` accepts the same
+`map_type` argument. Every observation contains a `map_type` field whose
+value is `"lakes"`, `"drylands"`, or `"water_world"`.
 
 ## Everyday Methods
 

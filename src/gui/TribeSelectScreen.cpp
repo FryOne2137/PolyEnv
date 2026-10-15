@@ -83,8 +83,9 @@ TribeSelectScreen::TribeSelectScreen() {
     mapSize = 16;
     mapSeed = 0;
     mapType = MapType::Lakes;
-    lakesBtn = {sf::FloatRect(840.f, 140.f, 170.f, 46.f), "Lakes"};
-    drylandsBtn = {sf::FloatRect(1030.f, 140.f, 170.f, 46.f), "Drylands"};
+    lakesBtn = {sf::FloatRect(800.f, 140.f, 135.f, 46.f), "Lakes"};
+    drylandsBtn = {sf::FloatRect(945.f, 140.f, 135.f, 46.f), "Drylands"};
+    waterWorldBtn = {sf::FloatRect(1090.f, 140.f, 150.f, 46.f), "Water World"};
 }
 
 void TribeSelectScreen::setFont(sf::Font* f) { font = f; }
@@ -138,6 +139,7 @@ void TribeSelectScreen::handleEvent(const sf::Event& ev, const sf::RenderWindow&
 
         if (inside(lakesBtn.rect, mp)) { mapType = MapType::Lakes; return; }
         if (inside(drylandsBtn.rect, mp)) { mapType = MapType::Drylands; return; }
+        if (inside(waterWorldBtn.rect, mp)) { mapType = MapType::WaterWorld; return; }
 
         // Map size / seed input boxes
         sf::FloatRect mapSizeBox(900.f, 550.f, 140.f, 40.f);
@@ -407,12 +409,14 @@ void TribeSelectScreen::draw(sf::RenderTarget& rt) {
         rt.draw(shape);
         if (font) {
             sf::Text text(button.text, *font, 18);
-            text.setPosition(button.rect.left + 18.f, button.rect.top + 12.f);
+            const float textOffset = std::max(8.f, (button.rect.width - text.getLocalBounds().width) / 2.f);
+            text.setPosition(button.rect.left + textOffset, button.rect.top + 12.f);
             rt.draw(text);
         }
     };
     drawMapTypeButton(lakesBtn, mapType == MapType::Lakes);
     drawMapTypeButton(drylandsBtn, mapType == MapType::Drylands);
+    drawMapTypeButton(waterWorldBtn, mapType == MapType::WaterWorld);
 
     if (font) {
         sf::Text cnt("Count: " + std::to_string(selected.size()), *font, 18);

@@ -9,6 +9,7 @@ from ._game_engine import GameEnv as _GameEnv, MapType
 
 Lakes = MapType.Lakes
 Drylands = MapType.Drylands
+WaterWorld = MapType.WaterWorld
 
 # Feature indices in the tokenized_map tile vector (23 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
@@ -98,7 +99,9 @@ def _normalize_map_type(map_type: MapType | str) -> MapType:
             return Lakes
         if normalized == "drylands":
             return Drylands
-    raise ValueError("map_type must be Lakes or Drylands")
+        if normalized in {"waterworld", "water_world", "water world"}:
+            return WaterWorld
+    raise ValueError("map_type must be Lakes, Drylands, or WaterWorld")
 
 
 class GameEnv(_GameEnv):
@@ -226,6 +229,7 @@ __all__ = [
     "MapType",
     "Lakes",
     "Drylands",
+    "WaterWorld",
     "Tribe",
     "get_tribe",
     "NAME_TO_TRIBE",

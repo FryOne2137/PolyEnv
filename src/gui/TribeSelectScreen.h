@@ -71,6 +71,7 @@ private:
     MapType mapType = MapType::Lakes;
     Button lakesBtn;
     Button drylandsBtn;
+    Button waterWorldBtn;
 
     int mapSeed = 0;
 

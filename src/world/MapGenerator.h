@@ -16,6 +16,7 @@
 enum class MapType : uint8_t {
     Lakes = 0,
     Drylands = 1,
+    WaterWorld = 2,
 };
 
 class MapGenerator {

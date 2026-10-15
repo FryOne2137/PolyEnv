@@ -26,7 +26,7 @@ bool validTribeId(int tribeId) {
 }
 
 bool validMapType(uint8_t mapType) {
-    return mapType <= 1; // 0 = Lakes, 1 = Drylands
+    return mapType <= 2; // 0 = Lakes, 1 = Drylands, 2 = Water World
 }
 } // namespace
 
@@ -128,7 +128,7 @@ bool ReplayRecorder::load(
         if (replay.contains("map_generation")) {
             const nlohmann::json& generation = replay.at("map_generation");
             const int mapType = generation.value("map_type", static_cast<int>(metadata.mapType));
-            if (mapType < 0 || mapType > 1) {
+            if (mapType < 0 || mapType > 2) {
                 error = "invalid map type";
                 return false;
             }

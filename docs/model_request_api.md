@@ -44,7 +44,7 @@ Useful action arrays are:
 | `arg_mask` | Which action arguments apply |
 
 The `obs` dictionary includes turn, current player, winner/game-over state,
-map size, `map_type` (`"lakes"` or `"drylands"`), stars, own units/cities,
+map size, `map_type` (`"lakes"`, `"drylands"`, or `"water_world"`), stars, own units/cities,
 income, and pending city reward state. It intentionally does not include
 `tokenized_map`: use the NumPy `map_tokens` field as the sole map input.
 
