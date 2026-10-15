@@ -38,7 +38,4 @@ This is the simplest way to run one environment. PolyEnv also provides faster na
 
 The complete API, tensor layouts, legal-action format, replay support, and optimized caller-owned buffer paths are described in the [full documentation](https://polyenv.readthedocs.io/).
 
-## Map generation
-
-Map generation is based on [QuasiStellar/Polytopia-Map-Generator](https://github.com/QuasiStellar/Polytopia-Map-Generator) and was modified for PolyEnv.
 
