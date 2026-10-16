@@ -157,57 +157,93 @@ std::vector<Pos> MapGenerator::generate(Map& map, const Params& params) {
     const bool lakes = params.mapType == MapType::Lakes;
     const bool drylands = params.mapType == MapType::Drylands;
     const bool waterWorld = params.mapType == MapType::WaterWorld;
-    const int domainsPerAxis = players <= 4 ? 2 : players <= 9 ? 3 : 4;
-    std::vector<int> domains(domainsPerAxis * domainsPerAxis);
-    std::iota(domains.begin(), domains.end(), 0);
-    std::shuffle(domains.begin(), domains.end(), rng);
 
-    // 1. Capitals are chosen before terrain, one in each map domain.
+    // 1. Capitals are chosen before terrain. This mirrors the reference
+    // generator's sector layout: a ceil(sqrt(players)) grid of equal base
+    // spans, with the remainder used to offset sector origins. A location is
+    // then drawn with a strong preference for the sector centre.
+    const int sectorGrid = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(players))));
+    const int baseSpan = size / sectorGrid;
+    const int leftoverTiles = size - baseSpan * sectorGrid;
+    std::vector<int> availableSectors(sectorGrid * sectorGrid);
+    std::iota(availableSectors.begin(), availableSectors.end(), 0);
+    std::shuffle(availableSectors.begin(), availableSectors.end(), rng);
+
+    const auto sectorNudge = [leftoverTiles](int sectorCoordinate) {
+        // The source first clamps the coordinate to the remainder, moves it
+        // one tile toward the preceding sector, and clamps again.
+        return std::min(leftoverTiles,
+                        std::max(1, std::min(leftoverTiles, sectorCoordinate) - 1));
+    };
+    const auto sectorOrigin = [&](int sectorCoordinate) {
+        return sectorCoordinate * baseSpan + sectorNudge(sectorCoordinate);
+    };
+    const auto sectorFocus = [&](int sectorCoordinate) {
+        return sectorOrigin(sectorCoordinate) + baseSpan / 2;
+    };
+    const auto weightedCapitalCell = [&](int sectorId) {
+        const int gridX = sectorId % sectorGrid;
+        const int gridY = sectorId / sectorGrid;
+
+        // The original generator rejects maps whose sectors are narrower than
+        // three tiles. Keep this engine's existing small-map support by using
+        // a centered proportional fallback only for that unsupported case.
+        if (baseSpan < 3) {
+            const int beginX = gridX * size / sectorGrid;
+            const int endX = (gridX + 1) * size / sectorGrid;
+            const int beginY = gridY * size / sectorGrid;
+            const int endY = (gridY + 1) * size / sectorGrid;
+            const int focusX = (beginX + endX - 1) / 2;
+            const int focusY = (beginY + endY - 1) / 2;
+            return std::clamp(focusY, 1, size - 2) * size + std::clamp(focusX, 1, size - 2);
+        }
+
+        const int innerMargin = baseSpan > 4 ? 2 : 1;
+        const int firstX = std::max(2, sectorOrigin(gridX) + innerMargin);
+        const int pastLastX = std::min(size - 2, sectorOrigin(gridX) + baseSpan - innerMargin);
+        const int firstY = std::max(2, sectorOrigin(gridY) + innerMargin);
+        const int pastLastY = std::min(size - 2, sectorOrigin(gridY) + baseSpan - innerMargin);
+
+        struct CandidateCell {
+            int index;
+            int weight;
+        };
+        std::vector<CandidateCell> pool;
+        int totalWeight = 0;
+        for (int y = firstY; y < pastLastY; ++y) {
+            for (int x = firstX; x < pastLastX; ++x) {
+                int bestWeight = 1;
+                for (int candidateY = 0; candidateY < sectorGrid; ++candidateY) {
+                    for (int candidateX = 0; candidateX < sectorGrid; ++candidateX) {
+                        const int distance = std::max(
+                            std::abs(x - sectorFocus(candidateX)),
+                            std::abs(y - sectorFocus(candidateY)));
+                        const int proximity = std::max(1, baseSpan / 2 - distance);
+                        bestWeight = std::max(bestWeight, proximity * proximity * proximity);
+                    }
+                }
+                pool.push_back({y * size + x, bestWeight});
+                totalWeight += bestWeight;
+            }
+        }
+
+        if (pool.empty()) {
+            return std::clamp(sectorFocus(gridY), 1, size - 2) * size +
+                std::clamp(sectorFocus(gridX), 1, size - 2);
+        }
+        const int roll = randInt(rng, 0, totalWeight - 1);
+        int cumulativeWeight = 0;
+        for (const CandidateCell& entry : pool) {
+            cumulativeWeight += entry.weight;
+            if (roll < cumulativeWeight) return entry.index;
+        }
+        return pool.back().index;
+    };
+
     std::vector<int> capitals(static_cast<size_t>(players));
     std::vector<uint8_t> reservedGround(static_cast<size_t>(tileCount), 0);
     for (int player = 0; player < players; ++player) {
-        const int domain = domains[static_cast<size_t>(player)];
-        const int dx = domain % domainsPerAxis;
-        const int dy = domain / domainsPerAxis;
-        const int x0 = (dx * size) / domainsPerAxis;
-        const int x1 = ((dx + 1) * size) / domainsPerAxis;
-        const int y0 = (dy * size) / domainsPerAxis;
-        const int y1 = ((dy + 1) * size) / domainsPerAxis;
-        const int centerX = (x0 + x1 - 1) / 2;
-        const int centerY = (y0 + y1 - 1) / 2;
-        // Capitals are domain-based starts. Select them from the
-        // middle of the domain, rather than anywhere inside it, so each spawn
-        // is visibly centred in its assigned quadrant.
-        const int centerRadius = std::max(1, std::min(x1 - x0, y1 - y0) / 4);
-        std::vector<int> candidates;
-        if (players <= 4) {
-            // Small games use corner starts.  A capital may be at most three
-            // coordinates away from its domain's corner: for (0, 0), that is
-            // the 3x3 range (1, 1)..(3, 3).  The corner itself is reserved as
-            // empty ground by the final map invariant.
-            const int minX = dx == 0 ? 1 : std::max(1, size - 4);
-            const int maxX = dx == 0 ? std::min(3, size - 2) : size - 2;
-            const int minY = dy == 0 ? 1 : std::max(1, size - 4);
-            const int maxY = dy == 0 ? std::min(3, size - 2) : size - 2;
-            const int cornerAdjacentX = dx == 0 ? minX : maxX;
-            const int cornerAdjacentY = dy == 0 ? minY : maxY;
-            for (int y = minY; y <= maxY; ++y)
-                for (int x = minX; x <= maxX; ++x) {
-                    // Do not allow the tile diagonally adjacent to the corner
-                    // (e.g. (1, 1) or (n-2, n-2)).  A unit starting in the
-                    // capital must not reveal the corner immediately.
-                    if (x == cornerAdjacentX && y == cornerAdjacentY) continue;
-                    candidates.push_back(y * size + x);
-                }
-        } else {
-            for (int y = std::max({1, y0, centerY - centerRadius});
-                 y <= std::min({size - 2, y1 - 1, centerY + centerRadius}); ++y)
-                for (int x = std::max({1, x0, centerX - centerRadius});
-                     x <= std::min({size - 2, x1 - 1, centerX + centerRadius}); ++x)
-                    candidates.push_back(y * size + x);
-        }
-        if (candidates.empty()) candidates.push_back(centerY * size + centerX);
-        const int capital = candidates[static_cast<size_t>(randInt(rng, 0, static_cast<int>(candidates.size()) - 1))];
+        const int capital = weightedCapitalCell(availableSectors[static_cast<size_t>(player)]);
         capitals[static_cast<size_t>(player)] = capital;
         reservedGround[static_cast<size_t>(capital)] = 1;
     }

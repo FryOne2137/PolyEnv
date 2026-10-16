@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from PolyEnv import Drylands, GameEnv, Lakes, WaterWorld
@@ -80,6 +82,54 @@ def test_capitals_use_distinct_quadrant_domains(
 
 def test_capital_domain_assignment_is_seed_deterministic() -> None:
     assert _capital_positions(10, seed=9876) == _capital_positions(10, seed=9876)
+
+
+def _reference_sector_candidates(map_size: int, player_count: int) -> list[set[tuple[int, int]]]:
+    """Candidate cells used by the reference generator's supported grid sizes."""
+    sectors_per_axis = math.ceil(math.sqrt(player_count))
+    base_span = map_size // sectors_per_axis
+    assert base_span >= 3
+    remainder = map_size - base_span * sectors_per_axis
+
+    def sector_nudge(coordinate: int) -> int:
+        return min(remainder, max(1, min(remainder, coordinate) - 1))
+
+    result: list[set[tuple[int, int]]] = []
+    padding = 2 if base_span > 4 else 1
+    for sy in range(sectors_per_axis):
+        for sx in range(sectors_per_axis):
+            start_x = sx * base_span + sector_nudge(sx)
+            start_y = sy * base_span + sector_nudge(sy)
+            cells = {
+                (x, y)
+                for y in range(max(2, start_y + padding), min(map_size - 2, start_y + base_span - padding))
+                for x in range(max(2, start_x + padding), min(map_size - 2, start_x + base_span - padding))
+            }
+            result.append(cells)
+    return result
+
+
+@pytest.mark.parametrize(("map_size", "player_count"), [(11, 2), (11, 5), (16, 2), (16, 5), (16, 10)])
+@pytest.mark.parametrize("seed", [1, 1234, 9876])
+def test_capitals_use_reference_sector_candidates(map_size: int, player_count: int, seed: int) -> None:
+    players = tuple((index % 12) + 1 for index in range(player_count))
+    env = GameEnv(seed=seed, map_size=map_size, players=players)
+    capitals = [
+        (index % map_size, index // map_size)
+        for index, tile in enumerate(env.full_map())
+        if tile[_FEAT_CAPITAL_LAYER] == 1
+    ]
+
+    reference_sectors = _reference_sector_candidates(map_size, player_count)
+    assigned_sectors = [
+        sector_index
+        for capital in capitals
+        for sector_index, candidate_cells in enumerate(reference_sectors)
+        if capital in candidate_cells
+    ]
+    assert len(capitals) == player_count
+    assert len(assigned_sectors) == player_count
+    assert len(set(assigned_sectors)) == player_count
 
 
 @pytest.mark.parametrize("map_type", [Lakes, Drylands, WaterWorld])
