@@ -710,6 +710,8 @@ static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgrad
 static constexpr int kPopulationGainVocabSize = 256;
 static constexpr int kMapTokenFeatureCount = 24;
 static constexpr int kVectorStateFeatureCount = 11;
+static constexpr int kOwnTechFeatureCount = static_cast<int>(TechDB::TECH_COUNT);
+static constexpr int kPublicScoreSlotCount = 16;
 static constexpr int kVectorActionFeatureCount = 17;
 static constexpr int kVectorActionArgMaskCount = 12;
 // A fixed-size visible-event window keeps vector batches dense and GPU-ready.
@@ -1665,6 +1667,18 @@ public:
         obs["map_size"] = w;
         obs["map_type"] = mapType_ == MapType::Lakes ? "lakes" :
             mapType_ == MapType::Drylands ? "drylands" : "water_world";
+        std::array<int32_t, kOwnTechFeatureCount> ownTechs{};
+        std::array<int32_t, kPublicScoreSlotCount> playerScores{};
+        std::array<uint8_t, kPublicScoreSlotCount> playerScoresMask{};
+        int32_t ownTribe = 0;
+        int32_t initialPlayerCount = 0;
+        writeObserverMetadataFor(static_cast<PlayerId>(perspective), ownTechs.data(), &ownTribe,
+                                 &initialPlayerCount, playerScores.data(), playerScoresMask.data());
+        obs["own_techs"] = std::vector<int32_t>(ownTechs.begin(), ownTechs.end());
+        obs["own_tribe"] = ownTribe;
+        obs["initial_player_count"] = initialPlayerCount;
+        obs["player_scores"] = std::vector<int32_t>(playerScores.begin(), playerScores.end());
+        obs["player_scores_mask"] = std::vector<uint8_t>(playerScoresMask.begin(), playerScoresMask.end());
         obs["tokenized_map"] = std::move(tokenized);
         obs["techs"] = getTechs(playerId);
         obs["seen_lighthouses"] = seenLighthouses(playerId);
@@ -1907,6 +1921,11 @@ public:
     void writeTrainingPacket(
         int32_t* mapTokensOut,
         int32_t* stateOut,
+        int32_t* ownTechsOut,
+        int32_t* ownTribeOut,
+        int32_t* initialPlayerCountOut,
+        int32_t* playerScoresOut,
+        uint8_t* playerScoresMaskOut,
         int32_t* actionIdsOut,
         int32_t* actionFeaturesOut,
         uint8_t* actionArgMasksOut,
@@ -1922,6 +1941,8 @@ public:
 
         const Game& g = session_->state.getGame();
         const PlayerId pid = session_->state.currentPlayer();
+        writeObserverMetadataFor(pid, ownTechsOut, ownTribeOut, initialPlayerCountOut,
+                                 playerScoresOut, playerScoresMaskOut);
         const ModelActionWindow actions = modelActionWindow(maxActions);
         *legalActionCountOut = static_cast<int32_t>(actions.count);
         *totalLegalActionCountOut = static_cast<int32_t>(actions.totalCount);
@@ -3045,6 +3066,39 @@ private:
         writeTrainingStateFor(session_->state.currentPlayer(), out);
     }
 
+    // Player-private technologies and tribe are exported only for the chosen
+    // observer. Scores are intentionally public aggregate values: no private
+    // economic or technology breakdown is exposed for other players.
+    void writeObserverMetadataFor(PlayerId pid,
+                                  int32_t* ownTechsOut,
+                                  int32_t* ownTribeOut,
+                                  int32_t* initialPlayerCountOut,
+                                  int32_t* playerScoresOut,
+                                  uint8_t* playerScoresMaskOut) const {
+        ensureState();
+        const Game& g = session_->state.getGame();
+        if (pid == kNoPlayer || static_cast<size_t>(pid) >= g.getPlayers().size()) {
+            throw std::invalid_argument("observer metadata perspective is not a valid player");
+        }
+        std::fill_n(ownTechsOut, kOwnTechFeatureCount, int32_t{0});
+        std::fill_n(playerScoresOut, kPublicScoreSlotCount, int32_t{0});
+        std::fill_n(playerScoresMaskOut, kPublicScoreSlotCount, uint8_t{0});
+
+        const Player& observer = g.getPlayer(pid);
+        for (TechId tech : observer.getTechs()) {
+            const int techId = static_cast<int>(tech);
+            if (techId >= 0 && techId < kOwnTechFeatureCount) ownTechsOut[techId] = 1;
+        }
+        *ownTribeOut = static_cast<int32_t>(observer.getTribeType());
+        const size_t playerCount = std::min(g.getPlayers().size(), static_cast<size_t>(kPublicScoreSlotCount));
+        *initialPlayerCountOut = static_cast<int32_t>(playerCount);
+        for (size_t index = 0; index < playerCount; ++index) {
+            const PlayerId scorePlayer = static_cast<PlayerId>(index);
+            playerScoresOut[index] = g.getPlayerScore(scorePlayer);
+            playerScoresMaskOut[index] = 1;
+        }
+    }
+
     void writePlayerMapTokensFor(PlayerId perspectiveId, int32_t* out) const {
         ensureState();
         ensureObservationKnowledgeLayout();
@@ -3880,6 +3934,11 @@ public:
         };
         add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(batch, tiles, kMapTokenFeatureCount));
         add("state", py::dtype::of<int32_t>(), py::make_tuple(batch, kVectorStateFeatureCount));
+        add("own_techs", py::dtype::of<int32_t>(), py::make_tuple(batch, kOwnTechFeatureCount));
+        add("own_tribe", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("initial_player_count", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("player_scores", py::dtype::of<int32_t>(), py::make_tuple(batch, kPublicScoreSlotCount));
+        add("player_scores_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, kPublicScoreSlotCount));
         add("action_id", py::dtype::of<int32_t>(), py::make_tuple(batch, actions));
         add("action_features", py::dtype::of<int32_t>(), py::make_tuple(batch, actions, kVectorActionFeatureCount));
         add("action_arg_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, actions, kVectorActionArgMaskCount));
@@ -3954,6 +4013,11 @@ private:
             : mapTokens({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(tiles),
                          static_cast<py::ssize_t>(kMapTokenFeatureCount)})
             , state({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
+            , ownTechs({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kOwnTechFeatureCount)})
+            , ownTribe(static_cast<py::ssize_t>(numEnvs))
+            , initialPlayerCount(static_cast<py::ssize_t>(numEnvs))
+            , playerScores({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kPublicScoreSlotCount)})
+            , playerScoresMask({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kPublicScoreSlotCount)})
             , actionIds({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)})
             , actionFeatures({static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions),
                               static_cast<py::ssize_t>(kVectorActionFeatureCount)})
@@ -3991,6 +4055,15 @@ private:
             , state(requireWritableBatchArray<int32_t>(
                 buffers, "state", {static_cast<py::ssize_t>(numEnvs),
                                     static_cast<py::ssize_t>(kVectorStateFeatureCount)}))
+            , ownTechs(requireWritableBatchArray<int32_t>(
+                buffers, "own_techs", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kOwnTechFeatureCount)}))
+            , ownTribe(requireWritableBatchArray<int32_t>(buffers, "own_tribe", {static_cast<py::ssize_t>(numEnvs)}))
+            , initialPlayerCount(requireWritableBatchArray<int32_t>(
+                buffers, "initial_player_count", {static_cast<py::ssize_t>(numEnvs)}))
+            , playerScores(requireWritableBatchArray<int32_t>(
+                buffers, "player_scores", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kPublicScoreSlotCount)}))
+            , playerScoresMask(requireWritableBatchArray<uint8_t>(
+                buffers, "player_scores_mask", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(kPublicScoreSlotCount)}))
             , actionIds(requireWritableBatchArray<int32_t>(
                 buffers, "action_id", {static_cast<py::ssize_t>(numEnvs), static_cast<py::ssize_t>(maxActions)}))
             , actionFeatures(requireWritableBatchArray<int32_t>(
@@ -4049,6 +4122,11 @@ private:
             py::dict out;
             out["map_tokens"] = std::move(mapTokens);
             out["state"] = std::move(state);
+            out["own_techs"] = std::move(ownTechs);
+            out["own_tribe"] = std::move(ownTribe);
+            out["initial_player_count"] = std::move(initialPlayerCount);
+            out["player_scores"] = std::move(playerScores);
+            out["player_scores_mask"] = std::move(playerScoresMask);
             out["action_id"] = std::move(actionIds);
             out["action_features"] = std::move(actionFeatures);
             out["action_arg_mask"] = std::move(actionArgMasks);
@@ -4073,6 +4151,11 @@ private:
 
         py::array_t<int32_t> mapTokens;
         py::array_t<int32_t> state;
+        py::array_t<int32_t> ownTechs;
+        py::array_t<int32_t> ownTribe;
+        py::array_t<int32_t> initialPlayerCount;
+        py::array_t<int32_t> playerScores;
+        py::array_t<uint8_t> playerScoresMask;
         py::array_t<int32_t> actionIds;
         py::array_t<int32_t> actionFeatures;
         py::array_t<uint8_t> actionArgMasks;
@@ -4097,9 +4180,14 @@ private:
         void validateNonOverlappingStorage() const {
             // Keep this fixed-size metadata on the stack. Buffer validation
             // happens once per API call, before the hot native step begins.
-            const std::array<std::pair<const char*, const py::array*>, 21> arrays{{
+            const std::array<std::pair<const char*, const py::array*>, 26> arrays{{
                 {"map_tokens", &mapTokens},
                 {"state", &state},
+                {"own_techs", &ownTechs},
+                {"own_tribe", &ownTribe},
+                {"initial_player_count", &initialPlayerCount},
+                {"player_scores", &playerScores},
+                {"player_scores_mask", &playerScoresMask},
                 {"action_id", &actionIds},
                 {"action_features", &actionFeatures},
                 {"action_arg_mask", &actionArgMasks},
@@ -4260,6 +4348,11 @@ private:
 
         int32_t* mapData = out.mapTokens.mutable_data();
         int32_t* stateData = out.state.mutable_data();
+        int32_t* ownTechsData = out.ownTechs.mutable_data();
+        int32_t* ownTribeData = out.ownTribe.mutable_data();
+        int32_t* initialPlayerCountData = out.initialPlayerCount.mutable_data();
+        int32_t* playerScoresData = out.playerScores.mutable_data();
+        uint8_t* playerScoresMaskData = out.playerScoresMask.mutable_data();
         int32_t* idsData = out.actionIds.mutable_data();
         int32_t* featuresData = out.actionFeatures.mutable_data();
         uint8_t* argMasksData = out.actionArgMasks.mutable_data();
@@ -4304,6 +4397,11 @@ private:
                 envs_[envIndex].writeTrainingPacket(
                     mapData + row * tiles * kMapTokenFeatureCount,
                     stateData + row * kVectorStateFeatureCount,
+                    ownTechsData + row * kOwnTechFeatureCount,
+                    ownTribeData + row,
+                    initialPlayerCountData + row,
+                    playerScoresData + row * kPublicScoreSlotCount,
+                    playerScoresMaskData + row * kPublicScoreSlotCount,
                     idsData + row * static_cast<size_t>(maxActions_),
                     featuresData + row * static_cast<size_t>(maxActions_) * kVectorActionFeatureCount,
                     argMasksData + row * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
@@ -4750,6 +4848,11 @@ public:
         };
         add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(rows, tiles, kMapTokenFeatureCount));
         add("state", py::dtype::of<int32_t>(), py::make_tuple(rows, kVectorStateFeatureCount));
+        add("own_techs", py::dtype::of<int32_t>(), py::make_tuple(rows, kOwnTechFeatureCount));
+        add("own_tribe", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("initial_player_count", py::dtype::of<int32_t>(), py::make_tuple(rows));
+        add("player_scores", py::dtype::of<int32_t>(), py::make_tuple(rows, kPublicScoreSlotCount));
+        add("player_scores_mask", py::dtype::of<uint8_t>(), py::make_tuple(rows, kPublicScoreSlotCount));
         add("action_id", py::dtype::of<int32_t>(), py::make_tuple(rows, actions));
         add("action_features", py::dtype::of<int32_t>(), py::make_tuple(rows, actions, kVectorActionFeatureCount));
         add("action_arg_mask", py::dtype::of<uint8_t>(), py::make_tuple(rows, actions, kVectorActionArgMaskCount));
@@ -5176,6 +5279,11 @@ private:
             : mapTokens({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
                          static_cast<py::ssize_t>(kMapTokenFeatureCount)})
             , state({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
+            , ownTechs({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kOwnTechFeatureCount)})
+            , ownTribe(static_cast<py::ssize_t>(rows))
+            , initialPlayerCount(static_cast<py::ssize_t>(rows))
+            , playerScores({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)})
+            , playerScoresMask({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)})
             , actionIds({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
             , actionFeatures({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
                               static_cast<py::ssize_t>(kVectorActionFeatureCount)})
@@ -5197,6 +5305,15 @@ private:
             , state(requireWritableBatchArray<int32_t>(
                 buffers, "state", {static_cast<py::ssize_t>(rows),
                                     static_cast<py::ssize_t>(kVectorStateFeatureCount)}))
+            , ownTechs(requireWritableBatchArray<int32_t>(
+                buffers, "own_techs", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kOwnTechFeatureCount)}))
+            , ownTribe(requireWritableBatchArray<int32_t>(buffers, "own_tribe", {static_cast<py::ssize_t>(rows)}))
+            , initialPlayerCount(requireWritableBatchArray<int32_t>(
+                buffers, "initial_player_count", {static_cast<py::ssize_t>(rows)}))
+            , playerScores(requireWritableBatchArray<int32_t>(
+                buffers, "player_scores", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)}))
+            , playerScoresMask(requireWritableBatchArray<uint8_t>(
+                buffers, "player_scores_mask", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)}))
             , actionIds(requireWritableBatchArray<int32_t>(
                 buffers, "action_id", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)}))
             , actionFeatures(requireWritableBatchArray<int32_t>(
@@ -5222,9 +5339,12 @@ private:
             , playerCount(requireWritableBatchArray<int32_t>(
                 buffers, "player_count", {static_cast<py::ssize_t>(rows)}))
         {
-            const std::array<std::pair<const char*, const py::array*>, 13> arrays{{
+            const std::array<std::pair<const char*, const py::array*>, 18> arrays{{
                 {"map_tokens", &mapTokens},
                 {"state", &state},
+                {"own_techs", &ownTechs}, {"own_tribe", &ownTribe},
+                {"initial_player_count", &initialPlayerCount},
+                {"player_scores", &playerScores}, {"player_scores_mask", &playerScoresMask},
                 {"action_id", &actionIds},
                 {"action_features", &actionFeatures},
                 {"action_arg_mask", &actionArgMasks},
@@ -5244,6 +5364,11 @@ private:
             py::dict out;
             out["map_tokens"] = std::move(mapTokens);
             out["state"] = std::move(state);
+            out["own_techs"] = std::move(ownTechs);
+            out["own_tribe"] = std::move(ownTribe);
+            out["initial_player_count"] = std::move(initialPlayerCount);
+            out["player_scores"] = std::move(playerScores);
+            out["player_scores_mask"] = std::move(playerScoresMask);
             out["action_id"] = std::move(actionIds);
             out["action_features"] = std::move(actionFeatures);
             out["action_arg_mask"] = std::move(actionArgMasks);
@@ -5260,6 +5385,11 @@ private:
 
         py::array_t<int32_t> mapTokens;
         py::array_t<int32_t> state;
+        py::array_t<int32_t> ownTechs;
+        py::array_t<int32_t> ownTribe;
+        py::array_t<int32_t> initialPlayerCount;
+        py::array_t<int32_t> playerScores;
+        py::array_t<uint8_t> playerScoresMask;
         py::array_t<int32_t> actionIds;
         py::array_t<int32_t> actionFeatures;
         py::array_t<uint8_t> actionArgMasks;
@@ -5825,6 +5955,11 @@ private:
         const size_t tiles = tileCount();
         int32_t* mapData = out.mapTokens.mutable_data();
         int32_t* stateData = out.state.mutable_data();
+        int32_t* ownTechsData = out.ownTechs.mutable_data();
+        int32_t* ownTribeData = out.ownTribe.mutable_data();
+        int32_t* initialPlayerCountData = out.initialPlayerCount.mutable_data();
+        int32_t* playerScoresData = out.playerScores.mutable_data();
+        uint8_t* playerScoresMaskData = out.playerScoresMask.mutable_data();
         int32_t* actionIdData = out.actionIds.mutable_data();
         int32_t* actionFeatureData = out.actionFeatures.mutable_data();
         uint8_t* actionArgMaskData = out.actionArgMasks.mutable_data();
@@ -5843,6 +5978,11 @@ private:
                 selection.node->env.writeTrainingPacket(
                     mapData + row * tiles * kMapTokenFeatureCount,
                     stateData + row * kVectorStateFeatureCount,
+                    ownTechsData + row * kOwnTechFeatureCount,
+                    ownTribeData + row,
+                    initialPlayerCountData + row,
+                    playerScoresData + row * kPublicScoreSlotCount,
+                    playerScoresMaskData + row * kPublicScoreSlotCount,
                     actionIdData + row * static_cast<size_t>(maxActions_),
                     actionFeatureData + row * static_cast<size_t>(maxActions_) * kVectorActionFeatureCount,
                     actionArgMaskData + row * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,
@@ -6420,6 +6560,14 @@ public:
                                         static_cast<py::ssize_t>(kMapTokenFeatureCount)});
         py::array_t<int32_t> state({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players),
                                    static_cast<py::ssize_t>(kVectorStateFeatureCount)});
+        py::array_t<int32_t> ownTechs({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players),
+                                       static_cast<py::ssize_t>(kOwnTechFeatureCount)});
+        py::array_t<int32_t> ownTribe({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
+        py::array_t<int32_t> initialPlayerCount({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
+        py::array_t<int32_t> playerScores({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players),
+                                           static_cast<py::ssize_t>(kPublicScoreSlotCount)});
+        py::array_t<uint8_t> playerScoresMask({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players),
+                                               static_cast<py::ssize_t>(kPublicScoreSlotCount)});
         py::array_t<int32_t> envId({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<int32_t> beliefPlayer({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
         py::array_t<int32_t> toPlay({static_cast<py::ssize_t>(envCount), static_cast<py::ssize_t>(players)});
@@ -6438,7 +6586,9 @@ public:
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
             writeAllPlayerBeliefRequests(
-                mapTokens.mutable_data(), state.mutable_data(), envId.mutable_data(), beliefPlayer.mutable_data(),
+                mapTokens.mutable_data(), state.mutable_data(), ownTechs.mutable_data(), ownTribe.mutable_data(),
+                initialPlayerCount.mutable_data(), playerScores.mutable_data(), playerScoresMask.mutable_data(),
+                envId.mutable_data(), beliefPlayer.mutable_data(),
                 toPlay.mutable_data(), agentId.mutable_data(), mapSeed.mutable_data(),
                 stateId.mutable_data(), episodeId.mutable_data(), history.mutable_data(), historyMask.mutable_data(),
                 historyLength.mutable_data());
@@ -6447,6 +6597,11 @@ public:
         py::dict out;
         out["map_tokens"] = std::move(mapTokens);
         out["state"] = std::move(state);
+        out["own_techs"] = std::move(ownTechs);
+        out["own_tribe"] = std::move(ownTribe);
+        out["initial_player_count"] = std::move(initialPlayerCount);
+        out["player_scores"] = std::move(playerScores);
+        out["player_scores_mask"] = std::move(playerScoresMask);
         out["env_id"] = std::move(envId);
         out["belief_player"] = std::move(beliefPlayer);
         out["to_play"] = std::move(toPlay);
@@ -6469,6 +6624,15 @@ public:
             buffers, "map_tokens", {envs, players, tiles, kMapTokenFeatureCount});
         auto state = requireWritableBatchArray<int32_t>(
             buffers, "state", {envs, players, kVectorStateFeatureCount});
+        auto ownTechs = requireWritableBatchArray<int32_t>(
+            buffers, "own_techs", {envs, players, kOwnTechFeatureCount});
+        auto ownTribe = requireWritableBatchArray<int32_t>(buffers, "own_tribe", {envs, players});
+        auto initialPlayerCount = requireWritableBatchArray<int32_t>(
+            buffers, "initial_player_count", {envs, players});
+        auto playerScores = requireWritableBatchArray<int32_t>(
+            buffers, "player_scores", {envs, players, kPublicScoreSlotCount});
+        auto playerScoresMask = requireWritableBatchArray<uint8_t>(
+            buffers, "player_scores_mask", {envs, players, kPublicScoreSlotCount});
         auto envId = requireWritableBatchArray<int32_t>(buffers, "env_id", {envs, players});
         auto beliefPlayer = requireWritableBatchArray<int32_t>(buffers, "belief_player", {envs, players});
         auto toPlay = requireWritableBatchArray<int32_t>(buffers, "to_play", {envs, players});
@@ -6482,8 +6646,11 @@ public:
             buffers, "visible_action_history_mask", {envs, players, history});
         auto visibleActionHistoryLength = requireWritableBatchArray<int32_t>(
             buffers, "visible_action_history_length", {envs, players});
-        const std::array<std::pair<const char*, const py::array*>, 12> arrays{{
+        const std::array<std::pair<const char*, const py::array*>, 17> arrays{{
             {"map_tokens", &mapTokens}, {"state", &state}, {"env_id", &envId},
+            {"own_techs", &ownTechs}, {"own_tribe", &ownTribe},
+            {"initial_player_count", &initialPlayerCount}, {"player_scores", &playerScores},
+            {"player_scores_mask", &playerScoresMask},
             {"belief_player", &beliefPlayer}, {"to_play", &toPlay},
             {"agent_id", &agentId}, {"map_seed", &mapSeed},
             {"state_id", &stateId}, {"episode_id", &episodeId},
@@ -6496,7 +6663,9 @@ public:
             py::gil_scoped_release release;
             std::lock_guard lock(apiMutex_);
             writeAllPlayerBeliefRequests(
-                mapTokens.mutable_data(), state.mutable_data(), envId.mutable_data(), beliefPlayer.mutable_data(),
+                mapTokens.mutable_data(), state.mutable_data(), ownTechs.mutable_data(), ownTribe.mutable_data(),
+                initialPlayerCount.mutable_data(), playerScores.mutable_data(), playerScoresMask.mutable_data(),
+                envId.mutable_data(), beliefPlayer.mutable_data(),
                 toPlay.mutable_data(), agentId.mutable_data(), mapSeed.mutable_data(),
                 stateId.mutable_data(), episodeId.mutable_data(), visibleActionHistory.mutable_data(),
                 visibleActionHistoryMask.mutable_data(), visibleActionHistoryLength.mutable_data());
@@ -6517,6 +6686,11 @@ public:
         };
         add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(envs, players, tiles, kMapTokenFeatureCount));
         add("state", py::dtype::of<int32_t>(), py::make_tuple(envs, players, kVectorStateFeatureCount));
+        add("own_techs", py::dtype::of<int32_t>(), py::make_tuple(envs, players, kOwnTechFeatureCount));
+        add("own_tribe", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
+        add("initial_player_count", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
+        add("player_scores", py::dtype::of<int32_t>(), py::make_tuple(envs, players, kPublicScoreSlotCount));
+        add("player_scores_mask", py::dtype::of<uint8_t>(), py::make_tuple(envs, players, kPublicScoreSlotCount));
         add("env_id", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
         add("belief_player", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
         add("to_play", py::dtype::of<int32_t>(), py::make_tuple(envs, players));
@@ -7501,6 +7675,11 @@ public:
         };
         add("map_tokens", py::dtype::of<int32_t>(), py::make_tuple(batch, tiles, kMapTokenFeatureCount));
         add("state", py::dtype::of<int32_t>(), py::make_tuple(batch, kVectorStateFeatureCount));
+        add("own_techs", py::dtype::of<int32_t>(), py::make_tuple(batch, kOwnTechFeatureCount));
+        add("own_tribe", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("initial_player_count", py::dtype::of<int32_t>(), py::make_tuple(batch));
+        add("player_scores", py::dtype::of<int32_t>(), py::make_tuple(batch, kPublicScoreSlotCount));
+        add("player_scores_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, kPublicScoreSlotCount));
         add("action_id", py::dtype::of<int32_t>(), py::make_tuple(batch, actions));
         add("action_features", py::dtype::of<int32_t>(), py::make_tuple(batch, actions, kVectorActionFeatureCount));
         add("action_arg_mask", py::dtype::of<uint8_t>(), py::make_tuple(batch, actions, kVectorActionArgMaskCount));
@@ -8034,6 +8213,11 @@ private:
             : mapTokens({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(tiles),
                          static_cast<py::ssize_t>(kMapTokenFeatureCount)})
             , state({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kVectorStateFeatureCount)})
+            , ownTechs({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kOwnTechFeatureCount)})
+            , ownTribe(static_cast<py::ssize_t>(rows))
+            , initialPlayerCount(static_cast<py::ssize_t>(rows))
+            , playerScores({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)})
+            , playerScoresMask({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)})
             , actionIds({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)})
             , actionFeatures({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions),
                               static_cast<py::ssize_t>(kVectorActionFeatureCount)})
@@ -8069,6 +8253,15 @@ private:
             , state(requireWritableBatchArray<int32_t>(
                 buffers, "state", {static_cast<py::ssize_t>(rows),
                                     static_cast<py::ssize_t>(kVectorStateFeatureCount)}))
+            , ownTechs(requireWritableBatchArray<int32_t>(
+                buffers, "own_techs", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kOwnTechFeatureCount)}))
+            , ownTribe(requireWritableBatchArray<int32_t>(buffers, "own_tribe", {static_cast<py::ssize_t>(rows)}))
+            , initialPlayerCount(requireWritableBatchArray<int32_t>(
+                buffers, "initial_player_count", {static_cast<py::ssize_t>(rows)}))
+            , playerScores(requireWritableBatchArray<int32_t>(
+                buffers, "player_scores", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)}))
+            , playerScoresMask(requireWritableBatchArray<uint8_t>(
+                buffers, "player_scores_mask", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kPublicScoreSlotCount)}))
             , actionIds(requireWritableBatchArray<int32_t>(
                 buffers, "action_id", {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(maxActions)}))
             , actionFeatures(requireWritableBatchArray<int32_t>(
@@ -8118,9 +8311,12 @@ private:
             , visibleActionHistoryLength(requireWritableBatchArray<int32_t>(
                 buffers, "visible_action_history_length", {static_cast<py::ssize_t>(rows)}))
         {
-            const std::array<std::pair<const char*, const py::array*>, 23> arrays{{
+            const std::array<std::pair<const char*, const py::array*>, 28> arrays{{
                 {"map_tokens", &mapTokens},
                 {"state", &state},
+                {"own_techs", &ownTechs}, {"own_tribe", &ownTribe},
+                {"initial_player_count", &initialPlayerCount},
+                {"player_scores", &playerScores}, {"player_scores_mask", &playerScoresMask},
                 {"action_id", &actionIds},
                 {"action_features", &actionFeatures},
                 {"action_arg_mask", &actionArgMasks},
@@ -8150,6 +8346,11 @@ private:
             py::dict out;
             out["map_tokens"] = std::move(mapTokens);
             out["state"] = std::move(state);
+            out["own_techs"] = std::move(ownTechs);
+            out["own_tribe"] = std::move(ownTribe);
+            out["initial_player_count"] = std::move(initialPlayerCount);
+            out["player_scores"] = std::move(playerScores);
+            out["player_scores_mask"] = std::move(playerScoresMask);
             out["action_id"] = std::move(actionIds);
             out["action_features"] = std::move(actionFeatures);
             out["action_arg_mask"] = std::move(actionArgMasks);
@@ -8176,6 +8377,11 @@ private:
 
         py::array_t<int32_t> mapTokens;
         py::array_t<int32_t> state;
+        py::array_t<int32_t> ownTechs;
+        py::array_t<int32_t> ownTribe;
+        py::array_t<int32_t> initialPlayerCount;
+        py::array_t<int32_t> playerScores;
+        py::array_t<uint8_t> playerScoresMask;
         py::array_t<int32_t> actionIds;
         py::array_t<int32_t> actionFeatures;
         py::array_t<uint8_t> actionArgMasks;
@@ -8204,9 +8410,14 @@ private:
         const LeafPositionBatch& position,
         const VisibleActionHistoryBatch& history)
     {
-        const std::array<std::pair<const char*, const py::array*>, 21> arrays{{
+        const std::array<std::pair<const char*, const py::array*>, 26> arrays{{
             {"map_tokens", &leaf.mapTokens},
             {"state", &leaf.state},
+            {"own_techs", &leaf.ownTechs},
+            {"own_tribe", &leaf.ownTribe},
+            {"initial_player_count", &leaf.initialPlayerCount},
+            {"player_scores", &leaf.playerScores},
+            {"player_scores_mask", &leaf.playerScoresMask},
             {"action_id", &leaf.actionIds},
             {"action_features", &leaf.actionFeatures},
             {"action_arg_mask", &leaf.actionArgMasks},
@@ -8426,6 +8637,11 @@ private:
 
     void writeAllPlayerBeliefRequests(int32_t* mapTokens,
                                       int32_t* state,
+                                      int32_t* ownTechs,
+                                      int32_t* ownTribe,
+                                      int32_t* initialPlayerCount,
+                                      int32_t* playerScores,
+                                      uint8_t* playerScoresMask,
                                       int32_t* envId,
                                       int32_t* beliefPlayer,
                                       int32_t* toPlay,
@@ -8450,6 +8666,13 @@ private:
                     envs_[env].writeTrainingStateFor(
                         static_cast<PlayerId>(player),
                         state + row * kVectorStateFeatureCount);
+                    envs_[env].writeObserverMetadataFor(
+                        static_cast<PlayerId>(player),
+                        ownTechs + row * kOwnTechFeatureCount,
+                        ownTribe + row,
+                        initialPlayerCount + row,
+                        playerScores + row * kPublicScoreSlotCount,
+                        playerScoresMask + row * kPublicScoreSlotCount);
                     envId[row] = static_cast<int32_t>(env);
                     beliefPlayer[row] = static_cast<int32_t>(player);
                     toPlay[row] = static_cast<int32_t>(envs_[env].currentPlayerNative());
@@ -8502,6 +8725,11 @@ private:
         const size_t tiles = tileCount();
         int32_t* mapData = out.mapTokens.mutable_data();
         int32_t* stateData = out.state.mutable_data();
+        int32_t* ownTechsData = out.ownTechs.mutable_data();
+        int32_t* ownTribeData = out.ownTribe.mutable_data();
+        int32_t* initialPlayerCountData = out.initialPlayerCount.mutable_data();
+        int32_t* playerScoresData = out.playerScores.mutable_data();
+        uint8_t* playerScoresMaskData = out.playerScoresMask.mutable_data();
         int32_t* actionIdData = out.actionIds.mutable_data();
         int32_t* actionFeatureData = out.actionFeatures.mutable_data();
         uint8_t* actionArgMaskData = out.actionArgMasks.mutable_data();
@@ -8576,6 +8804,11 @@ private:
                 envs_[i].writeTrainingPacket(
                     mapData + i * tiles * kMapTokenFeatureCount,
                     stateData + i * kVectorStateFeatureCount,
+                    ownTechsData + i * kOwnTechFeatureCount,
+                    ownTribeData + i,
+                    initialPlayerCountData + i,
+                    playerScoresData + i * kPublicScoreSlotCount,
+                    playerScoresMaskData + i * kPublicScoreSlotCount,
                     actionIdData + i * static_cast<size_t>(maxActions_),
                     actionFeatureData + i * static_cast<size_t>(maxActions_) * kVectorActionFeatureCount,
                     actionArgMaskData + i * static_cast<size_t>(maxActions_) * kVectorActionArgMaskCount,

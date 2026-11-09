@@ -161,6 +161,11 @@ core model fields:
 | --- | --- | --- | --- |
 | `map_tokens` | `int32` | `[B, tiles, 24]` | Current player's visible map only |
 | `state` | `int32` | `[B, 11]` | Current player's game state |
+| `own_techs` | `int32` | `[B, 25]` | Current observer's technology bits (ids 0--24) |
+| `own_tribe` | `int32` | `[B]` | Current observer's actual tribe |
+| `initial_player_count` | `int32` | `[B]` | Original game participant count |
+| `player_scores` | `int32` | `[B, 16]` | Current public aggregate score by global `PlayerId` |
+| `player_scores_mask` | `uint8` | `[B, 16]` | Original-participant slots, not alive status |
 | `action_id` | `int32` | `[B, Amax]` | Padded legal action ids |
 | `action_features` | `int32` | `[B, Amax, 17]` | Action features |
 | `action_arg_mask` | `uint8` | `[B, Amax, 12]` | Action argument validity |
@@ -184,6 +189,12 @@ zero and `winner` is `-1`. If `auto_reset=True`, a terminal game is immediately
 replaced by its next episode after the terminal result is recorded in those
 fields. Preserve that transition result before consuming the returned next
 observation.
+
+The `all_player_belief_requests()` variants carry the same fields with a
+player axis: `[B, P, 25]`, `[B, P]`, `[B, P]`, `[B, P, 16]`, and `[B, P, 16]`.
+Each row contains only that belief player's technologies and tribe. Detached
+belief worlds and MCTS leaves export their own hypothetical public score table;
+they never read hidden source-world state.
 
 The action rows come directly from `GameStateAdapter`'s canonical legal-action
 enumerator. They therefore include every **currently legal** engine action:

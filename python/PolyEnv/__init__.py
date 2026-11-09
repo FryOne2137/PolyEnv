@@ -31,6 +31,11 @@ _FEAT_TRIBE = 20
 _FEAT_UNIT_ORIGIN_CITY = 22
 _FEAT_OWN_CITY_POPULATION = 23
 
+# Dense observer-metadata dimensions returned by the scalar, vector, MCTS and
+# self-play APIs. Technology ids are 0--24; TechDB::Count (25) is not a bit.
+OWN_TECH_COUNT: int = 25
+PUBLIC_SCORE_SLOT_COUNT: int = 16
+
 from .tribes import (
     AiMo,
     Bardur,
@@ -208,7 +213,9 @@ class VectorGameEnv(_VectorGameEnv):
     The simulation, observation encoding and legal-action enumeration run in
     C++. ``step`` accepts a one-dimensional NumPy array of action ids, one for
     each environment, and returns dense numeric arrays without JSON or Python
-    objects per game. ``batch_spec()``, ``reset_into()`` and ``step_into()``
+    objects per game. Its batches also contain observer-private ``own_techs``
+    and ``own_tribe``, plus public aggregate ``player_scores``.
+    ``batch_spec()``, ``reset_into()`` and ``step_into()``
     additionally support reusable caller-owned NumPy buffers, including views
     of pinned host tensors managed by an external training framework.
     """
@@ -252,7 +259,8 @@ class MctsPool(_MctsPool):
     search copies. Two-player pools retain the scalar zero-sum value API;
     pools with more players use a value vector in global player-id order. The
     original environments are never mutated by the search. Reusable external
-    leaf/root buffers are described by ``leaf_batch_spec()`` and
+    Each leaf's metadata is written from the leaf's own observer perspective.
+    Reusable leaf/root buffers are described by ``leaf_batch_spec()`` and
     ``root_policy_spec()`` and filled by their ``*_into`` counterparts.
     """
 

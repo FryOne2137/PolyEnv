@@ -39,6 +39,11 @@ single-environment random-seed behavior.
 | --- | --- | --- | --- |
 | `map_tokens` | `int32` | `[B, tiles, 24]` | Visible player map |
 | `state` | `int32` | `[B, 11]` | Compact scalar state, layout below |
+| `own_techs` | `int32` | `[B, 25]` | Current observer's technology bits for ids 0--24 |
+| `own_tribe` | `int32` | `[B]` | Current observer's actual tribe |
+| `initial_player_count` | `int32` | `[B]` | Player count at game creation; unchanged by eliminations |
+| `player_scores` | `int32` | `[B, 16]` | Public aggregate score by global `PlayerId` |
+| `player_scores_mask` | `uint8` | `[B, 16]` | Original-player slot mask; not an alive-status mask |
 | `action_id` | `int32` | `[B, Amax]` | Action-space id for each padded row |
 | `action_features` | `int32` | `[B, Amax, 17]` | Numeric fields for each action row |
 | `action_arg_mask` | `uint8` | `[B, Amax, 12]` | Applicable action-argument fields |
@@ -78,6 +83,12 @@ turn, current_player, game_over, winner, player_stars,
 owns_units, own_cities, next_turn_star_income,
 pending_city_id, pending_upgrade_a, pending_upgrade_b
 ```
+
+The 11-column `state` layout is intentionally unchanged. `own_techs` and
+`own_tribe` are private to the row's observer. No opposing technology, tribe,
+economy, hidden unit/city count, or elimination status is exported. Score slots
+above `initial_player_count` are zero and masked out; an eliminated or
+zero-score original player remains masked in.
 
 The `action_features` fields are, in order:
 

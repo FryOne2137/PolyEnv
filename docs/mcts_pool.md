@@ -85,7 +85,8 @@ root = pool.root_policy(temperature=1.0)
 ```
 
 `select_leaves()` returns the core dense model inputs used by `VectorGameEnv`:
-`map_tokens`, `state`, padded `action_id`, `action_features`,
+`map_tokens`, `state`, `own_techs`, `own_tribe`, `initial_player_count`,
+`player_scores`, `player_scores_mask`, padded `action_id`, `action_features`,
 `action_arg_mask`, `action_mask`, and `legal_action_count`. It also returns:
 
 | Key | Dtype | Shape | Meaning |

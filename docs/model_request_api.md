@@ -45,8 +45,13 @@ Useful action arrays are:
 
 The `obs` dictionary includes turn, current player, winner/game-over state,
 map size, `map_type` (`"lakes"`, `"drylands"`, or `"water_world"`), stars, own units/cities,
-income, and pending city reward state. It intentionally does not include
-`tokenized_map`: use the NumPy `map_tokens` field as the sole map input.
+income, and pending city reward state. It also includes `own_techs` (`int32[25]`,
+technology ids 0--24), `own_tribe` (`int32`), `initial_player_count` (`int32`),
+`player_scores` (`int32[16]`) and `player_scores_mask` (`uint8[16]`). Technologies
+and tribe are only for this observer. Scores are the engine's public aggregate
+score in global `PlayerId` order; the mask identifies original player slots,
+not alive players. It intentionally does not include `tokenized_map`: use the
+NumPy `map_tokens` field as the sole map input.
 
 ## Legal Actions
 
