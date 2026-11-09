@@ -58,7 +58,7 @@ def test_vector_reset_matches_single_environments() -> None:
 
     batch = vector.reset(seed=1234)
 
-    assert batch["map_tokens"].shape == (4, 121, 23)
+    assert batch["map_tokens"].shape == (4, 121, 24)
     assert batch["map_tokens"].dtype == np.int32
     assert batch["state"].shape == (4, 11)
     assert batch["action_id"].shape == (4, 128)

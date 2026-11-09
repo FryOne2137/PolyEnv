@@ -74,8 +74,8 @@ class TestHiddenTileIndices:
 
 class TestApplyTilePredictions:
     def _make_prediction(self, base_terrain: int = 2) -> list[int]:
-        """Minimal 23-feature vector: only baseTerrain set, rest default/0."""
-        feat = [0] * 23
+        """Minimal 24-feature vector: only baseTerrain set, rest default/0."""
+        feat = [0] * 24
         feat[_FEAT_BASE_TERRAIN] = base_terrain   # Land
         feat[_FEAT_RESOURCE]     = 0              # None
         feat[_FEAT_BUILDING]     = 0              # None
@@ -245,13 +245,13 @@ class TestLastRevealedTiles:
             "Some revealed tiles are still reported as hidden."
         )
 
-    def test_features_length_is_23(self) -> None:
-        """Each feature vector must have exactly 23 elements."""
+    def test_features_length_is_24(self) -> None:
+        """Each feature vector must have exactly 24 elements."""
         env = _env(seed=13)
         env.step_fast(env.legal_action_ids_fast()[0])
         _, features = env.last_revealed_tiles(return_features=True)
         for feat in features:
-            assert len(feat) == 23
+            assert len(feat) == 24
 
     def test_features_terrain_in_valid_range(self) -> None:
         """baseTerrain (feature 16) must be 0-4 for revealed (now visible) tiles."""

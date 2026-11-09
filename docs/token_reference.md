@@ -6,7 +6,7 @@ This page lists numeric ids used in `map_tokens`, action fields, and model reque
 
 ## Tile Token Layout
 
-Every row in `map_tokens` describes one map tile and has exactly 23 integer
+Every row in `map_tokens` describes one map tile and has exactly 24 integer
 features. Tile index `i` addresses the row `map_tokens[i]`.
 
 | Index | Field | Meaning | No value / hidden |
@@ -34,6 +34,7 @@ features. Tile index `i` addresses the row `map_tokens[i]`.
 | 20 | `tribe` | Map-generation tribe type. See [Tribes](#tribes). | `-1` when hidden. |
 | 21 | `unit_max_hp` | Maximum health of the visible unit, including bonuses such as veteran status. | `-1` when no visible unit exists or the value is hidden. |
 | 22 | `unit_origin_city_id` | Runtime id of the city that originally trained or rewarded the visible unit. For an enemy unit, it is exposed only after that city is known to the observer. | `-1` when no visible unit exists, it came from a non-city source (for example a ruin), the origin city is not known, or the value is hidden. |
+| 23 | `own_city_population` | Current population of a city owned by the selected player. `full_map*` contains the actual value for every city. | `-1` for another player's city, a non-city tile, or hidden data. A negative population is possible after destroying population-producing improvements, so use `city_owner` to distinguish an owned city from the sentinel. |
 
 !!! note
     Runtime ids such as `territory_city_id` and `settlement_id` are useful for

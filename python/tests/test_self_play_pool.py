@@ -84,7 +84,7 @@ def _oracle_all_player_beliefs(
     """Test-only per-player completions for the full-ISMCTS contract."""
     num_envs, player_count = request["map_tokens"].shape[:2]
     completed = np.empty(
-        (num_envs, player_count, request["map_tokens"].shape[2], 23), dtype=np.int32
+        (num_envs, player_count, request["map_tokens"].shape[2], 24), dtype=np.int32
     )
     for env in range(num_envs):
         full = _scalar(seed + env, players).full_map_numpy().astype(np.int32, copy=True)
@@ -103,7 +103,7 @@ def _oracle_ismcts_particles(
     request: dict[str, np.ndarray],
     particles: int,
 ) -> np.ndarray:
-    """Test-only complete [B,P,K,T,23] hypotheses for the current states."""
+    """Test-only complete [B,P,K,T,24] hypotheses for the current states."""
     assert particles > 0
     state_ids = request["state_id"][:, 0]
     full = pool.belief_targets_numpy(state_ids).astype(np.int32, copy=True)
@@ -205,7 +205,7 @@ def test_self_play_pool_returns_dense_public_belief_requests() -> None:
     assert pool.num_envs == 2
     assert pool.num_threads == 2
     assert pool.search_active is False
-    assert request["map_tokens"].shape == (2, 121, 23)
+    assert request["map_tokens"].shape == (2, 121, 24)
     assert request["map_tokens"].dtype == np.int32
     assert request["state"].shape == (2, 11)
     assert request["action_id"].shape == (2, 128)
@@ -271,7 +271,7 @@ def test_full_ismcts_uses_all_player_beliefs_and_redeterminizes_after_end_turn()
     _assert_same_packet(player_requests, player_buffers)
     assert {name: value.ctypes.data for name, value in player_buffers.items()} == addresses
 
-    assert player_requests["map_tokens"].shape == (2, 2, 121, 23)
+    assert player_requests["map_tokens"].shape == (2, 2, 121, 24)
     assert player_requests["state"].shape == (2, 2, 11)
     assert np.array_equal(player_requests["belief_player"], np.array([[0, 1], [0, 1]], dtype=np.int32))
     assert np.array_equal(player_requests["to_play"], np.zeros((2, 2), dtype=np.int32))
@@ -492,6 +492,7 @@ def test_ismcts_acceptance_mask_rejects_false_terminal_particle() -> None:
         belief[center, 9] = -1
         belief[center, 10:14] = -1
         belief[center, 14:18] = np.array([0, -1, -1, -1], dtype=np.int32)
+        belief[center, 23] = -1
 
     np.testing.assert_array_equal(
         pool.ismcts_belief_acceptance_mask(root["state_id"], particles),
@@ -773,7 +774,7 @@ def test_self_play_pool_runs_detached_belief_mcts_and_steps_live_games() -> None
 
     leaves = pool.select_leaves()
     assert pool.pending_count == 2
-    assert leaves["map_tokens"].shape == (2, 121, 23)
+    assert leaves["map_tokens"].shape == (2, 121, 24)
     assert np.array_equal(leaves["env_id"], np.array([0, 1], dtype=np.int32))
     assert np.array_equal(leaves["state_id"], request["state_id"])
     # The belief world's hidden completion is available to the rollout only;

@@ -9,7 +9,7 @@
 #include "game/Game.h"
 
 namespace {
-constexpr size_t kBeliefTokenWidth = 23;
+constexpr size_t kBeliefTokenWidth = 24;
 constexpr int kUnitTypeMax = static_cast<int>(UnitType::GiantSuper);
 
 // `Game::worldSeed` drives deterministic random outcomes such as ruins.  A
@@ -102,7 +102,7 @@ void validateFlatTokens(const Game& source,
     const size_t expected = static_cast<size_t>(map.getWidth()) * static_cast<size_t>(map.getHeight());
     if (rowCount != expected) throw std::invalid_argument("completed_map_tokens has an invalid tile count");
     if (columnCount != kBeliefTokenWidth) {
-        throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+        throw std::invalid_argument("each completed_map_tokens row must have exactly 24 values");
     }
     if (!tokens && rowCount != 0) throw std::invalid_argument("completed_map_tokens data is null");
     if (perspective == kNoPlayer || static_cast<size_t>(perspective) >= source.getPlayers().size())
@@ -136,7 +136,7 @@ void validateFlatTokens(const Game& source,
                 throw std::invalid_argument("a city id may appear on only one city-center tile");
             cityCenters[static_cast<size_t>(t[15])] = static_cast<int>(i);
         } else if (t[10] != -1 || t[11] != -1 || t[12] != -1 || t[13] != -1 ||
-                   t[16] != -1 || t[17] != -1) {
+                   t[16] != -1 || t[17] != -1 || t[23] != -1) {
             throw std::invalid_argument("city fields must be -1 outside a city tile");
         }
     }
@@ -160,7 +160,7 @@ Game BeliefWorldBuilder::build(const Game& observedSource, PlayerId perspective,
     flat.reserve(rowCount * kBeliefTokenWidth);
     for (const std::vector<int>& row : tokens) {
         if (row.size() != kBeliefTokenWidth) {
-            throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+            throw std::invalid_argument("each completed_map_tokens row must have exactly 24 values");
         }
         for (const int value : row) flat.push_back(static_cast<int32_t>(value));
     }
@@ -256,8 +256,8 @@ Game BeliefWorldBuilder::buildFlat(const Game& observedSource,
         owner.addCity(cityId);
         if (v[9] == 1) owner.setCapitalId(cityId);
         if (static_cast<PlayerId>(v[16]) == perspective) {
+            city.setPopulation(v[23]);
             if (const City* sourceCity = observedSource.getCity(cityId)) {
-                city.setPopulation(sourceCity->getPopulation());
                 city.setIsInfiltrated(sourceCity->getIsInfiltrated());
             }
         }

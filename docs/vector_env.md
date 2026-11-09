@@ -37,7 +37,7 @@ single-environment random-seed behavior.
 
 | Key | Dtype | Shape | Meaning |
 | --- | --- | --- | --- |
-| `map_tokens` | `int32` | `[B, tiles, 23]` | Visible player map |
+| `map_tokens` | `int32` | `[B, tiles, 24]` | Visible player map |
 | `state` | `int32` | `[B, 11]` | Compact scalar state, layout below |
 | `action_id` | `int32` | `[B, Amax]` | Action-space id for each padded row |
 | `action_features` | `int32` | `[B, Amax, 17]` | Numeric fields for each action row |

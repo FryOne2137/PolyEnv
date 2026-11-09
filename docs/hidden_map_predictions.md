@@ -1,7 +1,7 @@
 # Hidden-Map Predictions
 
 Use `GameEnv.make_belief_env()` for MCTS under fog of war. It creates a new,
-detached hypothetical world from a complete 23-column `map_tokens` hypothesis.
+detached hypothetical world from a complete 24-column `map_tokens` hypothesis.
 It does not clone the real game, so hidden source-world state cannot enter the
 rollout.
 
@@ -52,7 +52,7 @@ be supplied as an input to fog-of-war self-play. See
 
 ## Validation and isolation
 
-The input must have one 23-integer row per map tile. The engine rejects:
+The input must have one 24-integer row per map tile. The engine rejects:
 
 - a changed visibility mask;
 - any difference on a currently revealed row (`revealed tiles differ: ...`);

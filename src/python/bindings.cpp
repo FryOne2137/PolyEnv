@@ -708,7 +708,7 @@ static constexpr int kCityUpgradeVocabSize = static_cast<int>(CityUpgradeChoice:
 static constexpr int kTileActionVocabSize = static_cast<int>(Action::TileActionKind::CaptureCity) + 1;
 static constexpr int kUnitUpgradeVocabSize = static_cast<int>(Action::UnitUpgradeKind::Disband) + 1;
 static constexpr int kPopulationGainVocabSize = 256;
-static constexpr int kMapTokenFeatureCount = 23;
+static constexpr int kMapTokenFeatureCount = 24;
 static constexpr int kVectorStateFeatureCount = 11;
 static constexpr int kVectorActionFeatureCount = 17;
 static constexpr int kVectorActionArgMaskCount = 12;
@@ -1787,6 +1787,7 @@ public:
                         : static_cast<int>(t.getSettlementId());
                 int cityOwnerToken = -1;
                 int cityUnitsOccupiedToken = -1;
+                int ownCityPopulationToken = -1;
                 int cityHasWorkshopToken = -1;
                 int cityHasWallToken = -1;
                 int cityParkCountToken = -1;
@@ -1814,6 +1815,7 @@ public:
                             }
                             if (owner != kNoPlayer && static_cast<int>(owner) == perspective) {
                                 cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
+                                ownCityPopulationToken = static_cast<int>(city->getPopulation());
                             }
                             if (city->isCapitalCity()) {
                                 capitalLayer = 1;
@@ -1875,6 +1877,7 @@ public:
                     static_cast<int>(t.getTribe()),
                     unitMaxHp,
                     unitOriginCity,
+                    ownCityPopulationToken,
                 };
                 if (visibleOnly && !knownToObservation) {
                     for (size_t i = 1; i < tileToken.size(); ++i) {
@@ -2087,6 +2090,7 @@ public:
                 int cityLevel = -1;
                 int cityOwnerToken = -1;
                 int cityUnitsOccupiedToken = -1;
+                int cityPopulationToken = -1;
                 int cityHasWorkshopToken = -1;
                 int cityHasWallToken = -1;
                 int cityParkCountToken = -1;
@@ -2100,6 +2104,7 @@ public:
                             if (owner != kNoPlayer) {
                                 cityOwnerToken = static_cast<int>(owner);
                                 cityUnitsOccupiedToken = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
+                                cityPopulationToken = static_cast<int>(city->getPopulation());
                             }
                             if (city->isCapitalCity()) {
                                 capitalLayer = 1;
@@ -2135,6 +2140,7 @@ public:
                     static_cast<int>(t.getTribe()),
                     unitMaxHp,
                     unitOriginCity,
+                    cityPopulationToken,
                 });
             }
         }
@@ -2759,8 +2765,8 @@ public:
             throw std::invalid_argument("completed_map_tokens has an invalid tile count");
         }
         for (size_t tile = 0; tile < tokens.size(); ++tile) {
-            if (tokens[tile].size() != 23) {
-                throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+            if (tokens[tile].size() != kMapTokenFeatureCount) {
+                throw std::invalid_argument("each completed_map_tokens row must have exactly 24 values");
             }
             if (observed[tile].empty() || tokens[tile][0] != observed[tile][0]) {
                 throw std::invalid_argument("completed_map_tokens must preserve the source visibility mask");
@@ -2795,7 +2801,7 @@ public:
                                                      int32_t* observedScratch) const {
         ensureState();
         if (columnCount != kMapTokenFeatureCount) {
-            throw std::invalid_argument("completed_map_tokens must have exactly 23 columns");
+            throw std::invalid_argument("completed_map_tokens must have exactly 24 columns");
         }
         const size_t expectedTiles = static_cast<size_t>(mapSize_) * static_cast<size_t>(mapSize_);
         if (rowCount != expectedTiles) {
@@ -2896,7 +2902,7 @@ public:
 
     // Apply predicted tile features for hidden tiles only.
     //
-    // Accepts a sparse dict {tile_index → feature_vector_of_23_ints} produced by
+    // Accepts a sparse dict {tile_index → feature_vector_of_24_ints} produced by
     // the tile-prediction model (same layout as tokenized_map()).
     // Tiles already visible to `perspective` are silently skipped (guard in C++).
     //
@@ -2913,7 +2919,7 @@ public:
     //   [0]  visibility, [1] isCloakAround, [2-5] unit state,
     //   [6]  territoryCityId, [9-10] capitalLayer/cityLevel,
     //   [10-12] city workshop/wall/park state, [15-17] settlement/city state,
-    //   [21] unitMaxHp, [22] unitOriginCityId
+    //   [21] unitMaxHp, [22] unitOriginCityId, [23] ownCityPopulation
     //
     // Returns the number of tiles actually patched.
     int applyTilePredictions(
@@ -2936,7 +2942,7 @@ public:
         int patched = 0;
         for (const auto& [idx, features] : predictions) {
             if (idx < 0 || idx >= tileCount) continue;
-            if (static_cast<int>(features.size()) < 23) continue;
+            if (static_cast<int>(features.size()) < kMapTokenFeatureCount) continue;
             // Guard: silently skip tiles already visible to this perspective.
             if (knownObs && (*knownObs)[static_cast<size_t>(idx)]) continue;
 
@@ -3128,6 +3134,7 @@ private:
                 int cityLevel = -1;
                 int cityOwner = -1;
                 int cityUnitsOccupied = -1;
+                int ownCityPopulation = -1;
                 int cityHasWorkshop = -1;
                 int cityHasWall = -1;
                 int cityParkCount = -1;
@@ -3156,6 +3163,7 @@ private:
                             if (owner != kNoPlayer) cityOwner = static_cast<int>(owner);
                             if (owner != kNoPlayer && static_cast<int>(owner) == perspective) {
                                 cityUnitsOccupied = static_cast<int>(CitySystem::getCityUnitsCount(g, cityId));
+                                ownCityPopulation = static_cast<int>(city->getPopulation());
                             }
                             if (city->isCapitalCity()) capitalLayer = 1;
                             cityHasWorkshop = city->hasWorkshopEnabled() ? 1 : 0;
@@ -3206,6 +3214,7 @@ private:
                 token[20] = static_cast<int>(tile.getTribe());
                 token[21] = unitMaxHp;
                 token[22] = unitOriginCity;
+                token[23] = ownCityPopulation;
                 if (!known) {
                     std::fill(token + 1, token + kMapTokenFeatureCount, int32_t{-1});
                 }
@@ -6536,7 +6545,7 @@ public:
             tokens.shape(1) != static_cast<py::ssize_t>(tileCount()) ||
             tokens.shape(2) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
             throw std::invalid_argument(
-                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 23]");
+                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 24]");
         }
         py::array_t<uint8_t> accepted(static_cast<py::ssize_t>(numEnvs_));
         const uint64_t* idData = ids.data();
@@ -6584,7 +6593,7 @@ public:
             tokens.shape(1) != static_cast<py::ssize_t>(tileCount()) ||
             tokens.shape(2) != static_cast<py::ssize_t>(kMapTokenFeatureCount)) {
             throw std::invalid_argument(
-                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 23]");
+                "completed_map_tokens must be a contiguous int32 array with shape [num_envs, map_size * map_size, 24]");
         }
 
         const auto describe = [](const GameEnv& env, size_t actionId) {
@@ -6978,8 +6987,8 @@ public:
                                      tokens.shape(3) != static_cast<py::ssize_t>(tileCount()) ||
                                      tokens.shape(4) != static_cast<py::ssize_t>(kMapTokenFeatureCount)))) {
             throw std::invalid_argument(
-                "completed_map_tokens must be contiguous int32 with shape [num_envs, tiles, 23] "
-                "or [num_envs, player_count, tiles, 23] / [num_envs, player_count, particles, tiles, 23] "
+                "completed_map_tokens must be contiguous int32 with shape [num_envs, tiles, 24] "
+                "or [num_envs, player_count, tiles, 24] / [num_envs, player_count, particles, tiles, 24] "
                 "for full ISMCTS");
         }
 
@@ -7680,8 +7689,8 @@ private:
                  input.tokens.shape(3) != static_cast<py::ssize_t>(tileCount()) ||
                  input.tokens.shape(4) != static_cast<py::ssize_t>(kMapTokenFeatureCount)))) {
             throw std::invalid_argument(
-                "completed_map_tokens must have shape [num_envs, player_count, tiles, 23] "
-                "or [num_envs, player_count, particles, tiles, 23]");
+                "completed_map_tokens must have shape [num_envs, player_count, tiles, 24] "
+                "or [num_envs, player_count, particles, tiles, 24]");
         }
         input.particles = multiParticle
             ? static_cast<size_t>(input.tokens.shape(2))

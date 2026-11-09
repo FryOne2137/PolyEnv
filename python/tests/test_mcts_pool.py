@@ -46,7 +46,7 @@ def test_mcts_pool_batches_independent_roots_and_preserves_sources() -> None:
     assert pool.num_trees == 2
     assert pool.max_actions == 128
     assert pool.pending_count == 2
-    assert batch["map_tokens"].shape == (2, 121, 23)
+    assert batch["map_tokens"].shape == (2, 121, 24)
     assert batch["state"].shape == (2, 11)
     assert batch["action_id"].shape == (2, 128)
     assert batch["leaf_id"].dtype == np.uint64
@@ -66,7 +66,7 @@ def test_mcts_pool_batches_independent_roots_and_preserves_sources() -> None:
     # avoids duplicate leaf expansion without Python-side virtual-loss logic.
     waiting = pool.select_leaves()
     assert waiting["leaf_id"].shape == (0,)
-    assert waiting["map_tokens"].shape == (0, 121, 23)
+    assert waiting["map_tokens"].shape == (0, 121, 24)
 
     # Search state is a native copy; no MCTS expansion may mutate the caller's
     # live game objects.

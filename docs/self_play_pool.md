@@ -62,8 +62,8 @@ while training:
     # receive one player's row as input for another player.
     belief_request = pool.all_player_belief_requests()
     completed_map_tokens = belief_model(belief_request)
-    # C-contiguous int32 [B, P, K, tiles, 23]. K >= 1 belief particles.
-    # [B, P, tiles, 23] is accepted as the K=1 shorthand.
+    # C-contiguous int32 [B, P, K, tiles, 24]. K >= 1 belief particles.
+    # [B, P, tiles, 24] is accepted as the K=1 shorthand.
 
     pool.submit_beliefs(request["state_id"], completed_map_tokens)
 
@@ -101,7 +101,7 @@ validates every live slot before advancing any of them. The legacy `step()`
 still rejects an active pending leaf evaluation, but cannot distinguish a late
 action that remains legal in a newer position.
 
-Calling `submit_beliefs()` with `[B, tiles, 23]` retains the legacy
+Calling `submit_beliefs()` with `[B, tiles, 24]` retains the legacy
 root-perspective determinization mode. Use the per-player form above for
 ISMCTS; it is the intended training path whenever fog of war matters.
 
@@ -134,7 +134,7 @@ order before submitting results:
 
 ```python
 belief = pool.all_player_belief_requests()
-completed = np.empty((pool.num_envs, pool.player_count, tiles, 23), np.int32)
+completed = np.empty((pool.num_envs, pool.player_count, tiles, 24), np.int32)
 for agent_id in np.unique(belief["agent_id"]):
     rows = belief["agent_id"] == agent_id
     completed[rows] = models[int(agent_id)].belief(belief, rows)
@@ -159,7 +159,7 @@ core model fields:
 
 | Key | Dtype | Shape | Meaning |
 | --- | --- | --- | --- |
-| `map_tokens` | `int32` | `[B, tiles, 23]` | Current player's visible map only |
+| `map_tokens` | `int32` | `[B, tiles, 24]` | Current player's visible map only |
 | `state` | `int32` | `[B, 11]` | Current player's game state |
 | `action_id` | `int32` | `[B, Amax]` | Padded legal action ids |
 | `action_features` | `int32` | `[B, Amax, 17]` | Action features |
@@ -208,10 +208,10 @@ belief model expands this packet to either:
 
 ```python
 # One particle per player (valid but less diverse)
-completed.shape == (B, P, tiles, 23)
+completed.shape == (B, P, tiles, 24)
 
 # Recommended: K independent completions per player's own observation.
-completed.shape == (B, P, K, tiles, 23)
+completed.shape == (B, P, K, tiles, 24)
 ```
 
 Every visible row in every particle is validated against that same player's
@@ -227,7 +227,7 @@ the one atomic submit:
 ```python
 belief_request = pool.all_player_belief_requests()
 particles = belief_model.sample(belief_request, particles=K)
-# C-contiguous int32 [B, P, K, tiles, 23]
+# C-contiguous int32 [B, P, K, tiles, 24]
 
 accepted = np.empty(pool.num_envs, dtype=np.uint8)  # reusable host buffer
 pool.ismcts_belief_acceptance_mask_into(
@@ -235,7 +235,7 @@ pool.ismcts_belief_acceptance_mask_into(
 )
 while not np.all(accepted):
     rejected = np.flatnonzero(accepted == 0)
-    # sample_rows returns complete [len(rejected), P, K, tiles, 23] rows;
+    # sample_rows returns complete [len(rejected), P, K, tiles, 24] rows;
     # each player is conditioned only on that player's fog-safe request.
     particles[rejected] = belief_model.sample_rows(
         belief_request, rejected, particles=K
@@ -284,7 +284,7 @@ real move, before `submit_beliefs()`, and can share the same double-buffering
 discipline as the ordinary belief packet.
 
 The legacy root-perspective `completed_map_tokens` form has exact shape
-`[B, tiles, 23]`; the ISMCTS forms are shown above. Every form has dtype
+`[B, tiles, 24]`; the ISMCTS forms are shown above. Every form has dtype
 `np.int32`, C-contiguous layout, and must preserve:
 
 - the observation's visibility mask in column `0`;

@@ -550,6 +550,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                                    ? -1 : static_cast<int>(t.getSettlementId());
             int cityOwner        = -1;
             int cityUnitsOccupied = -1;
+            int ownCityPopulation = -1;
             int cityHasWorkshop  = -1;
             int cityHasWall      = -1;
             int cityParkCount    = -1;
@@ -576,6 +577,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                         if (owner != kNoPlayer &&
                             static_cast<int>(owner) == static_cast<int>(perspective)) {
                             cityUnitsOccupied = static_cast<int>(CitySystem::getCityUnitsCount(game, cid));
+                            ownCityPopulation = static_cast<int>(city->getPopulation());
                         }
                         if (city->isCapitalCity()) {
                             capitalLayer = 1;
@@ -614,7 +616,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
             const int territoryCityId = (static_cast<int>(t.getTerritoryCityId()) == static_cast<int>(kNoCity))
                                         ? -1 : static_cast<int>(t.getTerritoryCityId());
 
-            // 23 features per tile (as floats)
+            // 24 features per tile (as floats)
             tiles.push_back(json::array({
                 (float)visibility,
                 (float)isCloakAround,
@@ -639,6 +641,7 @@ json tokenizedMapAsJson(const Game& game, PlayerId perspective) {
                 (float)static_cast<int>(t.getTribe()),
                 (float)unitMaxHp,
                 (float)unitOriginCity,
+                (float)ownCityPopulation,
             }));
         }
     }

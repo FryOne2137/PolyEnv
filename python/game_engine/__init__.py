@@ -11,7 +11,7 @@ Lakes = MapType.Lakes
 Drylands = MapType.Drylands
 WaterWorld = MapType.WaterWorld
 
-# Feature indices in the tokenized_map tile vector (23 features total).
+# Feature indices in the tokenized_map tile vector (24 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
 _FEAT_ROAD_BRIDGE      = 7
 _FEAT_BUILDING         = 8
@@ -23,6 +23,7 @@ _FEAT_RESOURCE           = 18
 _FEAT_BASE_TERRAIN       = 19
 _FEAT_TRIBE              = 20
 _FEAT_UNIT_ORIGIN_CITY   = 22
+_FEAT_OWN_CITY_POPULATION = 23
 
 from .tribes import (
     AiMo,

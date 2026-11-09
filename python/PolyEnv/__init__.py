@@ -17,7 +17,7 @@ Lakes = MapType.Lakes
 Drylands = MapType.Drylands
 WaterWorld = MapType.WaterWorld
 
-# Feature indices in the tokenized_map tile vector (23 features total).
+# Feature indices in the tokenized_map tile vector (24 features total).
 # Matches the layout produced by GameEnv.tokenized_map() / observation()["tokenized_map"].
 _FEAT_ROAD_BRIDGE = 7
 _FEAT_BUILDING = 8
@@ -29,6 +29,7 @@ _FEAT_RESOURCE = 18
 _FEAT_BASE_TERRAIN = 19
 _FEAT_TRIBE = 20
 _FEAT_UNIT_ORIGIN_CITY = 22
+_FEAT_OWN_CITY_POPULATION = 23
 
 from .tribes import (
     AiMo,
@@ -297,7 +298,7 @@ class SelfPlayPool(_SelfPlayPool):
     NumPy batches with this native scheduler. Call ``reset``/``step`` to get a
     player-visible request, submit a completed belief map using its
     ``state_id``, then run the MCTS leaf/backup loop. For fog-safe ISMCTS,
-    call ``all_player_belief_requests()`` and submit ``[B, P, K, tiles, 23]``
+    call ``all_player_belief_requests()`` and submit ``[B, P, K, tiles, 24]``
     belief particles (the ``K=1`` shorthand is accepted). It supports 2--16
     players; the two-player value path is specially optimized. Its
     ``belief_batch_spec()``, ``leaf_batch_spec()`` and ``root_policy_spec()``

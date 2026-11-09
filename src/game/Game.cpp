@@ -51,7 +51,7 @@ namespace {
 
 #if 0 // Moved to runtime/BeliefWorldBuilder.cpp
 namespace {
-constexpr size_t kBeliefTokenWidth = 23;
+constexpr size_t kBeliefTokenWidth = 24;
 constexpr int kUnitTypeMax = static_cast<int>(UnitType::GiantSuper);
 
 bool tokenEnumInRange(int value, int minValue, int maxValue) {
@@ -70,7 +70,7 @@ void validateCompletedBeliefTokens(const Game& source, PlayerId perspective,
     for (size_t i = 0; i < tokens.size(); ++i) {
         const auto& t = tokens[i];
         if (t.size() != kBeliefTokenWidth)
-            throw std::invalid_argument("each completed_map_tokens row must have exactly 23 values");
+            throw std::invalid_argument("each completed_map_tokens row must have exactly 24 values");
         if (!tokenEnumInRange(t[0], 0, 1) || !tokenEnumInRange(t[7], 0, 3) ||
             !tokenEnumInRange(t[8], 0, 16) || !tokenEnumInRange(t[11], -1, 1) ||
             !tokenEnumInRange(t[14], 0, 4) || !tokenEnumInRange(t[18], 0, 6) ||
